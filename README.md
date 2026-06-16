@@ -57,6 +57,16 @@ tour et vous validez leurs demandes depuis l'onglet **Administration**.
 |--------------|-----------------------|--------------------------------------|
 | `PORT`       | `3000`                | Port d'écoute du serveur             |
 | `JWT_SECRET` | *(valeur de dev)*     | Secret de signature des jetons JWT — **à définir en production** |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | — | Base Redis (Upstash/Vercel KV) pour la persistance en serverless |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | Serveur SMTP pour l'envoi des identifiants par email (facultatif) |
+| `SMTP_SECURE` | `false` | `true` pour TLS direct (port 465) |
+| `MAIL_FROM` | `SMTP_USER` | Adresse expéditeur des emails |
+| `APP_URL` | — | URL du site, incluse dans les emails |
+
+> **Envoi d'emails** : si les variables `SMTP_*` ne sont pas définies, l'envoi
+> est simplement ignoré (l'application continue de fonctionner normalement).
+> Pour activer l'email, utilisez un fournisseur SMTP (Brevo, SendGrid, Gmail
+> avec mot de passe d'application, etc.).
 
 ## Sauvegarde des données
 

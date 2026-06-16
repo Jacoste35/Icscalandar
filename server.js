@@ -8,6 +8,9 @@ const jwt = require('jsonwebtoken');
 const db = require('./lib/db');
 const { getData, save, nextId } = db;
 const holidays = require('./lib/holidays');
+const mail = require('./lib/mail');
+
+const ROLES = ['admin', 'responsable', 'employee'];
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -103,6 +106,14 @@ function adminRequired(req, res, next) {
   next();
 }
 
+// Encadrement : administrateur OU responsable.
+function staffRequired(req, res, next) {
+  if (req.user.role !== 'admin' && req.user.role !== 'responsable') {
+    return res.status(403).json({ error: 'Réservé à l’encadrement' });
+  }
+  next();
+}
+
 function validDate(s) {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s + 'T00:00:00Z').getTime());
 }
@@ -142,6 +153,10 @@ app.post('/api/register', async (req, res) => {
   };
   db.users.push(user);
   await save();
+  // Confirmation des identifiants par email (l'email sert d'identifiant).
+  if (user.email) {
+    mail.sendCredentials({ to: user.email, firstName: user.firstName, login: user.email, password: String(password) });
+  }
   res.json({
     user: publicUser(user),
     token: user.status === 'active' ? signToken(user) : null,
@@ -406,7 +421,7 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     username: uname || null,
     email: mail || null,
     passwordHash: await bcrypt.hash(String(password), 10),
-    role: role === 'admin' ? 'admin' : 'employee',
+    role: ROLES.includes(role) ? role : 'employee',
     status: 'active',
     groupId: groupId || null,
     balances: {
@@ -419,7 +434,12 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   };
   db.users.push(user);
   await save();
-  res.json({ user: publicUser(user) });
+  // Envoi des identifiants par email si une adresse a été fournie.
+  let emailed = false;
+  if (user.email) {
+    emailed = await mail.sendCredentials({ to: user.email, firstName: user.firstName, login: user.username || user.email, password: String(password) });
+  }
+  res.json({ user: publicUser(user), emailed });
 });
 
 // Valider une inscription en attribuant groupe + soldes
@@ -439,7 +459,7 @@ app.post('/api/admin/users/:id/approve', authRequired, adminRequired, async (req
     rcc: Number(rcc) || 0,
     heuresSupp: Number(heuresSupp) || 0,
   };
-  if (role === 'admin' || role === 'employee') user.role = role;
+  if (ROLES.includes(role)) user.role = role;
   await save();
   res.json({ user: publicUser(user) });
 });
@@ -488,7 +508,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
     rcc: rcc !== undefined ? Number(rcc) || 0 : user.balances.rcc,
     heuresSupp: heuresSupp !== undefined ? Number(heuresSupp) || 0 : user.balances.heuresSupp,
   };
-  if (role === 'admin' || role === 'employee') user.role = role;
+  if (ROLES.includes(role)) user.role = role;
   await save();
   res.json({ user: publicUser(user) });
 });
@@ -509,12 +529,17 @@ app.delete('/api/admin/users/:id', authRequired, adminRequired, async (req, res)
 app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
   const db = getData();
   const usersById = Object.fromEntries(db.users.map((u) => [u.id, u]));
+  const groupsById = Object.fromEntries(db.groups.map((g) => [g.id, g]));
   const list = db.requests
     .map((r) => {
       const u = usersById[r.userId];
+      const g = u ? groupsById[u.groupId] : null;
       return {
         ...r,
         userName: u ? `${u.firstName} ${u.lastName}` : 'Inconnu',
+        groupId: u ? u.groupId : null,
+        groupName: g ? g.name : '—',
+        groupColor: g ? g.color : '#64748b',
         categoryLabel: categoryLabel(r.category),
       };
     })
@@ -522,9 +547,10 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
   res.json({ requests: list });
 });
 
-// Attribuer directement une absence à un salarié (depuis le calendrier).
-// La demande est créée déjà validée et le solde est immédiatement décompté.
-app.post('/api/admin/requests', authRequired, adminRequired, async (req, res) => {
+// Attribuer une absence à un salarié (depuis le calendrier).
+// - Administrateur : la demande est créée VALIDÉE et le solde décompté.
+// - Responsable : la demande est créée EN ATTENTE (l'administrateur tranche).
+app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) => {
   const db = getData();
   const { userId, category, pool, startDate, endDate, reason } = req.body || {};
   const user = db.users.find((u) => u.id === userId);
@@ -544,6 +570,7 @@ app.post('/api/admin/requests', authRequired, adminRequired, async (req, res) =>
   const days = holidays.countWorkingDays(startDate, endDate);
   if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
 
+  const isAdmin = req.user.role === 'admin';
   const request = {
     id: nextId('request'),
     userId,
@@ -554,17 +581,21 @@ app.post('/api/admin/requests', authRequired, adminRequired, async (req, res) =>
     reason: String(reason || '').trim(),
     days,
     hours: days * HOURS_PER_DAY,
-    status: 'approved',
+    status: isAdmin ? 'approved' : 'pending',
     createdAt: new Date().toISOString(),
-    decidedAt: new Date().toISOString(),
-    decidedBy: req.user.id,
-    adminNote: 'Attribué par l’administrateur',
+    decidedAt: isAdmin ? new Date().toISOString() : null,
+    decidedBy: isAdmin ? req.user.id : null,
+    createdBy: req.user.id,
+    adminNote: isAdmin ? 'Attribué par l’administrateur' : `Proposé par le responsable ${req.user.firstName} ${req.user.lastName}`,
   };
-  const d = deductionFor(request);
-  if (d) user.balances[d.balance] = Math.round((user.balances[d.balance] - d.amount) * 100) / 100;
+  // Le solde n'est décompté que si la demande est validée (admin).
+  if (isAdmin) {
+    const d = deductionFor(request);
+    if (d) user.balances[d.balance] = Math.round((user.balances[d.balance] - d.amount) * 100) / 100;
+  }
   db.requests.push(request);
   await save();
-  res.json({ request });
+  res.json({ request, pendingValidation: !isAdmin });
 });
 
 // Supprimer n'importe quelle demande (admin) — recrédite le solde si validée.
