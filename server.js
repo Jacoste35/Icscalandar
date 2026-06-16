@@ -6,7 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const db = require('./lib/db');
-const { getData, save, nextId } = db;
+const { getData, save, nextId, enableAccrual } = db;
 const holidays = require('./lib/holidays');
 const mail = require('./lib/mail');
 
@@ -38,14 +38,12 @@ app.use('/api', async (req, res, next) => {
 const HOURS_PER_DAY = 7;
 
 // Options de "réserve" (pool) selon la catégorie : sur quel solde imputer.
+// Seul le congé payé propose un choix (année N ou N-1). La récupération impute
+// toujours les heures supplémentaires ; le RCC impute son compteur dédié.
 const CATEGORY_POOLS = {
   CP: [
     { value: 'N', label: 'Congés N' },
     { value: 'N1', label: 'Congés N-1' },
-  ],
-  RCP: [
-    { value: 'RCC', label: 'RCC (jours)' },
-    { value: 'HS', label: 'Heures supplémentaires (heures)' },
   ],
 };
 
@@ -65,14 +63,24 @@ function displayCode(req) {
 }
 
 // Détermine le solde à débiter pour une demande validée (ou null).
+//   CP  -> congés N ou N-1 (jours)
+//   RCP -> heures supplémentaires (heures) = compteur de récupération
+//   RCC -> compteur RCC dédié (jours)
 function deductionFor(r) {
   if (r.category === 'CP') return { balance: r.pool === 'N1' ? 'congesN1' : 'congesN', amount: r.days };
-  if (r.category === 'RCP') {
-    return r.pool === 'HS'
-      ? { balance: 'heuresSupp', amount: r.hours }
-      : { balance: 'rcc', amount: r.days };
-  }
-  return null; // PMT, AM, ABS : pas de décompte
+  if (r.category === 'RCP') return { balance: 'heuresSupp', amount: r.hours };
+  if (r.category === 'RCC') return { balance: 'rcc', amount: r.days };
+  return null; // PMT, AM, ABS, etc. : pas de décompte
+}
+
+function rangesOverlap(s1, e1, s2, e2) {
+  return s1 <= e2 && e1 >= s2;
+}
+
+// Renvoie la période fermée chevauchant [startDate, endDate], ou null.
+function closedPeriodOverlap(startDate, endDate) {
+  const periods = getData().settings.closedPeriods || [];
+  return periods.find((p) => rangesOverlap(startDate, endDate, p.start, p.end)) || null;
 }
 
 function publicUser(u) {
@@ -122,6 +130,24 @@ function validDate(s) {
 // Auth & inscription
 // ---------------------------------------------------------------------------
 
+// Normalise une chaîne en identifiant (sans accents, minuscules, a-z0-9).
+function slug(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // retire les accents
+    .toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+// Génère un nom de compte "prenom.nom" unique.
+function makeUsername(db, firstName, lastName) {
+  const base = `${slug(firstName)}.${slug(lastName)}`.replace(/^\.|\.$/g, '') || 'utilisateur';
+  let candidate = base;
+  let n = 1;
+  const taken = (name) => db.users.some((u) => (u.username || '').toLowerCase() === name);
+  while (taken(candidate)) { n += 1; candidate = `${base}${n}`; }
+  return candidate;
+}
+
 app.post('/api/register', async (req, res) => {
   const { firstName, lastName, email, password } = req.body || {};
   if (!firstName || !lastName || !email || !password) {
@@ -137,13 +163,16 @@ app.post('/api/register', async (req, res) => {
   }
   const isFirstUser = db.users.length === 0;
   const passwordHash = await bcrypt.hash(String(password), 10);
+  // Nom de compte automatique "prenom.nom" (unique), utilisé pour se connecter.
+  const username = makeUsername(db, firstName, lastName);
   const user = {
     id: nextId('user'),
     firstName: String(firstName).trim(),
     lastName: String(lastName).trim(),
-    username: null,
+    username,
     email: normEmail,
     passwordHash,
+    isParent: false,
     // Le tout premier compte créé devient administrateur et est actif.
     role: isFirstUser ? 'admin' : 'employee',
     status: isFirstUser ? 'active' : 'pending',
@@ -153,16 +182,16 @@ app.post('/api/register', async (req, res) => {
   };
   db.users.push(user);
   await save();
-  // Confirmation des identifiants par email (l'email sert d'identifiant).
+  // Confirmation des identifiants par email (nom de compte + mot de passe).
   if (user.email) {
-    mail.sendCredentials({ to: user.email, firstName: user.firstName, login: user.email, password: String(password) });
+    mail.sendCredentials({ to: user.email, firstName: user.firstName, login: user.username, password: String(password) });
   }
   res.json({
     user: publicUser(user),
     token: user.status === 'active' ? signToken(user) : null,
     message: isFirstUser
-      ? 'Compte administrateur créé. Vous pouvez vous connecter.'
-      : 'Demande envoyée. Un administrateur doit valider votre compte et attribuer vos soldes.',
+      ? `Compte administrateur créé. Votre nom de compte est « ${user.username} ». Vous pouvez vous connecter.`
+      : `Demande envoyée. Votre nom de compte est « ${user.username} ». Un administrateur doit valider votre compte et attribuer vos soldes.`,
   });
 });
 
@@ -184,6 +213,20 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/me', authRequired, (req, res) => {
   res.json({ user: publicUser(req.user) });
+});
+
+// Le salarié met à jour ses propres informations (ex. statut de parent).
+app.put('/api/me', authRequired, async (req, res) => {
+  const { isParent } = req.body || {};
+  if (isParent !== undefined) req.user.isParent = Boolean(isParent);
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+
+// Réglages calendrier (vacances scolaires, fermetures) — lecture pour tous.
+app.get('/api/settings', authRequired, (req, res) => {
+  const s = getData().settings;
+  res.json({ schoolHolidays: s.schoolHolidays || [], closedPeriods: s.closedPeriods || [] });
 });
 
 // ---------------------------------------------------------------------------
@@ -273,6 +316,8 @@ app.get('/api/team', authRequired, (req, res) => {
       lastName: u.lastName,
       role: u.role,
       groupId: u.groupId,
+      email: u.email || null,
+      isParent: Boolean(u.isParent),
     }));
   res.json({ team });
 });
@@ -328,8 +373,8 @@ app.get('/api/requests/mine', authRequired, (req, res) => {
 app.post('/api/requests', authRequired, async (req, res) => {
   const { category, pool, startDate, endDate, reason } = req.body || {};
   const cat = categoryByCode(category);
-  if (!cat || !cat.selectable) return res.status(400).json({ error: 'Catégorie de demande invalide' });
-  // Vérifie le "pool" pour les catégories qui en exigent un (CP, RCP).
+  if (!cat || !cat.requestable) return res.status(400).json({ error: 'Catégorie de demande invalide' });
+  // Vérifie le "pool" pour les catégories qui en exigent un (CP : N ou N-1).
   const poolOptions = CATEGORY_POOLS[category];
   let chosenPool = null;
   if (poolOptions) {
@@ -340,6 +385,10 @@ app.post('/api/requests', authRequired, async (req, res) => {
   }
   if (!validDate(startDate) || !validDate(endDate)) return res.status(400).json({ error: 'Dates invalides' });
   if (endDate < startDate) return res.status(400).json({ error: 'La date de fin précède la date de début' });
+
+  // Période fermée à la prise de congé (ex. fêtes de fin d'année).
+  const closed = closedPeriodOverlap(startDate, endDate);
+  if (closed) return res.status(400).json({ error: `Prise de congé fermée sur cette période : ${closed.label}. Contactez la direction.` });
 
   const days = holidays.countWorkingDays(startDate, endDate);
   if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
@@ -404,14 +453,15 @@ function loginTaken(db, { email, username }, exceptId) {
 // Créer directement un utilisateur (actif) avec toutes ses données.
 app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent } = req.body || {};
   if (!firstName || !lastName) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
-  const uname = String(username || '').trim();
-  const mail = String(email || '').trim().toLowerCase();
-  if (!uname && !mail) return res.status(400).json({ error: 'Renseignez un nom de compte ou un email' });
+  let uname = String(username || '').trim();
+  const mailAddr = String(email || '').trim().toLowerCase();
+  // Si aucun nom de compte n'est fourni, on le génère automatiquement (prenom.nom).
+  if (!uname) uname = makeUsername(db, firstName, lastName);
   if (!password || String(password).length < 6) return res.status(400).json({ error: 'Mot de passe de 6 caractères minimum' });
   if (groupId && !db.groups.some((g) => g.id === groupId)) return res.status(400).json({ error: 'Groupe invalide' });
-  if (loginTaken(db, { email: mail, username: uname })) {
+  if (loginTaken(db, { email: mailAddr, username: uname })) {
     return res.status(409).json({ error: 'Ce nom de compte ou cet email est déjà utilisé' });
   }
   const user = {
@@ -419,8 +469,9 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     firstName: String(firstName).trim(),
     lastName: String(lastName).trim(),
     username: uname || null,
-    email: mail || null,
+    email: mailAddr || null,
     passwordHash: await bcrypt.hash(String(password), 10),
+    isParent: Boolean(isParent),
     role: ROLES.includes(role) ? role : 'employee',
     status: 'active',
     groupId: groupId || null,
@@ -432,6 +483,8 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     },
     createdAt: new Date().toISOString(),
   };
+  // Active l'acquisition automatique des CP dès qu'une valeur N est paramétrée.
+  if (Number(congesN) >= 0 && (congesN !== undefined && congesN !== null && congesN !== '')) enableAccrual(user);
   db.users.push(user);
   await save();
   // Envoi des identifiants par email si une adresse a été fournie.
@@ -460,6 +513,7 @@ app.post('/api/admin/users/:id/approve', authRequired, adminRequired, async (req
     heuresSupp: Number(heuresSupp) || 0,
   };
   if (ROLES.includes(role)) user.role = role;
+  enableAccrual(user); // acquisition CP +2,5 j/mois à partir de la validation
   await save();
   res.json({ user: publicUser(user) });
 });
@@ -478,7 +532,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent } = req.body || {};
 
   // Identité et compte
   if (firstName !== undefined && String(firstName).trim()) user.firstName = String(firstName).trim();
@@ -508,6 +562,8 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
     rcc: rcc !== undefined ? Number(rcc) || 0 : user.balances.rcc,
     heuresSupp: heuresSupp !== undefined ? Number(heuresSupp) || 0 : user.balances.heuresSupp,
   };
+  if (congesN !== undefined) enableAccrual(user); // (ré)active l'acquisition CP
+  if (isParent !== undefined) user.isParent = Boolean(isParent);
   if (ROLES.includes(role)) user.role = role;
   await save();
   res.json({ user: publicUser(user) });
@@ -537,6 +593,7 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
       return {
         ...r,
         userName: u ? `${u.firstName} ${u.lastName}` : 'Inconnu',
+        isParent: u ? Boolean(u.isParent) : false,
         groupId: u ? u.groupId : null,
         groupName: g ? g.name : '—',
         groupColor: g ? g.color : '#64748b',
@@ -655,6 +712,37 @@ app.put('/api/admin/groups/:id', authRequired, adminRequired, async (req, res) =
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) g.color = color;
   await save();
   res.json({ group: g });
+});
+
+// --- Fermetures (prise de congé interdite) -----------------------------------
+app.post('/api/admin/closed-periods', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { label, start, end } = req.body || {};
+  if (!validDate(start) || !validDate(end)) return res.status(400).json({ error: 'Dates invalides' });
+  if (end < start) return res.status(400).json({ error: 'La date de fin précède la date de début' });
+  const period = { id: nextId('request'), label: String(label || 'Fermeture').trim(), start, end };
+  db.settings.closedPeriods.push(period);
+  await save();
+  res.json({ closedPeriods: db.settings.closedPeriods });
+});
+
+app.delete('/api/admin/closed-periods/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.settings.closedPeriods = (db.settings.closedPeriods || []).filter((p) => p.id !== req.params.id);
+  await save();
+  res.json({ closedPeriods: db.settings.closedPeriods });
+});
+
+// --- Vacances scolaires (Zone B, surbrillance) -------------------------------
+app.put('/api/admin/school-holidays', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { schoolHolidays } = req.body || {};
+  if (!Array.isArray(schoolHolidays)) return res.status(400).json({ error: 'Format invalide' });
+  db.settings.schoolHolidays = schoolHolidays
+    .filter((h) => validDate(h.start) && validDate(h.end))
+    .map((h) => ({ label: String(h.label || 'Vacances').trim(), start: h.start, end: h.end }));
+  await save();
+  res.json({ schoolHolidays: db.settings.schoolHolidays });
 });
 
 // SPA fallback
