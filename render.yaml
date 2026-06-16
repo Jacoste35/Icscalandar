@@ -1,0 +1,29 @@
+# Déploiement sur Render (https://render.com) — hébergement gratuit.
+# Voir DEPLOIEMENT.md pour le guide pas à pas.
+services:
+  - type: web
+    name: inter-colis-services
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true   # secret généré automatiquement et gardé secret
+      - key: NODE_VERSION
+        value: "20"
+      # --- PERSISTANCE DES DONNÉES (important sur le plan gratuit) ---
+      # Sur le plan gratuit, le disque est temporaire : sans Redis, les comptes
+      # et congés sont réinitialisés à chaque redéploiement. Solution gratuite :
+      # créer une base Upstash Redis (https://upstash.com) et coller ici ses
+      # identifiants REST. Décommentez et renseignez :
+      # - key: KV_REST_API_URL
+      #   sync: false   # à saisir dans le tableau de bord Render (valeur secrète)
+      # - key: KV_REST_API_TOKEN
+      #   sync: false
+    # Alternative payante : disque persistant Render (au lieu de Redis).
+    # disk:
+    #   name: data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1

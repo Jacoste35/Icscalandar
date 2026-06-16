@@ -1,0 +1,6 @@
+node_modules
+data/database.json
+data/database.json.tmp
+.git
+*.log
+.DS_Store
