@@ -262,7 +262,7 @@ function renderApp() {
   $app.innerHTML = `
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand">📦 INTER COLIS</div>
+      <div class="brand">📦 Inter Colis Services</div>
       <nav id="nav">
         ${items.map((it) => `
           <button data-view="${it.id}" class="${State.view===it.id?'active':''}">
@@ -317,20 +317,14 @@ async function renderDashboard(main) {
   try {
     const today = new Date();
     await ensureHolidays(today.getFullYear());
+    await ensureHolidays(today.getFullYear() + 1);
     const { events } = await api('GET', '/calendar');
     const { user } = await api('GET', '/me');
     State.user = user;
     const b = user.balances;
 
-    // Détermine la semaine à afficher : en cours, sauf dimanche -> semaine suivante.
-    let weekStart = startOfWeekMonday(today);
-    if (today.getDay() === 0) weekStart = addDays(weekStart, 7);
-    const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i)); // lun-sam
-    const weekEnd = addDays(weekStart, 5);
-    const weekLabel = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
-
-    // Absences chevauchant la semaine
-    const weekAbs = events.filter((ev) => ev.startDate <= iso(weekEnd) && ev.endDate >= iso(weekStart));
+    const curStart = startOfWeekMonday(today);   // semaine en cours
+    const nextStart = addDays(curStart, 7);      // semaine à venir
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
@@ -341,26 +335,34 @@ async function renderDashboard(main) {
         ${statCard('RCC', b.rcc, 'jours')}
         ${statCard('Heures sup. dues', b.heuresSupp, 'h', true)}
       </div>
-
-      <div class="card">
-        <div class="cal-toolbar">
-          <h3 style="margin:0">Semaine ${today.getDay()===0?'à venir':'en cours'} — ${weekLabel}</h3>
-        </div>
-        <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">Qui sera absent cette semaine ?</p>
-        <div class="week-grid">
-          <div class="wrow whead">
-            <div class="wcell namecol">Salarié</div>
-            ${weekDays.map((d) => {
-              const h = State.holidays[iso(d)];
-              return `<div class="wcell ${h?'holiday':''}">${DOW_SHORT[(d.getDay()+6)%7]} ${pad(d.getDate())}<div class="sub">${h?esc(h):''}</div></div>`;
-            }).join('')}
-          </div>
-          ${renderDashWeekRows(weekAbs, weekDays)}
-        </div>
-      </div>`;
+      ${dashWeekCard('Semaine en cours', curStart, events)}
+      ${dashWeekCard('Semaine à venir', nextStart, events)}`;
   } catch (e) {
     document.getElementById('dash-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
+}
+
+// Carte "qui est absent" pour une semaine donnée (lundi -> samedi).
+function dashWeekCard(title, weekStart, events) {
+  const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
+  const weekEnd = addDays(weekStart, 5);
+  const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
+  const weekAbs = events.filter((ev) => ev.startDate <= iso(weekEnd) && ev.endDate >= iso(weekStart));
+  return `
+    <div class="card">
+      <div class="cal-toolbar"><h3 style="margin:0">${esc(title)} — ${label}</h3></div>
+      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">Qui sera absent ?</p>
+      <div class="week-grid">
+        <div class="wrow whead">
+          <div class="wcell namecol">Salarié</div>
+          ${weekDays.map((d) => {
+            const h = State.holidays[iso(d)];
+            return `<div class="wcell ${h?'holiday':''}">${DOW_SHORT[(d.getDay()+6)%7]} ${pad(d.getDate())}<div class="sub">${h?esc(h):''}</div></div>`;
+          }).join('')}
+        </div>
+        ${renderDashWeekRows(weekAbs, weekDays)}
+      </div>
+    </div>`;
 }
 
 function renderDashWeekRows(weekAbs, weekDays) {
@@ -393,9 +395,12 @@ function statCard(label, value, unit, alt) {
    CALENDRIER — jour / semaine / mois / année
    ========================================================================= */
 async function renderCalendar(main) {
+  const isAdmin = State.user.role === 'admin';
   main.innerHTML = `<div class="page-head"><div><h1>Calendrier de l'équipe</h1>
-    <p>Présences et absences de tous les salariés inscrits.</p></div></div>
+    <p>Présences et absences de tous les salariés inscrits.</p></div>
+    ${isAdmin?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}</div>
     <div class="card" id="cal-card"><div class="empty">Chargement…</div></div>`;
+  if (isAdmin) document.getElementById('cal-add').onclick = () => adminAssignModal();
   try {
     await ensureHolidays(State.cal.cursor.getFullYear());
     const { events } = await api('GET', '/calendar');
@@ -404,6 +409,59 @@ async function renderCalendar(main) {
   } catch (e) {
     document.getElementById('cal-card').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
+}
+
+// Modal admin : attribuer une absence à un salarié (tous motifs).
+async function adminAssignModal(prefillDate) {
+  let team = [];
+  try { team = (await api('GET', '/team')).team; } catch (e) { toast(e.message, 'err'); return; }
+  team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+  // Tous les motifs sauf DCP (état dérivé d'une demande de CP en attente).
+  const cats = State.categories.filter((c) => c.code !== 'DCP');
+  modal({
+    title: 'Attribuer une absence',
+    bodyHTML: `
+      <form id="form-assign">
+        <label>Salarié</label>
+        <select name="userId" required>${team.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
+        <label>Motif</label>
+        <select name="category" required>${cats.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}</select>
+        <div id="pool-wrap" style="display:none"><label>Imputer sur le solde</label><select name="pool"></select></div>
+        <div class="row">
+          <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
+          <div><label>Au</label><input type="date" name="endDate" required value="${prefillDate||''}"></div>
+        </div>
+        <p class="help" id="assign-preview"></p>
+        <label>Motif / commentaire (facultatif)</label>
+        <textarea name="reason" placeholder="Précisez si besoin…"></textarea>
+      </form>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="assign-save">Attribuer</button>`,
+    onMount: (overlay) => {
+      const f = overlay.querySelector('#form-assign');
+      const poolWrap = overlay.querySelector('#pool-wrap');
+      const preview = overlay.querySelector('#assign-preview');
+      const refreshPool = () => {
+        const opts = State.pools[f.category.value];
+        if (opts && opts.length) { poolWrap.style.display = ''; f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)}</option>`).join(''); }
+        else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
+      };
+      const update = () => {
+        const s = f.startDate.value, e = f.endDate.value;
+        preview.textContent = (s && e && e >= s) ? `→ ${countWorkingDaysClient(s, e)} jour(s) ouvré(s).` : '';
+      };
+      refreshPool();
+      f.category.onchange = () => { refreshPool(); update(); };
+      f.startDate.onchange = update; f.endDate.onchange = update;
+      overlay.querySelector('#assign-save').onclick = async () => {
+        if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
+        try {
+          await api('POST', '/admin/requests', { userId: f.userId.value, category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
+          closeModal(); toast('Absence attribuée.', 'ok');
+          if (State.view === 'calendar') renderCalendar(document.getElementById('main'));
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
 }
 
 function calLegend() {
@@ -455,6 +513,17 @@ function drawCalendar() {
   else if (mode === 'week') grid.innerHTML = viewWeek(cursor);
   else if (mode === 'month') grid.innerHTML = viewMonth(cursor);
   else grid.innerHTML = viewYear(cursor);
+
+  // Suppression d'une absence par l'administrateur (vue jour).
+  grid.querySelectorAll('[data-del-ev]').forEach((btn) => btn.onclick = async () => {
+    if (!confirm('Supprimer cette absence du calendrier ?')) return;
+    try {
+      await api('DELETE', '/admin/requests/' + btn.dataset.delEv);
+      toast('Absence supprimée.', 'ok');
+      const { events } = await api('GET', '/calendar');
+      State._calEvents = events; drawCalendar();
+    } catch (e) { toast(e.message, 'err'); }
+  });
 }
 
 async function refreshCalForYear() {
@@ -484,6 +553,7 @@ function viewDay(cursor) {
   if (isSunday) banner = `<div class="alert info">Dimanche — jour non travaillé.</div>`;
   else if (hol) banner = `<div class="alert info">Jour férié : ${esc(hol)} — jour non travaillé.</div>`;
 
+  const isAdmin = State.user.role === 'admin';
   if (evs.length === 0) return banner + `<div class="empty">✅ Aucune absence ce jour. Toute l'équipe est présente.</div>`;
   return banner + `<div class="day-list">` + evs.map((ev) => `
     <div class="day-event">
@@ -493,6 +563,7 @@ function viewDay(cursor) {
         <div class="help">${esc(ev.groupName)} • ${esc(ev.categoryLabel)}${ev.status==='pending'?' — <em>demande en attente</em>':''}</div>
       </div>
       <span style="margin-left:auto" class="group-chip ${ev.status==='pending'?'is-pending':''}" style="background:${catColor(ev.code)}">${esc(ev.code)}</span>
+      ${isAdmin?`<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer">✕</button>`:''}
     </div>`).join('') + `</div>`;
 }
 
@@ -546,8 +617,8 @@ function viewMonth(cursor) {
     html += `<div class="${cls}">
       <span class="num">${d.getDate()}</span>
       ${hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : ''}
-      ${evs.slice(0,4).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(ev.userName)} — ${esc(ev.categoryLabel)}${ev.status==='pending'?' (demande)':''}">${esc(ev.userName.split(' ')[0])} · ${esc(ev.code)}</span>`).join('')}
-      ${evs.length > 4 ? `<span class="ev" style="background:#64748b">+${evs.length-4} autres</span>` : ''}
+      ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(ev.userName)} — ${esc(ev.categoryLabel)}${ev.status==='pending'?' (demande)':''}">${esc(ev.code)} · ${esc(ev.userName)}</span>`).join('')}
+      ${evs.length > 6 ? `<span class="ev" style="background:#64748b">+${evs.length-6} autres</span>` : ''}
     </div>`;
   }
   html += `</div>`;
@@ -587,6 +658,20 @@ function viewYear(cursor) {
 /* =========================================================================
    MES DONNÉES
    ========================================================================= */
+// Décompte (cumul de jours pris) par motif, calculé sur les absences validées.
+function decompteRows(approved) {
+  const days = {}, hours = {};
+  approved.forEach((r) => {
+    days[r.category] = (days[r.category] || 0) + r.days;
+    if (r.category === 'RCP' && r.pool === 'HS') hours[r.category] = (hours[r.category] || 0) + r.hours;
+  });
+  return State.categories.filter((c) => c.code !== 'DCP').map((c) => `
+    <tr>
+      <td><span class="group-chip" style="background:${c.color}">${esc(c.code)}</span> ${esc(c.label)}</td>
+      <td style="text-align:right;font-weight:600">${days[c.code] || 0} j${hours[c.code] ? ` (${hours[c.code]} h)` : ''}</td>
+    </tr>`).join('');
+}
+
 async function renderMyData(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mes données</h1><p>Vos soldes et informations personnelles.</p></div></div><div id="md" class="empty">Chargement…</div>`;
   try {
@@ -612,6 +697,14 @@ async function renderMyData(main) {
           <tr><th>Groupe de travail</th><td>${g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Non attribué</em>'}</td></tr>
           <tr><th>Rôle</th><td>${user.role==='admin'?'Administrateur':'Salarié'}</td></tr>
           <tr><th>Statut</th><td><span class="tag approved">Actif</span></td></tr>
+        </table></div>
+      </div>
+      <div class="card">
+        <h3>Décompte par motif (jours pris)</h3>
+        <p class="help" style="margin-top:-.6rem">Cumul de vos absences validées pour chaque libellé.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Motif</th><th style="text-align:right">Décompte</th></tr></thead>
+          <tbody>${decompteRows(approved)}</tbody>
         </table></div>
       </div>
       <div class="card">
@@ -665,7 +758,7 @@ function reqRow(r) {
 }
 
 function openRequestModal() {
-  const selectable = State.categories.filter((c) => c.selectable);
+  const selectable = State.categories.filter((c) => c.requestable);
   modal({
     title: 'Nouvelle demande',
     bodyHTML: `

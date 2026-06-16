@@ -522,6 +522,66 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
   res.json({ requests: list });
 });
 
+// Attribuer directement une absence à un salarié (depuis le calendrier).
+// La demande est créée déjà validée et le solde est immédiatement décompté.
+app.post('/api/admin/requests', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, category, pool, startDate, endDate, reason } = req.body || {};
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) return res.status(404).json({ error: 'Salarié introuvable' });
+  const cat = categoryByCode(category);
+  if (!cat || cat.code === 'DCP') return res.status(400).json({ error: 'Motif invalide' });
+  const poolOptions = CATEGORY_POOLS[category];
+  let chosenPool = null;
+  if (poolOptions) {
+    if (!poolOptions.some((p) => p.value === pool)) {
+      return res.status(400).json({ error: 'Précisez sur quel solde imputer' });
+    }
+    chosenPool = pool;
+  }
+  if (!validDate(startDate) || !validDate(endDate)) return res.status(400).json({ error: 'Dates invalides' });
+  if (endDate < startDate) return res.status(400).json({ error: 'La date de fin précède la date de début' });
+  const days = holidays.countWorkingDays(startDate, endDate);
+  if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
+
+  const request = {
+    id: nextId('request'),
+    userId,
+    category,
+    pool: chosenPool,
+    startDate,
+    endDate,
+    reason: String(reason || '').trim(),
+    days,
+    hours: days * HOURS_PER_DAY,
+    status: 'approved',
+    createdAt: new Date().toISOString(),
+    decidedAt: new Date().toISOString(),
+    decidedBy: req.user.id,
+    adminNote: 'Attribué par l’administrateur',
+  };
+  const d = deductionFor(request);
+  if (d) user.balances[d.balance] = Math.round((user.balances[d.balance] - d.amount) * 100) / 100;
+  db.requests.push(request);
+  await save();
+  res.json({ request });
+});
+
+// Supprimer n'importe quelle demande (admin) — recrédite le solde si validée.
+app.delete('/api/admin/requests/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const r = db.requests.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Demande introuvable' });
+  if (r.status === 'approved') {
+    const user = db.users.find((u) => u.id === r.userId);
+    const d = deductionFor(r);
+    if (user && d) user.balances[d.balance] = Math.round((user.balances[d.balance] + d.amount) * 100) / 100;
+  }
+  db.requests = db.requests.filter((x) => x.id !== r.id);
+  await save();
+  res.json({ ok: true });
+});
+
 // Décision admin sur une demande (validation = déduction du solde)
 app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (req, res) => {
   const db = getData();
