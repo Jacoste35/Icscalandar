@@ -13,9 +13,16 @@ services:
         generateValue: true   # secret généré automatiquement et gardé secret
       - key: NODE_VERSION
         value: "20"
-    # Disque persistant (recommandé pour conserver les données entre les
-    # redémarrages). Nécessite un plan payant chez Render. En plan gratuit,
-    # commentez ce bloc : les données seront réinitialisées à chaque redéploiement.
+      # --- PERSISTANCE DES DONNÉES (important sur le plan gratuit) ---
+      # Sur le plan gratuit, le disque est temporaire : sans Redis, les comptes
+      # et congés sont réinitialisés à chaque redéploiement. Solution gratuite :
+      # créer une base Upstash Redis (https://upstash.com) et coller ici ses
+      # identifiants REST. Décommentez et renseignez :
+      # - key: KV_REST_API_URL
+      #   sync: false   # à saisir dans le tableau de bord Render (valeur secrète)
+      # - key: KV_REST_API_TOKEN
+      #   sync: false
+    # Alternative payante : disque persistant Render (au lieu de Redis).
     # disk:
     #   name: data
     #   mountPath: /opt/render/project/src/data

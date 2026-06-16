@@ -58,10 +58,31 @@ normalement et sont **conservées durablement** dans Upstash.
 ### Bon à savoir sur le plan gratuit Render
 - Le site se **met en veille** après 15 min d'inactivité : la première
   ouverture après une pause peut prendre ~30 secondes à charger, c'est normal.
-- En plan gratuit, le disque est temporaire : les données peuvent être
-  réinitialisées lors d'un redéploiement. Pour **conserver durablement** les
-  données, activez un disque persistant (voir le bloc `disk:` commenté dans
-  `render.yaml`) — cela nécessite un petit plan payant Render.
+- En plan gratuit, le disque est temporaire : **sans base de données externe,
+  les comptes et congés sont réinitialisés à chaque redéploiement.** Voir
+  ci-dessous pour conserver les données gratuitement.
+
+### ⭐ Conserver les données durablement (gratuit) — Redis Upstash
+Recommandé sur Render gratuit. ~5 minutes, une seule fois.
+
+1. Créez un compte gratuit sur **https://upstash.com** (connexion possible via
+   GitHub ou Google).
+2. **Create Database** → choisissez **Redis** → un nom + une région proche
+   (Europe) → **Create**.
+3. Sur la page de la base, section **REST API**, copiez les deux valeurs :
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+4. Dans **Render** → votre service → onglet **Environment** → **Add
+   Environment Variable**, ajoutez ces deux variables :
+   - `KV_REST_API_URL` = (l'URL copiée)
+   - `KV_REST_API_TOKEN` = (le token copié)
+   *(les noms `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` fonctionnent
+   aussi, le code reconnaît les deux.)*
+5. **Save Changes** : Render redéploie. Désormais toutes les données sont
+   stockées dans Upstash et **conservées** même après un redéploiement.
+
+> Alternative payante : activer un **disque persistant** Render (bloc `disk:`
+> commenté dans `render.yaml`) au lieu de Redis.
 
 ---
 
