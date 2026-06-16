@@ -186,6 +186,10 @@ tr:last-child td { border-bottom: 0; }
 .month-grid .cell.today .num { background: var(--brand); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;}
 .month-grid .cell .hol-label { font-size: .62rem; color: #7c3aed; display:block; margin-top:1px;}
 .ev { display: block; color: #fff; border-radius: 5px; padding: 1px 5px; margin-top: 2px; font-size: .7rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: default;}
+/* Demande en attente (DCP et autres) : hachuré / pointillés */
+.ev.is-pending { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 4px, transparent 4px 8px); border: 1px dashed rgba(255,255,255,.9); }
+.tag.is-pending, .group-chip.is-pending { border: 1px dashed rgba(255,255,255,.9); background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.3) 0 4px, transparent 4px 8px); }
+.mini-grid span.has-ev.is-pending { outline: 1px dashed #fff; }
 
 .week-grid { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .week-grid .wrow { display: grid; grid-template-columns: 150px repeat(6, 1fr); border-bottom: 1px solid var(--border);}

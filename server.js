@@ -19,14 +19,45 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Helpers
 // ---------------------------------------------------------------------------
 
-const LEAVE_TYPES = {
-  conge_n: { label: 'Congé payé N', balance: 'congesN', unit: 'days' },
-  conge_n1: { label: 'Congé payé N-1', balance: 'congesN1', unit: 'days' },
-  rcc: { label: 'RCC', balance: 'rcc', unit: 'days' },
-  recuperation: { label: 'Récupération (heures sup.)', balance: 'heuresSupp', unit: 'hours' },
-  absence: { label: 'Absence', balance: null, unit: 'days' },
-};
 const HOURS_PER_DAY = 7;
+
+// Options de "réserve" (pool) selon la catégorie : sur quel solde imputer.
+const CATEGORY_POOLS = {
+  CP: [
+    { value: 'N', label: 'Congés N' },
+    { value: 'N1', label: 'Congés N-1' },
+  ],
+  RCP: [
+    { value: 'RCC', label: 'RCC (jours)' },
+    { value: 'HS', label: 'Heures supplémentaires (heures)' },
+  ],
+};
+
+function categoryByCode(code) {
+  return getData().categories.find((c) => c.code === code) || null;
+}
+
+function categoryLabel(code) {
+  const c = categoryByCode(code);
+  return c ? c.label : code;
+}
+
+// Code affiché sur le calendrier : une demande de CP en attente devient "DCP".
+function displayCode(req) {
+  if (req.category === 'CP' && req.status === 'pending') return 'DCP';
+  return req.category;
+}
+
+// Détermine le solde à débiter pour une demande validée (ou null).
+function deductionFor(r) {
+  if (r.category === 'CP') return { balance: r.pool === 'N1' ? 'congesN1' : 'congesN', amount: r.days };
+  if (r.category === 'RCP') {
+    return r.pool === 'HS'
+      ? { balance: 'heuresSupp', amount: r.hours }
+      : { balance: 'rcc', amount: r.days };
+  }
+  return null; // PMT, AM, ABS : pas de décompte
+}
 
 function publicUser(u) {
   if (!u) return null;
@@ -131,6 +162,21 @@ app.get('/api/groups', authRequired, (req, res) => {
   res.json({ groups: getData().groups });
 });
 
+app.get('/api/categories', authRequired, (req, res) => {
+  res.json({ categories: getData().categories, pools: CATEGORY_POOLS });
+});
+
+// Modifier le libellé / la couleur d'une catégorie (admin)
+app.put('/api/admin/categories/:code', authRequired, adminRequired, (req, res) => {
+  const cat = categoryByCode(req.params.code);
+  if (!cat) return res.status(404).json({ error: 'Catégorie introuvable' });
+  const { label, color } = req.body || {};
+  if (label) cat.label = String(label).trim();
+  if (color && /^#[0-9a-fA-F]{6}$/.test(color)) cat.color = color;
+  save();
+  res.json({ category: cat });
+});
+
 app.get('/api/info-panel', authRequired, (req, res) => {
   res.json({ content: getData().settings.infoPanel });
 });
@@ -171,21 +217,28 @@ app.get('/api/team', authRequired, (req, res) => {
 app.get('/api/calendar', authRequired, (req, res) => {
   const db = getData();
   const groupsById = Object.fromEntries(db.groups.map((g) => [g.id, g]));
+  const catByCode = Object.fromEntries(db.categories.map((c) => [c.code, c]));
   const usersById = Object.fromEntries(db.users.map((u) => [u.id, u]));
+  // On affiche les absences validées ET les demandes en attente (DCP).
   const events = db.requests
-    .filter((r) => r.status === 'approved')
+    .filter((r) => r.status === 'approved' || r.status === 'pending')
     .map((r) => {
       const u = usersById[r.userId];
       const g = u ? groupsById[u.groupId] : null;
+      const code = displayCode(r);
+      const cat = catByCode[code] || catByCode[r.category];
       return {
         id: r.id,
         userId: r.userId,
         userName: u ? `${u.firstName} ${u.lastName}` : 'Inconnu',
         groupId: u ? u.groupId : null,
         groupName: g ? g.name : '—',
-        color: g ? g.color : '#64748b',
-        type: r.type,
-        typeLabel: (LEAVE_TYPES[r.type] || {}).label || r.type,
+        groupColor: g ? g.color : '#64748b',
+        category: r.category,
+        code, // DCP pour une demande de CP en attente
+        categoryLabel: cat ? cat.label : code,
+        categoryColor: cat ? cat.color : '#64748b',
+        status: r.status,
         startDate: r.startDate,
         endDate: r.endDate,
         days: r.days,
@@ -206,8 +259,18 @@ app.get('/api/requests/mine', authRequired, (req, res) => {
 });
 
 app.post('/api/requests', authRequired, (req, res) => {
-  const { type, startDate, endDate, reason } = req.body || {};
-  if (!LEAVE_TYPES[type]) return res.status(400).json({ error: 'Type de demande invalide' });
+  const { category, pool, startDate, endDate, reason } = req.body || {};
+  const cat = categoryByCode(category);
+  if (!cat || !cat.selectable) return res.status(400).json({ error: 'Catégorie de demande invalide' });
+  // Vérifie le "pool" pour les catégories qui en exigent un (CP, RCP).
+  const poolOptions = CATEGORY_POOLS[category];
+  let chosenPool = null;
+  if (poolOptions) {
+    if (!poolOptions.some((p) => p.value === pool)) {
+      return res.status(400).json({ error: 'Précisez sur quel solde imputer la demande' });
+    }
+    chosenPool = pool;
+  }
   if (!validDate(startDate) || !validDate(endDate)) return res.status(400).json({ error: 'Dates invalides' });
   if (endDate < startDate) return res.status(400).json({ error: 'La date de fin précède la date de début' });
 
@@ -217,7 +280,8 @@ app.post('/api/requests', authRequired, (req, res) => {
   const request = {
     id: nextId('request'),
     userId: req.user.id,
-    type,
+    category,
+    pool: chosenPool,
     startDate,
     endDate,
     reason: String(reason || '').trim(),
@@ -322,7 +386,7 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
       return {
         ...r,
         userName: u ? `${u.firstName} ${u.lastName}` : 'Inconnu',
-        typeLabel: (LEAVE_TYPES[r.type] || {}).label || r.type,
+        categoryLabel: categoryLabel(r.category),
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -339,22 +403,17 @@ app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, (req, re
 
   if (decision === 'approved' && r.status !== 'approved') {
     const user = db.users.find((u) => u.id === r.userId);
-    const typeInfo = LEAVE_TYPES[r.type];
-    if (user && typeInfo && typeInfo.balance) {
-      if (typeInfo.unit === 'hours') {
-        user.balances[typeInfo.balance] = Math.round((user.balances[typeInfo.balance] - r.hours) * 100) / 100;
-      } else {
-        user.balances[typeInfo.balance] = Math.round((user.balances[typeInfo.balance] - r.days) * 100) / 100;
-      }
+    const d = deductionFor(r);
+    if (user && d) {
+      user.balances[d.balance] = Math.round((user.balances[d.balance] - d.amount) * 100) / 100;
     }
   }
   // Si on repasse d'approuvé à refusé, on recrédite le solde.
   if (decision === 'rejected' && r.status === 'approved') {
     const user = db.users.find((u) => u.id === r.userId);
-    const typeInfo = LEAVE_TYPES[r.type];
-    if (user && typeInfo && typeInfo.balance) {
-      const amount = typeInfo.unit === 'hours' ? r.hours : r.days;
-      user.balances[typeInfo.balance] = Math.round((user.balances[typeInfo.balance] + amount) * 100) / 100;
+    const d = deductionFor(r);
+    if (user && d) {
+      user.balances[d.balance] = Math.round((user.balances[d.balance] + d.amount) * 100) / 100;
     }
   }
 

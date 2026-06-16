@@ -8,10 +8,13 @@ const State = {
   token: localStorage.getItem('ics_token') || null,
   user: null,
   groups: [],
+  categories: [],
+  catByCode: {},
+  pools: {},
   holidays: {},
   view: 'dashboard',
-  // état du calendrier
-  cal: { mode: 'month', cursor: new Date() },
+  // état du calendrier (colorBy : 'category' ou 'group')
+  cal: { mode: 'month', cursor: new Date(), colorBy: 'category' },
   _holidayYear: null,
 };
 
@@ -32,13 +35,21 @@ function startOfWeekMonday(d) { const x = new Date(d); const day = (x.getDay() +
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function sameDay(a, b) { return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
 
-const LEAVE_TYPES = {
-  conge_n: 'Congé payé N',
-  conge_n1: 'Congé payé N-1',
-  rcc: 'RCC',
-  recuperation: 'Récupération (h. sup.)',
-  absence: 'Absence',
-};
+// Helpers catégories (DCP, CP, RCP, PMT, AM, ABS) — chargées depuis le serveur.
+function catLabel(code) { const c = State.catByCode[code]; return c ? c.label : code; }
+function catColor(code) { const c = State.catByCode[code]; return c ? c.color : '#64748b'; }
+// Couleur d'un événement selon le mode d'affichage choisi.
+function evColor(ev) { return State.cal.colorBy === 'group' ? ev.groupColor : ev.categoryColor; }
+// Libellé du "pool" (solde imputé) d'une demande, ex. " · Congés N-1".
+function poolLabel(r) {
+  if (!r.pool) return '';
+  const o = (State.pools[r.category] || []).find((p) => p.value === r.pool);
+  return o ? ' · ' + o.label : '';
+}
+// Libellé complet d'une demande : catégorie + solde imputé.
+function reqLabel(r) { return catLabel(r.category) + poolLabel(r); }
+// Affiche les heures pour une récupération imputée sur les heures sup.
+function reqHours(r) { return (r.category === 'RCP' && r.pool === 'HS') ? ` (${r.hours}h)` : ''; }
 
 /* ------------------------------ API ------------------------------------- */
 async function api(method, path, body) {
@@ -105,11 +116,15 @@ async function boot() {
 }
 
 async function loadRefs() {
-  const [{ groups }, { holidays }] = await Promise.all([
+  const [{ groups }, cats, { holidays }] = await Promise.all([
     api('GET', '/groups'),
+    api('GET', '/categories'),
     api('GET', '/holidays?year=' + new Date().getFullYear()),
   ]);
   State.groups = groups;
+  State.categories = cats.categories;
+  State.pools = cats.pools || {};
+  State.catByCode = Object.fromEntries(cats.categories.map((c) => [c.code, c]));
   State.holidays = holidays;
   State._holidayYear = new Date().getFullYear();
 }
@@ -351,7 +366,7 @@ async function renderDashboard(main) {
 function renderDashWeekRows(weekAbs, weekDays) {
   // Regroupe par utilisateur
   const byUser = {};
-  weekAbs.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { name: ev.userName, color: ev.color, group: ev.groupName, evs: [] }).evs.push(ev); });
+  weekAbs.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { name: ev.userName, color: ev.groupColor, evs: [] }).evs.push(ev); });
   const rows = Object.values(byUser);
   if (rows.length === 0) {
     return `<div class="wrow"><div class="wcell namecol" style="grid-column:1/-1;color:var(--muted);font-weight:500">
@@ -364,14 +379,10 @@ function renderDashWeekRows(weekAbs, weekDays) {
         const ds = iso(d);
         const hit = r.evs.find((ev) => ev.startDate <= ds && ev.endDate >= ds);
         const isH = State.holidays[ds];
-        if (hit) return `<div class="wcell" style="background:${hit.color}22"><span class="tag" style="background:${hit.color};color:#fff">${shortType(hit.type)}</span></div>`;
+        if (hit) { const c = catColor(hit.code); return `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff">${esc(hit.code)}</span></div>`; }
         return `<div class="wcell ${isH?'holiday':''}"></div>`;
       }).join('')}
     </div>`).join('');
-}
-
-function shortType(t) {
-  return ({ conge_n:'CP N', conge_n1:'CP N-1', rcc:'RCC', recuperation:'Récup', absence:'Abs' })[t] || t;
 }
 
 function statCard(label, value, unit, alt) {
@@ -396,9 +407,13 @@ async function renderCalendar(main) {
 }
 
 function calLegend() {
+  const items = State.cal.colorBy === 'group'
+    ? State.groups.map((g) => `<div class="item"><span class="dot" style="background:${g.color}"></span>${esc(g.name)}</div>`)
+    : State.categories.map((c) => `<div class="item"><span class="dot" style="background:${c.color}"></span><strong>${esc(c.code)}</strong> — ${esc(c.label)}</div>`);
   return `<div class="legend">
-    ${State.groups.map((g) => `<div class="item"><span class="dot" style="background:${g.color}"></span>${esc(g.name)}</div>`).join('')}
+    ${items.join('')}
     <div class="item"><span class="dot" style="background:#f5f3ff;border:1px solid #ddd"></span>Jour férié</div>
+    <div class="item"><span class="tag is-pending" style="background:#94a3b8;color:#fff">code</span> = demande en attente</div>
   </div>`;
 }
 
@@ -418,6 +433,10 @@ function drawCalendar() {
       <button class="btn ghost sm" id="cal-today">Aujourd'hui</button>
       <span class="title">${esc(title)}</span>
       <span style="flex:1"></span>
+      <div class="view-switch" title="Colorer le calendrier par…">
+        <button data-color="category" class="${State.cal.colorBy==='category'?'active':''}">Par catégorie</button>
+        <button data-color="group" class="${State.cal.colorBy==='group'?'active':''}">Par groupe</button>
+      </div>
       <div class="view-switch">
         ${['day','week','month','year'].map((m) => `<button data-mode="${m}" class="${mode===m?'active':''}">${({day:'Jour',week:'Semaine',month:'Mois',year:'Année'})[m]}</button>`).join('')}
       </div>
@@ -429,6 +448,7 @@ function drawCalendar() {
   card.querySelector('#cal-next').onclick = () => moveCal(1);
   card.querySelector('#cal-today').onclick = () => { State.cal.cursor = new Date(); refreshCalForYear(); };
   card.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => { State.cal.mode = b.dataset.mode; drawCalendar(); });
+  card.querySelectorAll('[data-color]').forEach((b) => b.onclick = () => { State.cal.colorBy = b.dataset.color; drawCalendar(); });
 
   const grid = document.getElementById('cal-grid');
   if (mode === 'day') grid.innerHTML = viewDay(cursor);
@@ -467,12 +487,12 @@ function viewDay(cursor) {
   if (evs.length === 0) return banner + `<div class="empty">✅ Aucune absence ce jour. Toute l'équipe est présente.</div>`;
   return banner + `<div class="day-list">` + evs.map((ev) => `
     <div class="day-event">
-      <div class="bar" style="background:${ev.color}"></div>
+      <div class="bar" style="background:${evColor(ev)}"></div>
       <div>
         <strong>${esc(ev.userName)}</strong>
-        <div class="help">${esc(ev.groupName)} • ${esc(ev.typeLabel)}</div>
+        <div class="help">${esc(ev.groupName)} • ${esc(ev.categoryLabel)}${ev.status==='pending'?' — <em>demande en attente</em>':''}</div>
       </div>
-      <span style="margin-left:auto" class="group-chip" style="background:${ev.color}">${esc(LEAVE_TYPES[ev.type]||ev.type)}</span>
+      <span style="margin-left:auto" class="group-chip ${ev.status==='pending'?'is-pending':''}" style="background:${catColor(ev.code)}">${esc(ev.code)}</span>
     </div>`).join('') + `</div>`;
 }
 
@@ -482,7 +502,7 @@ function viewWeek(cursor) {
   const we = addDays(ws, 5);
   const absent = (State._calEvents || []).filter((ev) => ev.startDate <= iso(we) && ev.endDate >= iso(ws));
   const byUser = {};
-  absent.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { name: ev.userName, color: ev.color, evs: [] }).evs.push(ev); });
+  absent.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { name: ev.userName, color: ev.groupColor, evs: [] }).evs.push(ev); });
   const rows = Object.values(byUser);
 
   let html = `<div class="week-grid"><div class="wrow whead"><div class="wcell namecol">Salarié</div>`;
@@ -493,7 +513,7 @@ function viewWeek(cursor) {
     html += `<div class="wrow"><div class="wcell namecol"><span class="dot" style="background:${r.color}"></span> ${esc(r.name)}</div>`;
     days.forEach((d) => {
       const ds = iso(d); const hit = r.evs.find((ev) => ev.startDate <= ds && ev.endDate >= ds); const isH = State.holidays[ds];
-      if (hit) html += `<div class="wcell" style="background:${hit.color}22"><span class="tag" style="background:${hit.color};color:#fff">${shortType(hit.type)}</span></div>`;
+      if (hit) { const c = catColor(hit.code); html += `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff">${esc(hit.code)}</span></div>`; }
       else html += `<div class="wcell ${isH?'holiday':''}"></div>`;
     });
     html += `</div>`;
@@ -526,7 +546,7 @@ function viewMonth(cursor) {
     html += `<div class="${cls}">
       <span class="num">${d.getDate()}</span>
       ${hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : ''}
-      ${evs.slice(0,4).map((ev) => `<span class="ev" style="background:${ev.color}" title="${esc(ev.userName)} — ${esc(ev.typeLabel)}">${esc(ev.userName.split(' ')[0])} · ${shortType(ev.type)}</span>`).join('')}
+      ${evs.slice(0,4).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(ev.userName)} — ${esc(ev.categoryLabel)}${ev.status==='pending'?' (demande)':''}">${esc(ev.userName.split(' ')[0])} · ${esc(ev.code)}</span>`).join('')}
       ${evs.length > 4 ? `<span class="ev" style="background:#64748b">+${evs.length-4} autres</span>` : ''}
     </div>`;
   }
@@ -551,8 +571,8 @@ function viewYear(cursor) {
       const ds = iso(d);
       const evs = eventsOnDay(ds);
       if (evs.length) {
-        const color = evs[0].color;
-        html += `<span class="has-ev" style="background:${color}" title="${evs.length} absence(s) le ${fmtDate(ds)}">${d.getDate()}</span>`;
+        const color = evColor(evs[0]);
+        html += `<span class="has-ev" style="background:${color}" title="${evs.length} absence(s) le ${fmtDate(ds)} : ${esc(evs.map((e)=>e.userName.split(' ')[0]+' '+e.code).join(', '))}">${d.getDate()}</span>`;
       } else {
         const isSun = d.getDay() === 0; const hol = State.holidays[ds];
         html += `<span style="${isSun||hol?'color:#cbd5e1':''}">${d.getDate()}</span>`;
@@ -598,7 +618,7 @@ async function renderMyData(main) {
         ${approved.length === 0 ? `<div class="empty">Aucun congé validé pour le moment.</div>` : `
         <div class="table-wrap"><table>
           <thead><tr><th>Type</th><th>Du</th><th>Au</th><th>Jours</th></tr></thead>
-          <tbody>${approved.map((r) => `<tr><td>${esc(LEAVE_TYPES[r.type]||r.type)}</td><td>${fmtDate(r.startDate)}</td><td>${fmtDate(r.endDate)}</td><td>${r.days}</td></tr>`).join('')}</tbody>
+          <tbody>${approved.map((r) => `<tr><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)}</td><td>${fmtDate(r.endDate)}</td><td>${r.days}</td></tr>`).join('')}</tbody>
         </table></div>`}
       </div>`;
   } catch (e) { document.getElementById('md').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
@@ -634,9 +654,9 @@ function statusTag(s) {
 
 function reqRow(r) {
   return `<tr>
-    <td>${esc(LEAVE_TYPES[r.type]||r.type)}</td>
+    <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
     <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td>
-    <td>${r.days} j${r.type==='recuperation'?` (${r.hours}h)`:''}</td>
+    <td>${r.days} j${reqHours(r)}</td>
     <td>${esc(r.reason||'—')}${r.adminNote?`<div class="help">Note admin : ${esc(r.adminNote)}</div>`:''}</td>
     <td>${statusTag(r.status)}</td>
     <td>${r.status==='pending'?`<button class="btn danger sm" data-cancel="${r.id}">Annuler</button>`:''}</td>
@@ -644,19 +664,19 @@ function reqRow(r) {
 }
 
 function openRequestModal() {
-  const b = State.user.balances;
+  const selectable = State.categories.filter((c) => c.selectable);
   modal({
-    title: 'Nouvelle demande de congé',
+    title: 'Nouvelle demande',
     bodyHTML: `
       <form id="form-req">
-        <label>Type de demande</label>
-        <select name="type" required>
-          <option value="conge_n">Congé payé N (solde : ${b.congesN} j)</option>
-          <option value="conge_n1">Congé payé N-1 (solde : ${b.congesN1} j)</option>
-          <option value="rcc">RCC (solde : ${b.rcc} j)</option>
-          <option value="recuperation">Récupération heures sup. (solde : ${b.heuresSupp} h)</option>
-          <option value="absence">Absence (justifiée)</option>
+        <label>Catégorie</label>
+        <select name="category" required>
+          ${selectable.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}
         </select>
+        <div id="pool-wrap" style="display:none">
+          <label id="pool-label">Imputer sur le solde</label>
+          <select name="pool"></select>
+        </div>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required /></div>
           <div><label>Au</label><input type="date" name="endDate" required /></div>
@@ -670,18 +690,31 @@ function openRequestModal() {
     onMount: (overlay) => {
       const f = overlay.querySelector('#form-req');
       const preview = overlay.querySelector('#days-preview');
+      const poolWrap = overlay.querySelector('#pool-wrap');
+      const b = State.user.balances;
+      const balanceFor = { N: b.congesN + ' j', N1: b.congesN1 + ' j', RCC: b.rcc + ' j', HS: b.heuresSupp + ' h' };
+      const refreshPool = () => {
+        const opts = State.pools[f.category.value];
+        if (opts && opts.length) {
+          poolWrap.style.display = '';
+          f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)} (solde : ${balanceFor[p.value] ?? '—'})</option>`).join('');
+        } else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
+      };
       const update = () => {
         const s = f.startDate.value, e = f.endDate.value;
         if (s && e && e >= s) {
           const n = countWorkingDaysClient(s, e);
-          preview.textContent = n > 0 ? `→ ${n} jour(s) ouvré(s) décompté(s)${f.type.value==='recuperation'?` (${n*7} h)`:''}.` : '→ Aucun jour ouvré sur cette période.';
+          const showHours = f.category.value === 'RCP' && f.pool.value === 'HS';
+          preview.textContent = n > 0 ? `→ ${n} jour(s) ouvré(s)${showHours?` (${n*7} h)`:''} décompté(s).` : '→ Aucun jour ouvré sur cette période.';
         } else preview.textContent = '';
       };
-      f.startDate.onchange = update; f.endDate.onchange = update; f.type.onchange = update;
+      refreshPool();
+      f.category.onchange = () => { refreshPool(); update(); };
+      f.startDate.onchange = update; f.endDate.onchange = update; f.pool.onchange = update;
       overlay.querySelector('#submit-req').onclick = async () => {
         if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
         try {
-          await api('POST', '/requests', { type: f.type.value, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
+          await api('POST', '/requests', { category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
           closeModal(); toast('Demande envoyée à l\'administrateur.', 'ok');
           if (State.view === 'requests') renderRequests(document.getElementById('main'));
         } catch (e) { toast(e.message, 'err'); }
@@ -760,6 +793,7 @@ async function renderAdmin(main) {
       <button data-tab="reqs">Demandes</button>
       <button data-tab="users">Salariés & soldes</button>
       <button data-tab="groups">Groupes</button>
+      <button data-tab="categories">Catégories</button>
     </div>
     <div id="admin-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#admin-tabs');
@@ -780,6 +814,7 @@ async function adminTab(tab) {
     if (tab === 'reqs') return adminReqs(body);
     if (tab === 'users') return adminUsers(body);
     if (tab === 'groups') return adminGroups(body);
+    if (tab === 'categories') return adminCategories(body);
   } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
 
@@ -843,7 +878,7 @@ async function adminReqs(body) {
       <h3>Historique (${others.length})</h3>
       ${others.length===0?`<div class="empty">—</div>`:`<div class="table-wrap"><table>
         <thead><tr><th>Salarié</th><th>Type</th><th>Période</th><th>Jours</th><th>Statut</th></tr></thead>
-        <tbody>${others.map((r)=>`<tr><td>${esc(r.userName)}</td><td>${esc(LEAVE_TYPES[r.type]||r.type)}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td>${statusTag(r.status)}</td></tr>`).join('')}</tbody></table></div>`}
+        <tbody>${others.map((r)=>`<tr><td>${esc(r.userName)}</td><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td>${statusTag(r.status)}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   body.querySelectorAll('[data-decide]').forEach((btn) => btn.onclick = async () => {
     const [id, decision] = btn.dataset.decide.split('|');
@@ -857,9 +892,9 @@ async function adminReqs(body) {
 function adminReqRow(r) {
   return `<tr>
     <td>${esc(r.userName)}</td>
-    <td>${esc(LEAVE_TYPES[r.type]||r.type)}</td>
+    <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
     <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td>
-    <td>${r.days} j${r.type==='recuperation'?` (${r.hours}h)`:''}</td>
+    <td>${r.days} j${reqHours(r)}</td>
     <td>${esc(r.reason||'—')}</td>
     <td style="white-space:nowrap">
       <button class="btn ok sm" data-decide="${r.id}|approved">Valider</button>
@@ -935,6 +970,31 @@ async function adminGroups(body) {
       const { group } = await api('PUT', `/admin/groups/${id}`, { name: document.getElementById('g-name-'+id).value, color: document.getElementById('g-color-'+id).value });
       const idx = State.groups.findIndex((g) => g.id === id); State.groups[idx] = group;
       toast('Groupe mis à jour.', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+async function adminCategories(body) {
+  body.innerHTML = `<div class="card"><h3>Catégories d'absence & couleurs</h3>
+    <p class="help">Reprises de votre planning Excel. Ajustez chaque couleur pour qu'elle corresponde exactement à votre tableau.</p>
+    <div class="table-wrap"><table><thead><tr><th>Code</th><th>Libellé</th><th>Couleur</th><th>Décompte</th><th></th></tr></thead>
+    <tbody>${State.categories.map((c) => {
+      const ded = c.code==='CP' ? 'Congés N / N-1' : c.code==='RCP' ? 'RCC / Heures sup.' : c.code==='DCP' ? 'Demande de CP (en attente)' : 'Aucun (suivi)';
+      return `<tr>
+        <td><span class="group-chip" style="background:${c.color}">${esc(c.code)}</span></td>
+        <td><input value="${esc(c.label)}" id="c-name-${c.code}"></td>
+        <td><input type="color" value="${c.color}" id="c-color-${c.code}" style="width:60px;height:38px;padding:2px"></td>
+        <td class="help">${ded}</td>
+        <td><button class="btn sm" data-save-cat="${c.code}">Enregistrer</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div></div>`;
+  body.querySelectorAll('[data-save-cat]').forEach((btn) => btn.onclick = async () => {
+    const code = btn.dataset.saveCat;
+    try {
+      const { category } = await api('PUT', `/admin/categories/${code}`, { label: document.getElementById('c-name-'+code).value, color: document.getElementById('c-color-'+code).value });
+      const idx = State.categories.findIndex((c) => c.code === code);
+      State.categories[idx] = category; State.catByCode[code] = category;
+      toast('Catégorie mise à jour.', 'ok');
     } catch (e) { toast(e.message, 'err'); }
   });
 }
