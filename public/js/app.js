@@ -176,8 +176,8 @@ function loginForm() {
     <h2>Connexion</h2>
     <p class="sub">Accédez à votre espace personnel.</p>
     <form id="form-login">
-      <label>Email</label>
-      <input name="email" type="email" required autocomplete="email" />
+      <label>Email ou nom de compte</label>
+      <input name="login" type="text" required autocomplete="username" />
       <label>Mot de passe</label>
       <input name="password" type="password" required autocomplete="current-password" />
       <button class="btn full" type="submit">Se connecter</button>
@@ -188,7 +188,7 @@ function bindLogin() {
     e.preventDefault();
     const f = e.target;
     try {
-      const { user, token } = await api('POST', '/login', { email: f.email.value, password: f.password.value });
+      const { user, token } = await api('POST', '/login', { login: f.login.value, password: f.password.value });
       State.token = token; State.user = user; localStorage.setItem('ics_token', token);
       await loadRefs();
       toast('Bienvenue ' + user.firstName + ' !', 'ok');
@@ -607,7 +607,8 @@ async function renderMyData(main) {
         <h3>Profil</h3>
         <div class="table-wrap"><table>
           <tr><th>Nom</th><td>${esc(user.firstName)} ${esc(user.lastName)}</td></tr>
-          <tr><th>Email</th><td>${esc(user.email)}</td></tr>
+          ${user.username?`<tr><th>Nom de compte</th><td>${esc(user.username)}</td></tr>`:''}
+          <tr><th>Email</th><td>${user.email?esc(user.email):'<em>—</em>'}</td></tr>
           <tr><th>Groupe de travail</th><td>${g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Non attribué</em>'}</td></tr>
           <tr><th>Rôle</th><td>${user.role==='admin'?'Administrateur':'Salarié'}</td></tr>
           <tr><th>Statut</th><td><span class="tag approved">Actif</span></td></tr>
@@ -906,50 +907,80 @@ function adminReqRow(r) {
 async function adminUsers(body) {
   const { users } = await api('GET', '/admin/users');
   const active = users.filter((u) => u.status === 'active');
-  body.innerHTML = `<div class="card"><h3>Salariés actifs (${active.length})</h3>
+  body.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
+      <h3 style="margin:0">Salariés actifs (${active.length})</h3>
+      <button class="btn accent" id="new-user">+ Créer un utilisateur</button>
+    </div>
+    <p class="help">Créez un compte de toutes pièces (nom de compte + mot de passe) et configurez toutes ses données.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Salarié</th><th>Groupe</th><th>CP N</th><th>CP N-1</th><th>RCC</th><th>H. sup.</th><th></th></tr></thead>
+      <thead><tr><th>Salarié</th><th>Compte</th><th>Groupe</th><th>CP N</th><th>CP N-1</th><th>RCC</th><th>H. sup.</th><th></th></tr></thead>
       <tbody>${active.map((u) => {
         const g = groupById(u.groupId);
         return `<tr>
           <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${u.role==='admin'?'Administrateur':'Salarié'}</div></td>
+          <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
           <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'<em>—</em>'}</td>
           <td>${u.balances.congesN}</td><td>${u.balances.congesN1}</td><td>${u.balances.rcc}</td><td>${u.balances.heuresSupp}</td>
-          <td><button class="btn ghost sm" data-edit="${u.id}">Modifier</button></td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="${u.id}">Modifier</button> <button class="btn danger sm" data-del="${u.id}">Suppr.</button></td>
         </tr>`;
       }).join('')}</tbody></table></div></div>`;
-  body.querySelectorAll('[data-edit]').forEach((btn) => btn.onclick = () => editUserModal(active.find((u) => u.id === btn.dataset.edit), body));
+  body.querySelector('#new-user').onclick = () => userModal(null, body);
+  body.querySelectorAll('[data-edit]').forEach((btn) => btn.onclick = () => userModal(active.find((u) => u.id === btn.dataset.edit), body));
+  body.querySelectorAll('[data-del]').forEach((btn) => btn.onclick = async () => {
+    const u = active.find((x) => x.id === btn.dataset.del);
+    if (!confirm(`Supprimer définitivement ${u.firstName} ${u.lastName} et ses demandes ?`)) return;
+    try { await api('DELETE', `/admin/users/${u.id}`); toast('Utilisateur supprimé.', 'ok'); adminUsers(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
 }
 
-function editUserModal(u, body) {
+// Modal de création (u = null) ou d'édition complète d'un utilisateur.
+function userModal(u, body) {
+  const isNew = !u;
+  const b = (u && u.balances) || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
   modal({
-    title: `${u.firstName} ${u.lastName}`,
+    title: isNew ? 'Créer un utilisateur' : `Modifier ${u.firstName} ${u.lastName}`,
     bodyHTML: `
       <div class="row">
-        <div><label>Groupe</label><select id="eu-groupId">${groupOptions(u.groupId)}</select></div>
-        <div><label>Rôle</label><select id="eu-role"><option value="employee" ${u.role==='employee'?'selected':''}>Salarié</option><option value="admin" ${u.role==='admin'?'selected':''}>Administrateur</option></select></div>
+        <div><label>Prénom</label><input id="eu-firstName" value="${u?esc(u.firstName):''}"></div>
+        <div><label>Nom</label><input id="eu-lastName" value="${u?esc(u.lastName):''}"></div>
       </div>
       <div class="row">
-        <div><label>Congés N (j)</label><input type="number" step="0.5" id="eu-congesN" value="${u.balances.congesN}"></div>
-        <div><label>Congés N-1 (j)</label><input type="number" step="0.5" id="eu-congesN1" value="${u.balances.congesN1}"></div>
+        <div><label>Nom de compte</label><input id="eu-username" value="${u&&u.username?esc(u.username):''}" autocomplete="off" placeholder="ex. m.dupont"></div>
+        <div><label>Email (facultatif)</label><input id="eu-email" type="email" value="${u&&u.email?esc(u.email):''}" autocomplete="off"></div>
+      </div>
+      <label>${isNew?'Mot de passe':'Nouveau mot de passe (laisser vide pour ne pas changer)'}</label>
+      <input id="eu-password" type="password" autocomplete="new-password" placeholder="6 caractères minimum">
+      <div class="row">
+        <div><label>Groupe</label><select id="eu-groupId">${groupOptions(u?u.groupId:null)}</select></div>
+        <div><label>Rôle</label><select id="eu-role"><option value="employee" ${u&&u.role==='employee'?'selected':''}>Salarié</option><option value="admin" ${u&&u.role==='admin'?'selected':''}>Administrateur</option></select></div>
       </div>
       <div class="row">
-        <div><label>RCC (j)</label><input type="number" step="0.5" id="eu-rcc" value="${u.balances.rcc}"></div>
-        <div><label>Heures sup. dues (h)</label><input type="number" step="0.5" id="eu-heuresSupp" value="${u.balances.heuresSupp}"></div>
+        <div><label>Congés N (j)</label><input type="number" step="0.5" id="eu-congesN" value="${b.congesN}"></div>
+        <div><label>Congés N-1 (j)</label><input type="number" step="0.5" id="eu-congesN1" value="${b.congesN1}"></div>
+      </div>
+      <div class="row">
+        <div><label>RCC (j)</label><input type="number" step="0.5" id="eu-rcc" value="${b.rcc}"></div>
+        <div><label>Heures sup. dues (h)</label><input type="number" step="0.5" id="eu-heuresSupp" value="${b.heuresSupp}"></div>
       </div>`,
-    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn" id="eu-save">Enregistrer</button>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn ${isNew?'accent':''}" id="eu-save">${isNew?'Créer le compte':'Enregistrer'}</button>`,
     onMount: (overlay) => {
+      const val = (id) => overlay.querySelector(id).value;
       overlay.querySelector('#eu-save').onclick = async () => {
         const payload = {
-          groupId: overlay.querySelector('#eu-groupId').value,
-          role: overlay.querySelector('#eu-role').value,
-          congesN: overlay.querySelector('#eu-congesN').value,
-          congesN1: overlay.querySelector('#eu-congesN1').value,
-          rcc: overlay.querySelector('#eu-rcc').value,
-          heuresSupp: overlay.querySelector('#eu-heuresSupp').value,
+          firstName: val('#eu-firstName'), lastName: val('#eu-lastName'),
+          username: val('#eu-username'), email: val('#eu-email'),
+          password: val('#eu-password'),
+          groupId: val('#eu-groupId'), role: val('#eu-role'),
+          congesN: val('#eu-congesN'), congesN1: val('#eu-congesN1'),
+          rcc: val('#eu-rcc'), heuresSupp: val('#eu-heuresSupp'),
         };
-        try { await api('PUT', `/admin/users/${u.id}`, payload); closeModal(); toast('Salarié mis à jour.', 'ok'); adminUsers(body); }
-        catch (e) { toast(e.message, 'err'); }
+        try {
+          if (isNew) { await api('POST', '/admin/users', payload); toast('Compte créé.', 'ok'); }
+          else { await api('PUT', `/admin/users/${u.id}`, payload); toast('Salarié mis à jour.', 'ok'); }
+          closeModal(); adminUsers(body); refreshAdminBadge();
+        } catch (e) { toast(e.message, 'err'); }
       };
     },
   });
@@ -974,9 +1005,14 @@ async function adminGroups(body) {
   });
 }
 
+const CORE_CATS = ['DCP', 'CP', 'RCP'];
 async function adminCategories(body) {
-  body.innerHTML = `<div class="card"><h3>Catégories d'absence & couleurs</h3>
-    <p class="help">Reprises de votre planning Excel. Ajustez chaque couleur pour qu'elle corresponde exactement à votre tableau.</p>
+  body.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
+      <h3 style="margin:0">Motifs d'absence & couleurs</h3>
+      <button class="btn accent" id="new-cat">+ Ajouter un motif</button>
+    </div>
+    <p class="help">Ajustez chaque couleur pour qu'elle corresponde à votre planning. Vous pouvez aussi créer vos propres motifs.</p>
     <div class="table-wrap"><table><thead><tr><th>Code</th><th>Libellé</th><th>Couleur</th><th>Décompte</th><th></th></tr></thead>
     <tbody>${State.categories.map((c) => {
       const ded = c.code==='CP' ? 'Congés N / N-1' : c.code==='RCP' ? 'RCC / Heures sup.' : c.code==='DCP' ? 'Demande de CP (en attente)' : 'Aucun (suivi)';
@@ -985,17 +1021,56 @@ async function adminCategories(body) {
         <td><input value="${esc(c.label)}" id="c-name-${c.code}"></td>
         <td><input type="color" value="${c.color}" id="c-color-${c.code}" style="width:60px;height:38px;padding:2px"></td>
         <td class="help">${ded}</td>
-        <td><button class="btn sm" data-save-cat="${c.code}">Enregistrer</button></td>
+        <td style="white-space:nowrap"><button class="btn sm" data-save-cat="${c.code}">Enregistrer</button>${CORE_CATS.includes(c.code)?'':` <button class="btn danger sm" data-del-cat="${c.code}">Suppr.</button>`}</td>
       </tr>`;
     }).join('')}</tbody></table></div></div>`;
+  body.querySelector('#new-cat').onclick = () => newCategoryModal(body);
   body.querySelectorAll('[data-save-cat]').forEach((btn) => btn.onclick = async () => {
     const code = btn.dataset.saveCat;
     try {
       const { category } = await api('PUT', `/admin/categories/${code}`, { label: document.getElementById('c-name-'+code).value, color: document.getElementById('c-color-'+code).value });
       const idx = State.categories.findIndex((c) => c.code === code);
       State.categories[idx] = category; State.catByCode[code] = category;
-      toast('Catégorie mise à jour.', 'ok');
+      toast('Motif mis à jour.', 'ok');
     } catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-del-cat]').forEach((btn) => btn.onclick = async () => {
+    const code = btn.dataset.delCat;
+    if (!confirm(`Supprimer le motif ${code} ?`)) return;
+    try {
+      await api('DELETE', `/admin/categories/${code}`);
+      State.categories = State.categories.filter((c) => c.code !== code);
+      delete State.catByCode[code];
+      toast('Motif supprimé.', 'ok'); adminCategories(body);
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+function newCategoryModal(body) {
+  modal({
+    title: 'Nouveau motif d\'absence',
+    bodyHTML: `
+      <label>Code court (ex. CSS)</label>
+      <input id="nc-code" maxlength="6" placeholder="Lettres / chiffres" style="text-transform:uppercase">
+      <label>Libellé</label>
+      <input id="nc-label" placeholder="ex. Congés sans solde">
+      <label>Couleur</label>
+      <input type="color" id="nc-color" value="#64748b" style="width:80px;height:40px;padding:2px">
+      <p class="help">Le motif sera proposé dans les demandes et affiché sur le calendrier (sans décompte de solde).</p>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="nc-save">Créer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#nc-save').onclick = async () => {
+        try {
+          const { category } = await api('POST', '/admin/categories', {
+            code: overlay.querySelector('#nc-code').value,
+            label: overlay.querySelector('#nc-label').value,
+            color: overlay.querySelector('#nc-color').value,
+          });
+          State.categories.push(category); State.catByCode[category.code] = category;
+          closeModal(); toast('Motif créé.', 'ok'); adminCategories(body);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    },
   });
 }
 

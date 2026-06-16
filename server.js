@@ -130,6 +130,7 @@ app.post('/api/register', async (req, res) => {
     id: nextId('user'),
     firstName: String(firstName).trim(),
     lastName: String(lastName).trim(),
+    username: null,
     email: normEmail,
     passwordHash,
     // Le tout premier compte créé devient administrateur et est actif.
@@ -151,10 +152,13 @@ app.post('/api/register', async (req, res) => {
 });
 
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body || {};
+  const { email, login, password } = req.body || {};
   const db = getData();
-  const normEmail = String(email || '').trim().toLowerCase();
-  const user = db.users.find((u) => u.email === normEmail);
+  // Accepte l'email OU le nom de compte (username), insensible à la casse.
+  const id = String(login || email || '').trim().toLowerCase();
+  const user = db.users.find(
+    (u) => (u.email && u.email === id) || (u.username && u.username.toLowerCase() === id)
+  );
   if (!user) return res.status(401).json({ error: 'Identifiants incorrects' });
   const ok = await bcrypt.compare(String(password || ''), user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'Identifiants incorrects' });
@@ -179,6 +183,26 @@ app.get('/api/categories', authRequired, (req, res) => {
   res.json({ categories: getData().categories, pools: CATEGORY_POOLS });
 });
 
+// Créer un nouveau motif d'absence (catégorie).
+app.post('/api/admin/categories', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { code, label, color } = req.body || {};
+  const cleanCode = String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!cleanCode) return res.status(400).json({ error: 'Code invalide (lettres/chiffres uniquement)' });
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'Libellé obligatoire' });
+  if (db.categories.some((c) => c.code === cleanCode)) return res.status(409).json({ error: 'Ce code existe déjà' });
+  const cat = {
+    code: cleanCode,
+    label: String(label).trim(),
+    color: /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#64748b',
+    selectable: true,
+    pool: null,
+  };
+  db.categories.push(cat);
+  await save();
+  res.json({ category: cat });
+});
+
 // Modifier le libellé / la couleur d'une catégorie (admin)
 app.put('/api/admin/categories/:code', authRequired, adminRequired, async (req, res) => {
   const cat = categoryByCode(req.params.code);
@@ -188,6 +212,21 @@ app.put('/api/admin/categories/:code', authRequired, adminRequired, async (req, 
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) cat.color = color;
   await save();
   res.json({ category: cat });
+});
+
+// Supprimer un motif (sauf motifs cœur, et s'il n'est pas utilisé).
+const CORE_CATEGORIES = ['DCP', 'CP', 'RCP'];
+app.delete('/api/admin/categories/:code', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const code = req.params.code;
+  if (CORE_CATEGORIES.includes(code)) return res.status(400).json({ error: 'Ce motif est essentiel et ne peut pas être supprimé' });
+  if (!db.categories.some((c) => c.code === code)) return res.status(404).json({ error: 'Catégorie introuvable' });
+  if (db.requests.some((r) => r.category === code)) {
+    return res.status(400).json({ error: 'Ce motif est utilisé par des demandes existantes' });
+  }
+  db.categories = db.categories.filter((c) => c.code !== code);
+  await save();
+  res.json({ ok: true });
 });
 
 app.get('/api/info-panel', authRequired, (req, res) => {
@@ -337,6 +376,52 @@ app.get('/api/admin/users', authRequired, adminRequired, (req, res) => {
   res.json({ users: getData().users.map(publicUser) });
 });
 
+// Vérifie l'unicité de l'email et du nom de compte (hors utilisateur exclu).
+function loginTaken(db, { email, username }, exceptId) {
+  return db.users.some((u) => {
+    if (u.id === exceptId) return false;
+    if (email && u.email && u.email === email) return true;
+    if (username && u.username && u.username.toLowerCase() === username.toLowerCase()) return true;
+    return false;
+  });
+}
+
+// Créer directement un utilisateur (actif) avec toutes ses données.
+app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp } = req.body || {};
+  if (!firstName || !lastName) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
+  const uname = String(username || '').trim();
+  const mail = String(email || '').trim().toLowerCase();
+  if (!uname && !mail) return res.status(400).json({ error: 'Renseignez un nom de compte ou un email' });
+  if (!password || String(password).length < 6) return res.status(400).json({ error: 'Mot de passe de 6 caractères minimum' });
+  if (groupId && !db.groups.some((g) => g.id === groupId)) return res.status(400).json({ error: 'Groupe invalide' });
+  if (loginTaken(db, { email: mail, username: uname })) {
+    return res.status(409).json({ error: 'Ce nom de compte ou cet email est déjà utilisé' });
+  }
+  const user = {
+    id: nextId('user'),
+    firstName: String(firstName).trim(),
+    lastName: String(lastName).trim(),
+    username: uname || null,
+    email: mail || null,
+    passwordHash: await bcrypt.hash(String(password), 10),
+    role: role === 'admin' ? 'admin' : 'employee',
+    status: 'active',
+    groupId: groupId || null,
+    balances: {
+      congesN: Number(congesN) || 0,
+      congesN1: Number(congesN1) || 0,
+      rcc: Number(rcc) || 0,
+      heuresSupp: Number(heuresSupp) || 0,
+    },
+    createdAt: new Date().toISOString(),
+  };
+  db.users.push(user);
+  await save();
+  res.json({ user: publicUser(user) });
+});
+
 // Valider une inscription en attribuant groupe + soldes
 app.post('/api/admin/users/:id/approve', authRequired, adminRequired, async (req, res) => {
   const db = getData();
@@ -368,12 +453,31 @@ app.post('/api/admin/users/:id/reject', authRequired, adminRequired, async (req,
   res.json({ user: publicUser(user) });
 });
 
-// Modifier groupe / soldes / rôle d'un utilisateur actif
+// Modifier toutes les données d'un utilisateur (identité, compte, soldes, rôle).
 app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { groupId, congesN, congesN1, rcc, heuresSupp, role } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role } = req.body || {};
+
+  // Identité et compte
+  if (firstName !== undefined && String(firstName).trim()) user.firstName = String(firstName).trim();
+  if (lastName !== undefined && String(lastName).trim()) user.lastName = String(lastName).trim();
+  if (username !== undefined || email !== undefined) {
+    const uname = username !== undefined ? String(username).trim() : (user.username || '');
+    const mail = email !== undefined ? String(email).trim().toLowerCase() : (user.email || '');
+    if (!uname && !mail) return res.status(400).json({ error: 'Renseignez un nom de compte ou un email' });
+    if (loginTaken(db, { email: mail, username: uname }, user.id)) {
+      return res.status(409).json({ error: 'Ce nom de compte ou cet email est déjà utilisé' });
+    }
+    user.username = uname || null;
+    user.email = mail || null;
+  }
+  if (password) {
+    if (String(password).length < 6) return res.status(400).json({ error: 'Mot de passe de 6 caractères minimum' });
+    user.passwordHash = await bcrypt.hash(String(password), 10);
+  }
+
   if (groupId !== undefined) {
     if (groupId && !db.groups.some((g) => g.id === groupId)) return res.status(400).json({ error: 'Groupe invalide' });
     user.groupId = groupId || null;
@@ -387,6 +491,18 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   if (role === 'admin' || role === 'employee') user.role = role;
   await save();
   res.json({ user: publicUser(user) });
+});
+
+// Supprimer un utilisateur (et ses demandes).
+app.delete('/api/admin/users/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const user = db.users.find((u) => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  if (user.id === req.user.id) return res.status(400).json({ error: 'Vous ne pouvez pas supprimer votre propre compte' });
+  db.users = db.users.filter((u) => u.id !== user.id);
+  db.requests = db.requests.filter((r) => r.userId !== user.id);
+  await save();
+  res.json({ ok: true });
 });
 
 // Toutes les demandes (admin) avec infos utilisateur
