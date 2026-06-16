@@ -40,6 +40,8 @@ function catLabel(code) { const c = State.catByCode[code]; return c ? c.label : 
 function catColor(code) { const c = State.catByCode[code]; return c ? c.color : '#64748b'; }
 // Couleur d'un événement selon le mode d'affichage choisi.
 function evColor(ev) { return State.cal.colorBy === 'group' ? ev.groupColor : ev.categoryColor; }
+function roleLabel(role) { return role === 'admin' ? 'Administrateur' : role === 'responsable' ? 'Responsable' : 'Salarié'; }
+function isStaff() { return State.user.role === 'admin' || State.user.role === 'responsable'; }
 // Libellé du "pool" (solde imputé) d'une demande, ex. " · Congés N-1".
 function poolLabel(r) {
   if (!r.pool) return '';
@@ -272,7 +274,7 @@ function renderApp() {
       </nav>
       <div class="userbox">
         <div class="name">${esc(u.firstName)} ${esc(u.lastName)}</div>
-        <div class="role">${u.role==='admin'?'Administrateur':'Salarié'}</div>
+        <div class="role">${roleLabel(u.role)}</div>
         <button class="btn ghost sm" id="logout" style="color:#fff;border-color:rgba(255,255,255,.3)">Déconnexion</button>
       </div>
     </aside>
@@ -323,8 +325,19 @@ async function renderDashboard(main) {
     State.user = user;
     const b = user.balances;
 
-    const curStart = startOfWeekMonday(today);   // semaine en cours
-    const nextStart = addDays(curStart, 7);      // semaine à venir
+    const curStart = startOfWeekMonday(today);
+    const prevStart = addDays(curStart, -7);   // semaine précédente
+    const next1 = addDays(curStart, 7);        // +1
+    const next2 = addDays(curStart, 14);       // +2
+
+    // Panneau de priorité (administrateur uniquement)
+    let priorityPanel = '';
+    if (State.user.role === 'admin') {
+      try {
+        const { users } = await api('GET', '/admin/users');
+        priorityPanel = priorityPanelHTML(users.filter((u) => u.status === 'active'));
+      } catch (e) {}
+    }
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
@@ -335,22 +348,85 @@ async function renderDashboard(main) {
         ${statCard('RCC', b.rcc, 'jours')}
         ${statCard('Heures sup. dues', b.heuresSupp, 'h', true)}
       </div>
-      ${dashWeekCard('Semaine en cours', curStart, events)}
-      ${dashWeekCard('Semaine à venir', nextStart, events)}`;
+      ${priorityPanel}
+      ${dashWeekCard('Semaine précédente', prevStart, events)}
+      ${dashWeekCard('Semaine en cours', curStart, events, true)}
+      ${dashWeekCard('Semaine à venir (+1)', next1, events)}
+      ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
   } catch (e) {
     document.getElementById('dash-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
 }
 
+// --- Priorité de pose des congés (administrateur) ----------------------------
+// Ordre : HSUP (>25h) > CP N-1 (urgence selon échéance 31 mai) > CP N > RCC.
+function leaveDeadlineInfo() {
+  // Période des CP N-1 : se termine le 31 mai. On calcule les mois restants.
+  const today = new Date();
+  let deadline = new Date(today.getFullYear(), 4, 31); // 31 mai (mois 4)
+  if (today > deadline) deadline = new Date(today.getFullYear() + 1, 4, 31);
+  const monthsLeft = (deadline - today) / (1000 * 60 * 60 * 24 * 30);
+  return { deadline, monthsLeft };
+}
+
+function priorityScore(u) {
+  const b = u.balances || {};
+  const { monthsLeft } = leaveDeadlineInfo();
+  const hsupOver = Math.max(0, (b.heuresSupp || 0) - 25);
+  // Plus l'échéance du 31 mai approche, plus les CP N-1 pèsent.
+  const n1Weight = monthsLeft <= 2 ? 3 : monthsLeft <= 4 ? 2 : 1;
+  const n1Urg = (b.congesN1 || 0) * n1Weight;
+  // Multiplicateurs en paliers pour respecter strictement l'ordre de priorité.
+  return hsupOver * 1e9 + n1Urg * 1e6 + (b.congesN || 0) * 1e3 + (b.rcc || 0);
+}
+
+function priorityReasons(u) {
+  const b = u.balances || {};
+  const { monthsLeft } = leaveDeadlineInfo();
+  const tags = [];
+  if ((b.heuresSupp || 0) > 25) tags.push(`<span class="tag rejected">HSUP ${b.heuresSupp} h (retard +${Math.round((b.heuresSupp-25)*10)/10} h)</span>`);
+  if ((b.congesN1 || 0) > 0) tags.push(`<span class="tag ${monthsLeft<=2?'rejected':'pending'}">CP N-1 : ${b.congesN1} j${monthsLeft<=4?' ⏰ échéance proche':''}</span>`);
+  if ((b.congesN || 0) > 0) tags.push(`<span class="tag pending">CP N : ${b.congesN} j</span>`);
+  if ((b.rcc || 0) > 0) tags.push(`<span class="tag approved">RCC : ${b.rcc} j</span>`);
+  return tags.join(' ');
+}
+
+function priorityPanelHTML(users) {
+  const ranked = users
+    .map((u) => ({ u, score: priorityScore(u) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+  if (ranked.length === 0) return '';
+  const { deadline } = leaveDeadlineInfo();
+  return `
+    <div class="card" style="border-left:5px solid var(--accent)">
+      <h3>🔔 Salariés prioritaires pour poser leurs congés</h3>
+      <p class="help" style="margin-top:-.6rem">Ordre de priorité : heures sup. en retard (&gt; 25 h), puis CP N-1 (échéance ${pad(deadline.getDate())}/${pad(deadline.getMonth()+1)}/${deadline.getFullYear()}), CP N, puis RCC. À planifier en priorité.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>#</th><th>Salarié</th><th>Groupe</th><th>Soldes à écouler</th></tr></thead>
+        <tbody>${ranked.map((x, i) => {
+          const g = groupById(x.u.groupId);
+          const hl = i === 0 ? 'background:#fff7ed' : '';
+          return `<tr style="${hl}">
+            <td><strong>${i+1}</strong></td>
+            <td>${esc(x.u.firstName)} ${esc(x.u.lastName)}</td>
+            <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'—'}</td>
+            <td>${priorityReasons(x.u)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </div>`;
+}
+
 // Carte "qui est absent" pour une semaine donnée (lundi -> samedi).
-function dashWeekCard(title, weekStart, events) {
+function dashWeekCard(title, weekStart, events, isCurrent) {
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
   const weekEnd = addDays(weekStart, 5);
   const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
   const weekAbs = events.filter((ev) => ev.startDate <= iso(weekEnd) && ev.endDate >= iso(weekStart));
   return `
-    <div class="card">
-      <div class="cal-toolbar"><h3 style="margin:0">${esc(title)} — ${label}</h3></div>
+    <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
+      <div class="cal-toolbar"><h3 style="margin:0">${isCurrent?'📍 ':''}${esc(title)} — ${label}</h3></div>
       <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">Qui sera absent ?</p>
       <div class="week-grid">
         <div class="wrow whead">
@@ -395,12 +471,12 @@ function statCard(label, value, unit, alt) {
    CALENDRIER — jour / semaine / mois / année
    ========================================================================= */
 async function renderCalendar(main) {
-  const isAdmin = State.user.role === 'admin';
+  const staff = isStaff();
   main.innerHTML = `<div class="page-head"><div><h1>Calendrier de l'équipe</h1>
     <p>Présences et absences de tous les salariés inscrits.</p></div>
-    ${isAdmin?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}</div>
+    ${staff?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}</div>
     <div class="card" id="cal-card"><div class="empty">Chargement…</div></div>`;
-  if (isAdmin) document.getElementById('cal-add').onclick = () => adminAssignModal();
+  if (staff) document.getElementById('cal-add').onclick = () => adminAssignModal();
   try {
     await ensureHolidays(State.cal.cursor.getFullYear());
     const { events } = await api('GET', '/calendar');
@@ -418,9 +494,11 @@ async function adminAssignModal(prefillDate) {
   team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
   // Tous les motifs sauf DCP (état dérivé d'une demande de CP en attente).
   const cats = State.categories.filter((c) => c.code !== 'DCP');
+  const isResp = State.user.role === 'responsable';
   modal({
     title: 'Attribuer une absence',
     bodyHTML: `
+      ${isResp?`<div class="alert info">En tant que responsable, votre attribution sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:''}
       <form id="form-assign">
         <label>Salarié</label>
         <select name="userId" required>${team.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
@@ -455,8 +533,9 @@ async function adminAssignModal(prefillDate) {
       overlay.querySelector('#assign-save').onclick = async () => {
         if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
         try {
-          await api('POST', '/admin/requests', { userId: f.userId.value, category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
-          closeModal(); toast('Absence attribuée.', 'ok');
+          const r = await api('POST', '/admin/requests', { userId: f.userId.value, category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
+          closeModal();
+          toast(r.pendingValidation ? 'Proposition envoyée à l\'administrateur pour validation.' : 'Absence attribuée.', 'ok');
           if (State.view === 'calendar') renderCalendar(document.getElementById('main'));
         } catch (e) { toast(e.message, 'err'); }
       };
@@ -695,7 +774,7 @@ async function renderMyData(main) {
           ${user.username?`<tr><th>Nom de compte</th><td>${esc(user.username)}</td></tr>`:''}
           <tr><th>Email</th><td>${user.email?esc(user.email):'<em>—</em>'}</td></tr>
           <tr><th>Groupe de travail</th><td>${g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Non attribué</em>'}</td></tr>
-          <tr><th>Rôle</th><td>${user.role==='admin'?'Administrateur':'Salarié'}</td></tr>
+          <tr><th>Rôle</th><td>${roleLabel(user.role)}</td></tr>
           <tr><th>Statut</th><td><span class="tag approved">Actif</span></td></tr>
         </table></div>
       </div>
@@ -830,20 +909,52 @@ function countWorkingDaysClient(s, e) {
 /* =========================================================================
    ÉQUIPE
    ========================================================================= */
+// Statut temporel d'une absence : 'past' (jaune), 'current' (vert), 'future' (bleu).
+function dateStatus(startDate, endDate) {
+  const t = iso(new Date());
+  if (endDate < t) return 'past';
+  if (startDate > t) return 'future';
+  return 'current';
+}
+
+// Pastilles de dates d'absence d'un membre, triées et colorées par statut.
+function memberAbsenceChips(memberId, events) {
+  const evs = events.filter((e) => e.userId === memberId).sort((a, b) => a.startDate.localeCompare(b.startDate));
+  if (!evs.length) return '<span class="help">Aucune absence enregistrée.</span>';
+  return evs.map((e) => {
+    const st = dateStatus(e.startDate, e.endDate);
+    const range = e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
+    return `<span class="date-chip ${st} ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}${e.status==='pending'?' (en attente)':''}">${esc(e.code)} ${range}</span>`;
+  }).join(' ');
+}
+
 async function renderTeam(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>L'équipe</h1><p>Tous les salariés inscrits et leur groupe.</p></div></div><div id="team" class="empty">Chargement…</div>`;
+  main.innerHTML = `<div class="page-head"><div><h1>L'équipe</h1><p>Salariés, groupes et dates de congés / absences.</p></div></div>
+    <div class="legend" style="margin-bottom:1rem">
+      <div class="item"><span class="date-chip past">passées</span></div>
+      <div class="item"><span class="date-chip current">en cours</span></div>
+      <div class="item"><span class="date-chip future">à venir</span></div>
+    </div>
+    <div id="team" class="empty">Chargement…</div>`;
   try {
     const { team } = await api('GET', '/team');
+    const { events } = await api('GET', '/calendar');
     const byGroup = {};
     team.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
     const el = document.getElementById('team'); el.className = '';
-    el.innerHTML = State.groups.map((g) => {
-      const members = byGroup[g.id] || [];
-      return `<div class="card"><h3><span class="group-chip" style="background:${g.color}">${esc(g.name)}</span> &nbsp;${members.length} membre(s)</h3>
-        ${members.length===0?`<div class="empty">Aucun membre.</div>`:`<div class="table-wrap"><table><tbody>
-        ${members.map((m) => `<tr><td><span class="dot" style="background:${g.color}"></span> ${esc(m.firstName)} ${esc(m.lastName)}</td><td style="text-align:right">${m.role==='admin'?'Administrateur':'Salarié'}</td></tr>`).join('')}
-        </tbody></table></div>`}</div>`;
-    }).join('') + (byGroup['none'] ? `<div class="card"><h3>Sans groupe</h3><div class="table-wrap"><table><tbody>${byGroup['none'].map((m)=>`<tr><td>${esc(m.firstName)} ${esc(m.lastName)}</td></tr>`).join('')}</tbody></table></div></div>` : '');
+    const groupCard = (g, members) => `<div class="card">
+      <h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} &nbsp;${members.length} membre(s)</h3>
+      ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => `
+        <div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap">
+            <strong>${g?`<span class="dot" style="background:${g.color}"></span> `:''}${esc(m.firstName)} ${esc(m.lastName)}</strong>
+            <span class="help">${roleLabel(m.role)}</span>
+          </div>
+          <div style="margin-top:.45rem;display:flex;flex-wrap:wrap;gap:.35rem">${memberAbsenceChips(m.id, events)}</div>
+        </div>`).join('')}
+    </div>`;
+    el.innerHTML = State.groups.map((g) => groupCard(g, byGroup[g.id] || [])).join('')
+      + (byGroup['none'] ? groupCard(null, byGroup['none']) : '');
   } catch (e) { document.getElementById('team').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
 
@@ -921,7 +1032,7 @@ async function adminPending(body) {
       <h3>${esc(u.firstName)} ${esc(u.lastName)} <span class="help">${esc(u.email)}</span></h3>
       <div class="row">
         <div><label>Groupe</label><select data-f="groupId" data-u="${u.id}">${groupOptions(null)}</select></div>
-        <div><label>Rôle</label><select data-f="role" data-u="${u.id}"><option value="employee">Salarié</option><option value="admin">Administrateur</option></select></div>
+        <div><label>Rôle</label><select data-f="role" data-u="${u.id}"><option value="employee">Salarié</option><option value="responsable">Responsable</option><option value="admin">Administrateur</option></select></div>
       </div>
       <div class="row">
         <div><label>Congés N (j)</label><input type="number" step="0.5" data-f="congesN" data-u="${u.id}" value="0"></div>
@@ -965,14 +1076,14 @@ async function adminReqs(body) {
     <div class="card">
       <h3>Demandes en attente (${pending.length})</h3>
       ${pending.length===0?`<div class="empty">Aucune demande en attente.</div>`:`<div class="table-wrap"><table>
-        <thead><tr><th>Salarié</th><th>Type</th><th>Période</th><th>Jours</th><th>Motif</th><th>Décision</th></tr></thead>
+        <thead><tr><th>Salarié</th><th>Groupe</th><th>Type</th><th>Période</th><th>Jours</th><th>Motif</th><th>Décision</th></tr></thead>
         <tbody>${pending.map(adminReqRow).join('')}</tbody></table></div>`}
     </div>
     <div class="card">
       <h3>Historique (${others.length})</h3>
       ${others.length===0?`<div class="empty">—</div>`:`<div class="table-wrap"><table>
-        <thead><tr><th>Salarié</th><th>Type</th><th>Période</th><th>Jours</th><th>Statut</th></tr></thead>
-        <tbody>${others.map((r)=>`<tr><td>${esc(r.userName)}</td><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td>${statusTag(r.status)}</td></tr>`).join('')}</tbody></table></div>`}
+        <thead><tr><th>Salarié</th><th>Groupe</th><th>Type</th><th>Période</th><th>Jours</th><th>Statut</th></tr></thead>
+        <tbody>${others.map((r)=>`<tr><td>${esc(r.userName)}</td><td>${groupChip(r)}</td><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td>${statusTag(r.status)}</td></tr>`).join('')}</tbody></table></div>`}
     </div>`;
   body.querySelectorAll('[data-decide]').forEach((btn) => btn.onclick = async () => {
     const [id, decision] = btn.dataset.decide.split('|');
@@ -983,9 +1094,16 @@ async function adminReqs(body) {
   });
 }
 
+function groupChip(r) {
+  return r.groupName && r.groupName !== '—'
+    ? `<span class="group-chip" style="background:${r.groupColor||'#64748b'}">${esc(r.groupName)}</span>`
+    : '<em>—</em>';
+}
+
 function adminReqRow(r) {
   return `<tr>
     <td>${esc(r.userName)}</td>
+    <td>${groupChip(r)}</td>
     <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
     <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td>
     <td>${r.days} j${reqHours(r)}</td>
@@ -1000,31 +1118,89 @@ function adminReqRow(r) {
 async function adminUsers(body) {
   const { users } = await api('GET', '/admin/users');
   const active = users.filter((u) => u.status === 'active');
+  // Regroupe les salariés par groupe pour une lecture claire.
+  const order = State.groups.map((g) => g.id).concat([null]);
+  const byGroup = {};
+  active.forEach((u) => { const k = u.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(u); });
+
+  function userRow(u) {
+    return `<tr>
+      <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${roleLabel(u.role)}</div></td>
+      <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
+      <td>${u.balances.congesN}</td><td>${u.balances.congesN1}</td><td>${u.balances.rcc}</td><td>${u.balances.heuresSupp}</td>
+      <td style="white-space:nowrap">
+        <button class="btn ghost sm" data-decompte="${u.id}">Décompte</button>
+        <button class="btn ghost sm" data-edit="${u.id}">Modifier</button>
+        <button class="btn danger sm" data-del="${u.id}">Suppr.</button>
+      </td>
+    </tr>`;
+  }
+
+  const sections = order.map((gid) => {
+    const list = byGroup[gid || 'none'];
+    if (!list || !list.length) return '';
+    const g = groupById(gid);
+    list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+    const title = g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Sans groupe</em>';
+    return `<h3 style="margin:1.2rem 0 .6rem">${title} <span class="help">${list.length} salarié(s)</span></h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Salarié</th><th>Compte</th><th>CP N</th><th>CP N-1</th><th>RCC</th><th>H. sup.</th><th></th></tr></thead>
+        <tbody>${list.map(userRow).join('')}</tbody></table></div>`;
+  }).join('');
+
   body.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
-      <h3 style="margin:0">Salariés actifs (${active.length})</h3>
+      <h3 style="margin:0">Salariés actifs (${active.length}) — par groupe</h3>
       <button class="btn accent" id="new-user">+ Créer un utilisateur</button>
     </div>
-    <p class="help">Créez un compte de toutes pièces (nom de compte + mot de passe) et configurez toutes ses données.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Salarié</th><th>Compte</th><th>Groupe</th><th>CP N</th><th>CP N-1</th><th>RCC</th><th>H. sup.</th><th></th></tr></thead>
-      <tbody>${active.map((u) => {
-        const g = groupById(u.groupId);
-        return `<tr>
-          <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${u.role==='admin'?'Administrateur':'Salarié'}</div></td>
-          <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
-          <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'<em>—</em>'}</td>
-          <td>${u.balances.congesN}</td><td>${u.balances.congesN1}</td><td>${u.balances.rcc}</td><td>${u.balances.heuresSupp}</td>
-          <td style="white-space:nowrap"><button class="btn ghost sm" data-edit="${u.id}">Modifier</button> <button class="btn danger sm" data-del="${u.id}">Suppr.</button></td>
-        </tr>`;
-      }).join('')}</tbody></table></div></div>`;
+    <p class="help">Créez un compte (nom de compte + mot de passe) et configurez toutes ses données. « Décompte » affiche les jours pris par motif, année par année.</p>
+    ${active.length===0?'<div class="empty">Aucun salarié actif.</div>':sections}
+  </div>`;
+
   body.querySelector('#new-user').onclick = () => userModal(null, body);
   body.querySelectorAll('[data-edit]').forEach((btn) => btn.onclick = () => userModal(active.find((u) => u.id === btn.dataset.edit), body));
+  body.querySelectorAll('[data-decompte]').forEach((btn) => btn.onclick = () => userDecompteModal(active.find((u) => u.id === btn.dataset.decompte)));
   body.querySelectorAll('[data-del]').forEach((btn) => btn.onclick = async () => {
     const u = active.find((x) => x.id === btn.dataset.del);
     if (!confirm(`Supprimer définitivement ${u.firstName} ${u.lastName} et ses demandes ?`)) return;
     try { await api('DELETE', `/admin/users/${u.id}`); toast('Utilisateur supprimé.', 'ok'); adminUsers(body); }
     catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Décompte par motif d'un salarié, filtrable par année (assiduité).
+async function userDecompteModal(u) {
+  let requests = [];
+  try { requests = (await api('GET', '/admin/requests')).requests.filter((r) => r.userId === u.id && r.status === 'approved'); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const years = Array.from(new Set(requests.map((r) => r.startDate.slice(0, 4)))).sort().reverse();
+  const curYear = String(new Date().getFullYear());
+  const defYear = years.includes(curYear) ? curYear : (years[0] || curYear);
+
+  function table(year) {
+    const subset = year === 'all' ? requests : requests.filter((r) => r.startDate.slice(0, 4) === year);
+    const rows = decompteRows(subset);
+    const totalDays = subset.reduce((s, r) => s + r.days, 0);
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>Motif</th><th style="text-align:right">Décompte</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th>Total jours d'absence</th><th style="text-align:right">${totalDays} j</th></tr></tfoot>
+    </table></div>`;
+  }
+
+  modal({
+    title: `Décompte — ${u.firstName} ${u.lastName}`,
+    bodyHTML: `
+      <label>Année</label>
+      <select id="dc-year">
+        <option value="all">Toutes les années</option>
+        ${years.map((y) => `<option value="${y}" ${y===defYear?'selected':''}>${y}</option>`).join('')}
+      </select>
+      <div id="dc-table" style="margin-top:1rem">${table(defYear)}</div>`,
+    footHTML: `<button class="btn" data-close>Fermer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#dc-year').onchange = (e) => { overlay.querySelector('#dc-table').innerHTML = table(e.target.value); };
+    },
   });
 }
 
@@ -1047,7 +1223,7 @@ function userModal(u, body) {
       <input id="eu-password" type="password" autocomplete="new-password" placeholder="6 caractères minimum">
       <div class="row">
         <div><label>Groupe</label><select id="eu-groupId">${groupOptions(u?u.groupId:null)}</select></div>
-        <div><label>Rôle</label><select id="eu-role"><option value="employee" ${u&&u.role==='employee'?'selected':''}>Salarié</option><option value="admin" ${u&&u.role==='admin'?'selected':''}>Administrateur</option></select></div>
+        <div><label>Rôle</label><select id="eu-role"><option value="employee" ${u&&u.role==='employee'?'selected':''}>Salarié</option><option value="responsable" ${u&&u.role==='responsable'?'selected':''}>Responsable</option><option value="admin" ${u&&u.role==='admin'?'selected':''}>Administrateur</option></select></div>
       </div>
       <div class="row">
         <div><label>Congés N (j)</label><input type="number" step="0.5" id="eu-congesN" value="${b.congesN}"></div>
