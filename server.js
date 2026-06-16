@@ -5,7 +5,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-const { getData, save, nextId } = require('./lib/db');
+const db = require('./lib/db');
+const { getData, save, nextId } = db;
 const holidays = require('./lib/holidays');
 
 const app = express();
@@ -14,6 +15,18 @@ const JWT_SECRET = process.env.JWT_SECRET || 'inter-colis-services-dev-secret-ch
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Charge la base avant chaque requête API (indispensable en serverless, où la
+// mémoire n'est pas partagée entre les invocations).
+app.use('/api', async (req, res, next) => {
+  try {
+    await db.load();
+    next();
+  } catch (e) {
+    console.error('Erreur de chargement de la base:', e);
+    res.status(500).json({ error: 'Erreur de stockage des données' });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -127,7 +140,7 @@ app.post('/api/register', async (req, res) => {
     createdAt: new Date().toISOString(),
   };
   db.users.push(user);
-  save();
+  await save();
   res.json({
     user: publicUser(user),
     token: user.status === 'active' ? signToken(user) : null,
@@ -167,13 +180,13 @@ app.get('/api/categories', authRequired, (req, res) => {
 });
 
 // Modifier le libellé / la couleur d'une catégorie (admin)
-app.put('/api/admin/categories/:code', authRequired, adminRequired, (req, res) => {
+app.put('/api/admin/categories/:code', authRequired, adminRequired, async (req, res) => {
   const cat = categoryByCode(req.params.code);
   if (!cat) return res.status(404).json({ error: 'Catégorie introuvable' });
   const { label, color } = req.body || {};
   if (label) cat.label = String(label).trim();
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) cat.color = color;
-  save();
+  await save();
   res.json({ category: cat });
 });
 
@@ -181,11 +194,11 @@ app.get('/api/info-panel', authRequired, (req, res) => {
   res.json({ content: getData().settings.infoPanel });
 });
 
-app.put('/api/info-panel', authRequired, adminRequired, (req, res) => {
+app.put('/api/info-panel', authRequired, adminRequired, async (req, res) => {
   const { content } = req.body || {};
   if (typeof content !== 'string') return res.status(400).json({ error: 'Contenu invalide' });
   getData().settings.infoPanel = content;
-  save();
+  await save();
   res.json({ content });
 });
 
@@ -258,7 +271,7 @@ app.get('/api/requests/mine', authRequired, (req, res) => {
   res.json({ requests: mine });
 });
 
-app.post('/api/requests', authRequired, (req, res) => {
+app.post('/api/requests', authRequired, async (req, res) => {
   const { category, pool, startDate, endDate, reason } = req.body || {};
   const cat = categoryByCode(category);
   if (!cat || !cat.selectable) return res.status(400).json({ error: 'Catégorie de demande invalide' });
@@ -294,18 +307,18 @@ app.post('/api/requests', authRequired, (req, res) => {
     adminNote: '',
   };
   getData().requests.push(request);
-  save();
+  await save();
   res.json({ request });
 });
 
-app.delete('/api/requests/:id', authRequired, (req, res) => {
+app.delete('/api/requests/:id', authRequired, async (req, res) => {
   const db = getData();
   const r = db.requests.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Demande introuvable' });
   if (r.userId !== req.user.id) return res.status(403).json({ error: 'Action non autorisée' });
   if (r.status !== 'pending') return res.status(400).json({ error: 'Seules les demandes en attente peuvent être annulées' });
   db.requests = db.requests.filter((x) => x.id !== r.id);
-  save();
+  await save();
   res.json({ ok: true });
 });
 
@@ -325,7 +338,7 @@ app.get('/api/admin/users', authRequired, adminRequired, (req, res) => {
 });
 
 // Valider une inscription en attribuant groupe + soldes
-app.post('/api/admin/users/:id/approve', authRequired, adminRequired, (req, res) => {
+app.post('/api/admin/users/:id/approve', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
@@ -342,21 +355,21 @@ app.post('/api/admin/users/:id/approve', authRequired, adminRequired, (req, res)
     heuresSupp: Number(heuresSupp) || 0,
   };
   if (role === 'admin' || role === 'employee') user.role = role;
-  save();
+  await save();
   res.json({ user: publicUser(user) });
 });
 
-app.post('/api/admin/users/:id/reject', authRequired, adminRequired, (req, res) => {
+app.post('/api/admin/users/:id/reject', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
   user.status = 'rejected';
-  save();
+  await save();
   res.json({ user: publicUser(user) });
 });
 
 // Modifier groupe / soldes / rôle d'un utilisateur actif
-app.put('/api/admin/users/:id', authRequired, adminRequired, (req, res) => {
+app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
@@ -372,7 +385,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, (req, res) => {
     heuresSupp: heuresSupp !== undefined ? Number(heuresSupp) || 0 : user.balances.heuresSupp,
   };
   if (role === 'admin' || role === 'employee') user.role = role;
-  save();
+  await save();
   res.json({ user: publicUser(user) });
 });
 
@@ -394,7 +407,7 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
 });
 
 // Décision admin sur une demande (validation = déduction du solde)
-app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, (req, res) => {
+app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const r = db.requests.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Demande introuvable' });
@@ -421,19 +434,19 @@ app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, (req, re
   r.adminNote = String(adminNote || '').trim();
   r.decidedAt = new Date().toISOString();
   r.decidedBy = req.user.id;
-  save();
+  await save();
   res.json({ request: r });
 });
 
 // Gestion des groupes (couleurs)
-app.put('/api/admin/groups/:id', authRequired, adminRequired, (req, res) => {
+app.put('/api/admin/groups/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const g = db.groups.find((x) => x.id === req.params.id);
   if (!g) return res.status(404).json({ error: 'Groupe introuvable' });
   const { name, color } = req.body || {};
   if (name) g.name = String(name).trim();
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) g.color = color;
-  save();
+  await save();
   res.json({ group: g });
 });
 
@@ -442,6 +455,13 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`INTER COLIS SERVICES — serveur démarré sur http://localhost:${PORT}`);
-});
+// Démarre un serveur permanent uniquement en exécution directe
+// (node server.js). En serverless (Vercel), le module est seulement importé et
+// l'app est exportée comme gestionnaire de requêtes.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`INTER COLIS SERVICES — serveur démarré sur http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;

@@ -41,7 +41,13 @@ tour et vous validez leurs demandes depuis l'onglet **Administration**.
 ## Stack technique
 
 - **Backend** : Node.js + Express, authentification JWT, mots de passe hachés
-  (bcrypt). Aucune base externe : persistance dans `data/database.json`.
+  (bcrypt). Persistance double :
+  - **Fichier `data/database.json`** en local / sur serveur permanent (Render,
+    Docker) — aucune base externe nécessaire ;
+  - **Redis (Upstash / Vercel KV)** automatiquement utilisé en environnement
+    *serverless* (Vercel) dès que les variables `KV_REST_API_URL` /
+    `KV_REST_API_TOKEN` (ou `UPSTASH_REDIS_REST_*`) sont présentes.
+  - Compatible Vercel via `api/index.js` + `vercel.json`.
 - **Frontend** : application monopage en HTML/CSS/JavaScript natif (aucun build,
   aucune dépendance front).
 

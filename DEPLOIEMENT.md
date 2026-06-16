@@ -7,7 +7,38 @@ installer.
 
 ---
 
-## Option 1 — Render.com (recommandé, gratuit, ~5 minutes)
+## Option 0 — Vercel (si vous y êtes déjà) + base de données gratuite
+
+Vercel fonctionne en mode *serverless* : il faut une base de données externe
+pour conserver les comptes et les congés (sinon l'inscription ne marche pas).
+Le code est déjà adapté ; il reste **2 choses à faire** dans Vercel.
+
+### Étape 1 — Brancher une base Redis gratuite (Upstash), ~2 minutes
+1. Ouvrez votre projet sur **https://vercel.com**.
+2. Onglet **Storage** (en haut) → **Create Database** → choisissez **Upstash
+   for Redis** (gratuit) → **Continue**.
+3. Donnez un nom, validez, puis **connectez la base au projet** quand Vercel
+   le propose (« Connect Project »). Cela ajoute automatiquement les variables
+   d'environnement `KV_REST_API_URL` et `KV_REST_API_TOKEN`.
+
+### Étape 2 — Redéployer
+1. Onglet **Deployments** → sur le dernier déploiement, menu **…** →
+   **Redeploy** (pour qu'il prenne en compte la base et la nouvelle version).
+2. Une fois terminé, ouvrez votre adresse `https://...vercel.app`.
+
+> ⚠️ **Premier réflexe** : créez votre compte via le formulaire d'inscription.
+> **Le tout premier compte créé devient automatiquement l'administrateur.**
+> Faites-le avant de communiquer l'adresse à vos salariés.
+
+L'inscription, la connexion et toutes les données fonctionnent alors
+normalement et sont **conservées durablement** dans Upstash.
+
+> 💡 Vercel ajoute parfois les variables sous le préfixe `UPSTASH_REDIS_REST_*`
+> au lieu de `KV_REST_API_*` : le code reconnaît les deux, rien à changer.
+
+---
+
+## Option 1 — Render.com (gratuit, ~5 minutes)
 
 1. Allez sur **https://render.com** et créez un compte
    (bouton « Get Started » → « Sign in with GitHub » pour aller plus vite).
