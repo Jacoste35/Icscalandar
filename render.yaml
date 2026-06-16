@@ -1,0 +1,22 @@
+# Déploiement sur Render (https://render.com) — hébergement gratuit.
+# Voir DEPLOIEMENT.md pour le guide pas à pas.
+services:
+  - type: web
+    name: inter-colis-services
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true   # secret généré automatiquement et gardé secret
+      - key: NODE_VERSION
+        value: "20"
+    # Disque persistant (recommandé pour conserver les données entre les
+    # redémarrages). Nécessite un plan payant chez Render. En plan gratuit,
+    # commentez ce bloc : les données seront réinitialisées à chaque redéploiement.
+    # disk:
+    #   name: data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1
