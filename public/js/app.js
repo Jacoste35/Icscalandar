@@ -55,6 +55,29 @@ function reqLabel(r) { return catLabel(r.category) + poolLabel(r); }
 // Affiche les heures pour une récupération imputée sur les heures sup.
 function reqHours(r) { return (r.category === 'RCP' || r.category === 'RCC') ? ` (${r.hours}h)` : ''; }
 
+// Ancienneté à partir d'une date d'embauche : { years, months, days } et texte.
+function ancienneteParts(hireDate) {
+  if (!hireDate) return null;
+  const start = parseISO(hireDate); const now = new Date();
+  let y = now.getFullYear() - start.getFullYear();
+  let m = now.getMonth() - start.getMonth();
+  let d = now.getDate() - start.getDate();
+  if (d < 0) { m -= 1; d += new Date(now.getFullYear(), now.getMonth(), 0).getDate(); }
+  if (m < 0) { y -= 1; m += 12; }
+  if (y < 0) return { years: 0, months: 0, days: 0 };
+  return { years: y, months: m, days: d };
+}
+function ancienneteText(hireDate) {
+  const p = ancienneteParts(hireDate);
+  if (!p) return '—';
+  return `${p.years} an${p.years>1?'s':''}, ${p.months} mois, ${p.days} j`;
+}
+// Nombre de retards (RET validés) d'un utilisateur depuis N jours.
+function retardCountSince(requests, sinceDays) {
+  const limit = iso(addDays(new Date(), -sinceDays));
+  return requests.filter((r) => r.category === 'RET' && r.status === 'approved' && r.startDate >= limit).length;
+}
+
 /* ------------------------------ API ------------------------------------- */
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -229,6 +252,8 @@ function registerForm() {
       <p class="help">Généré automatiquement. C'est avec ce nom que vous vous connecterez.</p>
       <label>Téléphone</label>
       <input name="phone" type="tel" autocomplete="tel" placeholder="06 12 34 56 78" />
+      <label>Date d'entrée dans l'entreprise</label>
+      <input name="hireDate" type="date" />
       <label>Email</label>
       <input name="email" type="email" required autocomplete="email" />
       <label>Mot de passe</label>
@@ -251,7 +276,7 @@ function bindRegister() {
     try {
       const r = await api('POST', '/register', {
         firstName: f.firstName.value, lastName: f.lastName.value,
-        email: f.email.value, password: f.password.value, phone: f.phone.value,
+        email: f.email.value, password: f.password.value, phone: f.phone.value, hireDate: f.hireDate.value,
       });
       if (r.token) {
         State.token = r.token; State.user = r.user; localStorage.setItem('ics_token', r.token);
@@ -373,32 +398,61 @@ async function renderDashboard(main) {
     const next1 = addDays(curStart, 7);        // +1
     const next2 = addDays(curStart, 14);       // +2
 
-    // Panneau de priorité (administrateur uniquement)
+    const isAdmin = State.user.role === 'admin';
+    const staff = isStaff();
+    const { team } = await api('GET', '/team').catch(() => ({ team: [] }));
+
+    // Priorité de pose des congés (administrateur uniquement)
     let priorityPanel = '';
-    if (State.user.role === 'admin') {
+    if (isAdmin) {
       try {
         const { users } = await api('GET', '/admin/users');
         priorityPanel = priorityPanelHTML(users.filter((u) => u.status === 'active'));
       } catch (e) {}
     }
 
+    // Demandes en attente non traitées (administrateur)
+    let pendingPanel = '';
+    if (isAdmin) {
+      try {
+        const { requests } = await api('GET', '/admin/requests');
+        pendingPanel = pendingSummaryHTML(requests.filter((r) => r.status === 'pending'));
+      } catch (e) {}
+    }
+
+    // Mes retards (compteurs glissants) + classement (encadrement)
+    const myRetards = events.filter((e) => e.userId === State.user.id && e.category === 'RET' && e.status === 'approved');
+    const retardCards = `<div class="grid cols-4">
+      ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
+      ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
+      ${statCard('Retards (semestre)', retardCountSince(myRetards, 182), 'retard(s)')}
+      ${statCard('Retards (année)', retardCountSince(myRetards, 365), 'retard(s)', true)}
+    </div>`;
+    const classement = staff ? retardRankingHTML(events, team) : '';
+
+    // Alerte conflits de dates dans mon groupe
+    const conflictPanel = conflictAlertHTML(events, team);
+
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
-    let colleaguesPanel = '';
-    try {
-      const { team } = await api('GET', '/team');
-      colleaguesPanel = colleaguesUpcomingHTML(team, events);
-    } catch (e) {}
+    const colleaguesPanel = colleaguesUpcomingHTML(team, events);
+
+    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
     dashBody.innerHTML = `
+      ${anc}
       <div class="grid cols-4">
         ${statCard('Congés N', b.congesN, 'jours')}
         ${statCard('Congés N-1', b.congesN1, 'jours')}
         ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
+      ${retardCards}
+      ${conflictPanel}
+      ${pendingPanel}
       ${priorityPanel}
+      ${classement}
       ${colleaguesPanel}
       ${dashWeekCard('Semaine précédente', prevStart, events, false, true)}
       ${dashWeekCard('Semaine en cours', curStart, events, true)}
@@ -420,25 +474,25 @@ function leaveDeadlineInfo() {
   return { deadline, monthsLeft };
 }
 
+// Alerte CP N-1 : uniquement si > 20 j ET entre le 1er janvier et le 31 mai.
+function cpN1Alert(u) {
+  const m = new Date().getMonth(); // 0 = janvier, 4 = mai
+  const inWindow = m >= 0 && m <= 4;
+  return inWindow && (u.balances && (u.balances.congesN1 || 0) > 20);
+}
 function priorityScore(u) {
   const b = u.balances || {};
-  const { monthsLeft } = leaveDeadlineInfo();
+  // Alertes retenues : heures sup. en retard (>25 h) et CP N-1 (>20 j, jan->mai).
   const hsupOver = Math.max(0, (b.heuresSupp || 0) - 25);
-  // Plus l'échéance du 31 mai approche, plus les CP N-1 pèsent.
-  const n1Weight = monthsLeft <= 2 ? 3 : monthsLeft <= 4 ? 2 : 1;
-  const n1Urg = (b.congesN1 || 0) * n1Weight;
-  // Multiplicateurs en paliers pour respecter strictement l'ordre de priorité.
-  return hsupOver * 1e9 + n1Urg * 1e6 + (b.congesN || 0) * 1e3 + (b.rcc || 0);
+  const n1Urg = cpN1Alert(u) ? (b.congesN1 || 0) : 0;
+  return hsupOver * 1e9 + n1Urg * 1e6;
 }
 
 function priorityReasons(u) {
   const b = u.balances || {};
-  const { monthsLeft } = leaveDeadlineInfo();
   const tags = [];
-  if ((b.heuresSupp || 0) > 25) tags.push(`<span class="tag rejected">HSUP ${b.heuresSupp} h (retard +${Math.round((b.heuresSupp-25)*10)/10} h)</span>`);
-  if ((b.congesN1 || 0) > 0) tags.push(`<span class="tag ${monthsLeft<=2?'rejected':'pending'}">CP N-1 : ${b.congesN1} j${monthsLeft<=4?' ⏰ échéance proche':''}</span>`);
-  if ((b.congesN || 0) > 0) tags.push(`<span class="tag pending">CP N : ${b.congesN} j</span>`);
-  if ((b.rcc || 0) > 0) tags.push(`<span class="tag approved">RCC : ${b.rcc} j</span>`);
+  if ((b.heuresSupp || 0) > 25) tags.push(`<span class="tag rejected">Heures sup. ${b.heuresSupp} h (retard +${Math.round((b.heuresSupp-25)*10)/10} h)</span>`);
+  if (cpN1Alert(u)) tags.push(`<span class="tag rejected">CP N-1 : ${b.congesN1} j ⏰ à solder avant le 31 mai</span>`);
   return tags.join(' ');
 }
 
@@ -451,8 +505,8 @@ function priorityPanelHTML(users) {
   const { deadline } = leaveDeadlineInfo();
   return `
     <div class="card" style="border-left:5px solid var(--accent)">
-      <h3>🔔 Salariés prioritaires pour poser leurs congés</h3>
-      <p class="help" style="margin-top:-.6rem">Ordre de priorité : heures sup. en retard (&gt; 25 h), puis CP N-1 (échéance ${pad(deadline.getDate())}/${pad(deadline.getMonth()+1)}/${deadline.getFullYear()}), CP N, puis RCC. À planifier en priorité.</p>
+      <h3>🔔 Alertes — salariés à faire poser leurs congés</h3>
+      <p class="help" style="margin-top:-.6rem">Alertes : heures sup. en retard (&gt; 25 h) et CP N-1 &gt; 20 j entre le 1er janvier et le 31 mai (échéance ${pad(deadline.getDate())}/${pad(deadline.getMonth()+1)}/${deadline.getFullYear()}).</p>
       <div class="table-wrap"><table>
         <thead><tr><th>#</th><th>Salarié</th><th>Groupe</th><th>Soldes à écouler</th></tr></thead>
         <tbody>${ranked.map((x, i) => {
@@ -467,6 +521,80 @@ function priorityPanelHTML(users) {
         }).join('')}</tbody>
       </table></div>
     </div>`;
+}
+
+// Durée d'attente depuis une date (createdAt) -> "X j Y h".
+function waitingSince(createdAt) {
+  const ms = Date.now() - new Date(createdAt).getTime();
+  const d = Math.floor(ms / 86400000);
+  const h = Math.floor((ms % 86400000) / 3600000);
+  return `${d} j ${h} h`;
+}
+
+// Résumé des demandes en attente de validation (administrateur).
+function pendingSummaryHTML(pending) {
+  if (!pending.length) return `<div class="card" style="border-left:5px solid var(--ok)"><h3 style="margin:0">✅ Aucune demande en attente</h3></div>`;
+  pending.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return `<div class="card" style="border-left:5px solid var(--accent)">
+    <h3>📨 ${pending.length} demande(s) en attente de votre validation</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Salarié</th><th>Groupe</th><th>Motif</th><th>Période</th><th>En attente depuis</th></tr></thead>
+      <tbody>${pending.map((r) => `<tr>
+        <td>${esc(r.userName)}</td><td>${groupChip(r)}</td>
+        <td>${esc(r.category)}</td>
+        <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td>
+        <td><strong>${waitingSince(r.createdAt)}</strong></td>
+      </tr>`).join('')}</tbody></table></div>
+    <button class="btn accent sm" onclick="State.view='admin';renderApp()" style="margin-top:.6rem">Traiter les demandes</button>
+  </div>`;
+}
+
+// Classement des salariés les plus en retard sur l'année (encadrement).
+function retardRankingHTML(events, team) {
+  const year = String(new Date().getFullYear());
+  const counts = {};
+  events.filter((e) => e.category === 'RET' && e.status === 'approved' && e.startDate.slice(0, 4) === year)
+    .forEach((e) => { counts[e.userId] = (counts[e.userId] || 0) + 1; });
+  const ranked = Object.entries(counts).map(([uid, n]) => {
+    const m = team.find((t) => t.id === uid);
+    return { name: m ? `${m.firstName} ${m.lastName}` : 'Inconnu', groupId: m ? m.groupId : null, n };
+  }).sort((a, b) => b.n - a.n);
+  if (!ranked.length) return '';
+  return `<div class="card" style="border-left:5px solid #fb7185">
+    <h3>⏱️ Classement des retards ${year}</h3>
+    <div class="table-wrap"><table><thead><tr><th>#</th><th>Salarié</th><th>Groupe</th><th>Retards</th></tr></thead>
+    <tbody>${ranked.map((x, i) => { const g = groupById(x.groupId); return `<tr style="${i===0?'background:#fff1f2':''}"><td><strong>${i+1}</strong></td><td>${esc(x.name)}</td><td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'—'}</td><td><strong>${x.n}</strong></td></tr>`; }).join('')}</tbody></table></div>
+  </div>`;
+}
+
+// Alerte conflits : deux personnes du même groupe absentes sur une période commune.
+function conflictAlertHTML(events, team) {
+  const groupOf = {}; team.forEach((m) => { groupOf[m.id] = m.groupId; });
+  const groupsToCheck = isStaff() ? State.groups.map((g) => g.id) : [State.user.groupId];
+  const today = iso(new Date());
+  const conflicts = [];
+  for (const gid of groupsToCheck) {
+    if (!gid) continue;
+    const evs = events.filter((e) => groupOf[e.userId] === gid && e.status === 'approved' && e.endDate >= today);
+    for (let i = 0; i < evs.length; i++) for (let j = i + 1; j < evs.length; j++) {
+      const a = evs[i], bb = evs[j];
+      if (a.userId !== bb.userId && a.startDate <= bb.endDate && a.endDate >= bb.startDate) {
+        const s = a.startDate > bb.startDate ? a.startDate : bb.startDate;
+        const e = a.endDate < bb.endDate ? a.endDate : bb.endDate;
+        conflicts.push({ gid, names: [a.userName, bb.userName], s, e });
+      }
+    }
+  }
+  if (!conflicts.length) return '';
+  // Dédoublonne
+  const seen = new Set();
+  const uniq = conflicts.filter((c) => { const k = c.gid + c.names.sort().join() + c.s + c.e; if (seen.has(k)) return false; seen.add(k); return true; });
+  return `<div class="alert warn" style="border-left:5px solid var(--danger)">
+    <strong>⚠️ Conflit(s) de dates dans ${isStaff() ? 'les équipes' : 'votre groupe'} :</strong>
+    <ul style="margin:.4rem 0 0;padding-left:1.1rem">
+      ${uniq.slice(0, 12).map((c) => { const g = groupById(c.gid); return `<li>${g?esc(g.name)+' : ':''}${esc(c.names.join(' & '))} en même temps du ${fmtDate(c.s)} au ${fmtDate(c.e)}</li>`; }).join('')}
+    </ul>
+  </div>`;
 }
 
 // Congés à venir des collègues du même groupe (anti-doublon de semaine).
@@ -588,16 +716,21 @@ async function adminAssignModal(prefillDate, prefillUserId) {
   // Tous les motifs sauf DCP (état dérivé d'une demande de CP en attente).
   const cats = State.categories.filter((c) => c.code !== 'DCP');
   const isResp = State.user.role === 'responsable';
+  const isAdmin = State.user.role === 'admin';
   modal({
     title: 'Saisir une absence pour un salarié',
     bodyHTML: `
-      ${isResp?`<div class="alert info">En tant que responsable, votre saisie sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:`<div class="alert info">En tant qu'administrateur, l'absence sera <strong>inscrite directement au calendrier</strong>.</div>`}
+      ${isResp?`<div class="alert info">En tant que responsable, votre saisie sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:''}
       <form id="form-assign">
         <label>Salarié</label>
         <select name="userId" required>${team.map((m) => `<option value="${m.id}" ${m.id===prefillUserId?'selected':''}>${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
         <label>Motif</label>
         <select name="category" required>${cats.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}</select>
         <div id="pool-wrap" style="display:none"><label>Imputer sur le solde</label><select name="pool"></select></div>
+        <div id="frac-wrap2" style="display:none"><label>Prise du congé (maternité/paternité)</label>
+          <select name="fractionnement"><option value="complet">Complète</option><option value="fractionne">Fractionnée</option></select></div>
+        <label>Remplacé par (facultatif)</label>
+        <select name="replacedById"><option value="">— Personne —</option>${team.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
           <div><label>Au</label><input type="date" name="endDate" required value="${prefillDate||''}"></div>
@@ -605,16 +738,21 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         <p class="help" id="assign-preview"></p>
         <label>Motif / commentaire (facultatif)</label>
         <textarea name="reason" placeholder="Précisez si besoin…"></textarea>
+        ${isAdmin?`<label style="display:flex;align-items:center;gap:.5rem;margin-top:.8rem;font-weight:400;cursor:pointer">
+          <input type="checkbox" name="immediate" checked style="width:auto"> Attribuer directement au calendrier (sinon, décider plus tard : reste en attente)
+        </label>`:''}
       </form>`,
-    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="assign-save">Attribuer</button>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="assign-save">${isAdmin?'Valider':'Envoyer la proposition'}</button>`,
     onMount: (overlay) => {
       const f = overlay.querySelector('#form-assign');
       const poolWrap = overlay.querySelector('#pool-wrap');
+      const fracWrap = overlay.querySelector('#frac-wrap2');
       const preview = overlay.querySelector('#assign-preview');
       const refreshPool = () => {
         const opts = State.pools[f.category.value];
         if (opts && opts.length) { poolWrap.style.display = ''; f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)}</option>`).join(''); }
         else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
+        fracWrap.style.display = f.category.value === 'PMT' ? '' : 'none';
       };
       const update = () => {
         const s = f.startDate.value, e = f.endDate.value;
@@ -626,10 +764,17 @@ async function adminAssignModal(prefillDate, prefillUserId) {
       overlay.querySelector('#assign-save').onclick = async () => {
         if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
         try {
-          const r = await api('POST', '/admin/requests', { userId: f.userId.value, category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
+          const r = await api('POST', '/admin/requests', {
+            userId: f.userId.value, category: f.category.value, pool: f.pool.value || null,
+            startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value,
+            replacedById: f.replacedById.value || null,
+            fractionnement: f.fractionnement ? f.fractionnement.value : null,
+            immediate: f.immediate ? f.immediate.checked : true,
+          });
           closeModal();
-          toast(r.pendingValidation ? 'Proposition envoyée à l\'administrateur pour validation.' : 'Absence attribuée.', 'ok');
+          toast(r.pendingValidation ? 'Saisie enregistrée — en attente de validation.' : 'Absence attribuée au calendrier.', 'ok');
           if (State.view === 'calendar') renderCalendar(document.getElementById('main'));
+          if (State.view === 'absmgmt') renderAbsenceManagement(document.getElementById('main'));
         } catch (e) { toast(e.message, 'err'); }
       };
     },
@@ -774,8 +919,9 @@ function viewDay(cursor) {
     <div class="day-event">
       <div class="bar" style="background:${evColor(ev)}"></div>
       <div>
-        <strong>${esc(ev.userName)}</strong>
-        <div class="help">${esc(ev.groupName)} • ${esc(ev.categoryLabel)}${ev.status==='pending'?' — <em>demande en attente</em>':''}</div>
+        <strong>${esc(ev.userName)} <span class="help" style="font-weight:600">(${esc(ev.groupName)})</span></strong>
+        <div class="help">${esc(ev.categoryLabel)}${ev.fractionnement?` — ${ev.fractionnement==='fractionne'?'fractionné':'complet'}`:''}${ev.status==='pending'?' — <em>demande en attente</em>':''}</div>
+        ${ev.replacedByName?`<div class="help" style="color:var(--brand-2)">↪ remplacé par <strong>${esc(ev.replacedByName)}</strong></div>`:''}
       </div>
       <span style="margin-left:auto" class="group-chip ${ev.status==='pending'?'is-pending':''}" style="background:${catColor(ev.code)}">${esc(ev.code)}</span>
       ${isAdmin?`<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer">✕</button>`:''}
@@ -841,7 +987,7 @@ function viewMonth(cursor) {
     html += `<div class="${cls}" title="${closed ? 'Fermé : ' + esc(closed.label) : (vac ? esc(vac.label) : '')}">
       <span class="num">${d.getDate()}</span>
       ${closed && !out ? `<span class="hol-label" style="color:#b91c1c">🔒 ${esc(closed.label)}</span>` : (hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : (vac && !out ? `<span class="hol-label" style="color:#2563eb">${esc(vac.label)}</span>` : ''))}
-      ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(ev.userName)} — ${esc(ev.categoryLabel)}${ev.status==='pending'?' (demande)':''}">${esc(ev.code)} · ${esc(ev.userName)}</span>`).join('')}
+      ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(ev.userName)} (${esc(ev.groupName)}) — ${esc(ev.categoryLabel)}${ev.status==='pending'?' (demande)':''}">${esc(ev.code)} · ${esc(ev.userName)} (${esc(ev.groupName)})</span>`).join('')}
       ${evs.length > 6 ? `<span class="ev" style="background:#64748b">+${evs.length-6} autres</span>` : ''}
     </div>`;
   }
@@ -942,8 +1088,11 @@ async function renderMyData(main) {
       </div>
       <div class="card">
         <h3>Suivi : maladie, accident, absences</h3>
-        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures.</p>
-        <div class="grid cols-3">${suiviHighlight(approved, ['AM','AT','ANRN'])}</div>
+        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures ; retards en nombre.</p>
+        <div class="grid cols-4">
+          ${suiviHighlight(approved, ['AM','AT','ANRN'])}
+          <div class="stat alt"><div class="value" style="font-size:1.3rem">${approved.filter((r)=>r.category==='RET').length} <span class="unit">retard(s)</span></div><div class="label">Retards (total validés)</div></div>
+        </div>
       </div>
       <div class="card">
         <h3>Décompte par motif (jours et heures pris)</h3>
@@ -1027,6 +1176,14 @@ function openRequestModal() {
           <label id="pool-label">Imputer sur le solde</label>
           <select name="pool"></select>
         </div>
+        <div id="frac-wrap" style="display:none">
+          <label>Prise du congé (maternité / paternité)</label>
+          <select name="fractionnement">
+            <option value="complet">Complète (en une seule fois)</option>
+            <option value="fractionne">Fractionnée (en plusieurs périodes)</option>
+          </select>
+          <p class="help">Le congé paternité (25 j) peut être fractionné en plusieurs périodes selon la loi.</p>
+        </div>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required /></div>
           <div><label>Au</label><input type="date" name="endDate" required /></div>
@@ -1043,12 +1200,14 @@ function openRequestModal() {
       const poolWrap = overlay.querySelector('#pool-wrap');
       const b = State.user.balances;
       const balanceFor = { N: b.congesN + ' j', N1: b.congesN1 + ' j', RCC: b.rcc + ' j', HS: b.heuresSupp + ' h' };
+      const fracWrap = overlay.querySelector('#frac-wrap');
       const refreshPool = () => {
         const opts = State.pools[f.category.value];
         if (opts && opts.length) {
           poolWrap.style.display = '';
           f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)} (solde : ${balanceFor[p.value] ?? '—'})</option>`).join('');
         } else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
+        fracWrap.style.display = f.category.value === 'PMT' ? '' : 'none';
       };
       const hourBal = { RCP: b.heuresSupp, RCC: b.rcc };
       const update = () => {
@@ -1068,7 +1227,7 @@ function openRequestModal() {
       overlay.querySelector('#submit-req').onclick = async () => {
         if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
         try {
-          await api('POST', '/requests', { category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
+          await api('POST', '/requests', { category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value, fractionnement: f.fractionnement ? f.fractionnement.value : null });
           closeModal(); toast('Demande envoyée à l\'administrateur.', 'ok');
           if (State.view === 'requests') renderRequests(document.getElementById('main'));
         } catch (e) {
@@ -1130,8 +1289,27 @@ async function renderTeam(main) {
     const byGroup = {};
     team.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
     const el = document.getElementById('team'); el.className = '';
+    // Mini-calendrier : 12 prochaines semaines, indique les semaines réservées.
+    const teamWeeksMini = (members) => {
+      const memberIds = new Set(members.map((m) => m.id));
+      let ws = startOfWeekMonday(new Date());
+      let html = '<div class="team-weeks">';
+      for (let i = 0; i < 12; i++) {
+        const we = addDays(ws, 5);
+        const taken = events.filter((ev) => memberIds.has(ev.userId) && ev.startDate <= iso(we) && ev.endDate >= iso(ws));
+        const names = [...new Set(taken.map((t) => t.userName.split(' ')[0]))];
+        const cls = taken.length ? 'busy' : 'free';
+        html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}${taken.length?' — '+esc(names.join(', ')):' — libre'}">
+          <div class="tw-date">${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div>
+          <div class="tw-state">${taken.length ? names.length + '👤' : '✓ libre'}</div>
+        </div>`;
+        ws = addDays(ws, 7);
+      }
+      return html + '</div>';
+    };
     const groupCard = (g, members) => `<div class="card">
       <h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} &nbsp;${members.length} membre(s)</h3>
+      ${members.length?`<p class="help" style="margin-top:-.4rem">Disponibilité des 12 prochaines semaines (vert = libre) :</p>${teamWeeksMini(members)}`:''}
       ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => `
         <div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap">
@@ -1162,15 +1340,25 @@ async function renderAbsenceManagement(main) {
   document.getElementById('abs-new').onclick = () => adminAssignModal();
   try {
     const { team } = await api('GET', '/team');
-    team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-    const el = document.getElementById('abs-list'); el.className = 'card';
-    el.innerHTML = `<h3>Salariés</h3><div class="table-wrap"><table>
-      <thead><tr><th>Salarié</th><th>Groupe</th><th></th></tr></thead>
-      <tbody>${team.map((m) => { const g = groupById(m.groupId); return `<tr>
-        <td>${esc(m.lastName)} ${esc(m.firstName)}</td>
-        <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'—'}</td>
-        <td><button class="btn ghost sm" data-abs="${m.id}">Saisir une absence</button></td>
-      </tr>`; }).join('')}</tbody></table></div>`;
+    const el = document.getElementById('abs-list'); el.className = '';
+    // Salariés regroupés par groupe ; responsables et admins à part.
+    const staffMembers = team.filter((m) => m.role !== 'employee');
+    const employees = team.filter((m) => m.role === 'employee');
+    const byGroup = {};
+    employees.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
+    const order = State.groups.map((g) => g.id).concat([null]);
+    const rowBtn = (m) => `<tr><td>${esc(m.lastName)} ${esc(m.firstName)}</td><td><button class="btn ghost sm" data-abs="${m.id}">Saisir une absence</button></td></tr>`;
+    const sections = order.map((gid) => {
+      const list = byGroup[gid || 'none']; if (!list || !list.length) return '';
+      const g = groupById(gid);
+      list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+      return `<div class="card"><h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${list.length}</span></h3>
+        <div class="table-wrap"><table><tbody>${list.map(rowBtn).join('')}</tbody></table></div></div>`;
+    }).join('');
+    staffMembers.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+    const staffSection = staffMembers.length ? `<div class="card" style="border-left:4px solid var(--brand)"><h3>👔 Encadrement (responsables & administration)</h3>
+      <div class="table-wrap"><table><tbody>${staffMembers.map((m) => `<tr><td>${esc(m.lastName)} ${esc(m.firstName)} <span class="help">${roleLabel(m.role)}</span></td><td><button class="btn ghost sm" data-abs="${m.id}">Saisir une absence</button></td></tr>`).join('')}</tbody></table></div></div>` : '';
+    el.innerHTML = sections + staffSection;
     el.querySelectorAll('[data-abs]').forEach((b) => b.onclick = () => adminAssignModal(null, b.dataset.abs));
   } catch (e) { document.getElementById('abs-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
@@ -1195,33 +1383,35 @@ async function renderOrganigramme(main) {
       </div>`;
     };
 
+    const isAdmin = State.user.role === 'admin';
+    // Responsable attaché à chaque équipe opérationnelle.
+    const RESP_OF = { grp_gls: 'grp_resp_gls', grp_ciblex: 'grp_resp_ciblex', grp_fedex: 'grp_resp_fedex' };
     const direction = team.filter((m) => m.role === 'admin');
-    const encadrement = team.filter((m) => m.role !== 'admin' && (m.role === 'responsable' || RESP_GROUPS.includes(m.groupId)));
-    const encIds = new Set(encadrement.map((m) => m.id));
+    const exploitation = team.filter((m) => m.groupId === 'grp_resp_exploitation' || (m.role === 'responsable' && !Object.values(RESP_OF).includes(m.groupId) && m.groupId !== 'grp_resp_exploitation' && !RESP_GROUPS.includes(m.groupId)));
 
-    const opSections = OP_GROUPS.map((gid) => {
+    // Une colonne par équipe : responsable(s) en haut, équipe en dessous.
+    const columns = OP_GROUPS.map((gid) => {
       const g = groupById(gid); if (!g) return '';
-      const members = team.filter((m) => m.groupId === gid && !encIds.has(m.id) && m.role === 'employee');
-      if (!members.length) return '';
-      return `<div class="org-branch">
-        <div class="org-branch-title"><span class="group-chip" style="background:${g.color}">${esc(g.name)}</span></div>
-        <div class="org-row">${members.map(card).join('')}</div>
+      const resps = team.filter((m) => RESP_OF[gid] && m.groupId === RESP_OF[gid]);
+      const members = team.filter((m) => m.groupId === gid && m.role === 'employee');
+      if (!resps.length && !members.length) return '';
+      return `<div class="org-col">
+        <div class="org-col-head" style="background:${g.color}">${esc(g.name)}</div>
+        ${resps.length ? `<div class="org-resp">${resps.map(card).join('')}</div><div class="org-connector"></div>` : ''}
+        <div class="org-members">${members.length ? members.map(card).join('') : '<div class="help" style="text-align:center">—</div>'}</div>
       </div>`;
     }).join('');
 
     const el = document.getElementById('org'); el.className = '';
     el.innerHTML = `
+      ${!isAdmin ? `<div class="alert info">Seuls les emails de la direction sont visibles. Les autres coordonnées sont réservées à l'administration.</div>` : ''}
       <div class="org-level"><div class="org-level-title">Direction</div>
         <div class="org-row">${direction.length ? direction.map(card).join('') : '<div class="empty">—</div>'}</div>
       </div>
+      ${exploitation.length ? `<div class="org-connector"></div><div class="org-level"><div class="org-level-title">Responsable Exploitation</div><div class="org-row">${exploitation.map(card).join('')}</div></div>` : ''}
       <div class="org-connector"></div>
-      <div class="org-level"><div class="org-level-title">Encadrement / Responsables</div>
-        <div class="org-row">${encadrement.length ? encadrement.map(card).join('') : '<div class="empty">Aucun responsable défini.</div>'}</div>
-      </div>
-      <div class="org-connector"></div>
-      <div class="org-level"><div class="org-level-title">Équipes</div>
-        ${opSections || '<div class="empty">Aucune équipe.</div>'}
-      </div>`;
+      <div class="org-level-title" style="text-align:center">Équipes</div>
+      <div class="org-cols">${columns || '<div class="empty">Aucune équipe.</div>'}</div>`;
   } catch (e) { document.getElementById('org').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
 
@@ -1375,8 +1565,8 @@ async function adminReqs(body) {
     list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return `<h4 style="margin:1rem 0 .4rem">${title} <span class="help">${list.length}</span></h4>
       <div class="table-wrap"><table>
-        <thead><tr><th>Salarié</th><th>Type</th><th>Période</th><th>Jours</th><th>Demandé le</th><th>Statut</th></tr></thead>
-        <tbody>${list.map((r)=>`<tr><td>${esc(r.userName)}${parentTag(r)}</td><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td class="help">${fmtDateTime(r.createdAt)}</td><td>${statusTag(r.status)}</td></tr>`).join('')}</tbody></table></div>`;
+        <thead><tr><th>Salarié</th><th>Type</th><th>Période</th><th>Jours</th><th>Demandé le</th><th>Statut</th><th></th></tr></thead>
+        <tbody>${list.map((r)=>`<tr><td>${esc(r.userName)}${parentTag(r)}</td><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td><td>${statusTag(r.status)}</td><td><button class="btn danger sm" data-del-req="${r.id}" title="Supprimer / libérer les dates">🗑️</button></td></tr>`).join('')}</tbody></table></div>`;
   }).join('');
 
   body.innerHTML = `
@@ -1398,6 +1588,11 @@ async function adminReqs(body) {
     try { await api('POST', `/admin/requests/${id}/decide`, { decision, adminNote: note }); toast(decision==='approved'?'Demande validée, solde mis à jour.':'Demande refusée.', 'ok'); refreshAdminBadge(); adminReqs(body); }
     catch (e) { toast(e.message, 'err'); }
   });
+  body.querySelectorAll('[data-del-req]').forEach((btn) => btn.onclick = async () => {
+    if (!confirm('Supprimer cet évènement et libérer les dates ? (le solde est recrédité si la demande était validée)')) return;
+    try { await api('DELETE', `/admin/requests/${btn.dataset.delReq}`); toast('Évènement supprimé, dates libérées.', 'ok'); refreshAdminBadge(); adminReqs(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
 }
 
 function groupChip(r) {
@@ -1414,7 +1609,7 @@ function adminReqRow(r, rank) {
     <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}</td>
     <td>${orderBadge(rank)}</td>
     <td>${r.days} j${reqHours(r)}</td>
-    <td class="help">${fmtDateTime(r.createdAt)}</td>
+    <td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td>
     <td style="white-space:nowrap">
       <button class="btn ok sm" data-decide="${r.id}|approved">Valider</button>
       <button class="btn danger sm" data-decide="${r.id}|rejected">Refuser</button>
@@ -1430,17 +1625,23 @@ async function adminUsers(body) {
   const byGroup = {};
   active.forEach((u) => { const k = u.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(u); });
 
-  const numCell = (u, f) => `<td><input type="number" step="0.5" data-uid="${u.id}" data-bal="${f}" value="${u.balances[f]}" style="width:74px"></td>`;
+  const numCell = (u, f) => `<td><input type="number" step="0.5" data-uid="${u.id}" data-bal="${f}" value="${u.balances[f]}" style="width:72px"></td>`;
   function userRow(u) {
     return `<tr>
-      <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${roleLabel(u.role)}${u.isParent?' • <strong style="color:var(--text)">Parent</strong>':''}</div></td>
+      <td>${esc(u.firstName)} ${esc(u.lastName)}${u.suspended?' <span class="tag rejected">suspendu</span>':''}
+        <div class="help">${roleLabel(u.role)}${u.isParent?' • <strong style="color:var(--text)">Parent</strong>':''}</div>
+        <div class="help">Ancienneté : ${u.hireDate?ancienneteText(u.hireDate):'—'}</div>
+      </td>
       <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
       ${numCell(u,'congesN')}${numCell(u,'congesN1')}${numCell(u,'rcc')}${numCell(u,'heuresSupp')}
-      <td style="white-space:nowrap">
-        <button class="btn ghost sm" data-decompte="${u.id}">Décompte</button>
-        <button class="btn ghost sm" data-edit="${u.id}">Modifier</button>
+      <td><div style="display:flex;flex-wrap:wrap;gap:.3rem">
+        <button class="btn ok sm" data-save-user="${u.id}">💾</button>
+        <button class="btn sm" style="background:#eab308;color:#3b2f00" data-decompte="${u.id}">Voir son décompte</button>
+        <button class="btn sm" data-edit="${u.id}">Modifier son profil</button>
+        <button class="btn sm" style="background:#f97316;color:#fff" data-departure="${u.id}">Départ</button>
+        <button class="btn ghost sm" data-suspend="${u.id}">${u.suspended?'Réactiver':'Suspendre'}</button>
         <button class="btn danger sm" data-del="${u.id}">Suppr.</button>
-      </td>
+      </div></td>
     </tr>`;
   }
 
@@ -1456,42 +1657,75 @@ async function adminUsers(body) {
         <button class="btn ok sm" data-save-group="${key}">💾 Enregistrer ce groupe</button>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Salarié</th><th>Compte</th><th>CP N</th><th>CP N-1</th><th>RCC</th><th>H. sup.</th><th></th></tr></thead>
+        <thead><tr><th>Salarié</th><th>Compte</th><th>CP N</th><th>CP N-1</th><th>RCC (h)</th><th>H. sup.</th><th>Actions</th></tr></thead>
         <tbody>${list.map(userRow).join('')}</tbody></table></div>`;
   }).join('');
 
   body.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
       <h3 style="margin:0">Salariés actifs (${active.length}) — par groupe</h3>
-      <button class="btn accent" id="new-user">+ Créer un utilisateur</button>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <button class="btn ok" id="save-all">💾 Enregistrer toute la page</button>
+        <button class="btn accent" id="new-user">+ Créer un utilisateur</button>
+      </div>
     </div>
-    <p class="help">Modifiez les soldes directement dans le tableau, puis cliquez « Enregistrer ce groupe ». Les CP N s'incrémentent ensuite automatiquement de +2,5 j/mois.</p>
+    <p class="help">Modifiez les soldes dans le tableau, puis enregistrez individuellement, par groupe, ou toute la page. Les CP N s'incrémentent automatiquement de +2,5 j/mois ; le RCC est en heures et remis à 0 chaque trimestre s'il n'est pas posé.</p>
     ${active.length===0?'<div class="empty">Aucun salarié actif.</div>':sections}
   </div>`;
 
+  const saveUser = async (uid) => {
+    const payload = {};
+    body.querySelectorAll(`[data-uid="${uid}"]`).forEach((inp) => { payload[inp.dataset.bal] = inp.value; });
+    await api('PUT', `/admin/users/${uid}`, payload);
+  };
+
   body.querySelector('#new-user').onclick = () => userModal(null, body);
+  body.querySelector('#save-all').onclick = async () => {
+    try { for (const u of active) await saveUser(u.id); toast('Toute la page enregistrée.', 'ok'); adminUsers(body); }
+    catch (e) { toast(e.message, 'err'); }
+  };
   body.querySelectorAll('[data-edit]').forEach((btn) => btn.onclick = () => userModal(active.find((u) => u.id === btn.dataset.edit), body));
   body.querySelectorAll('[data-decompte]').forEach((btn) => btn.onclick = () => userDecompteModal(active.find((u) => u.id === btn.dataset.decompte)));
+  body.querySelectorAll('[data-save-user]').forEach((btn) => btn.onclick = async () => {
+    try { await saveUser(btn.dataset.saveUser); toast('Salarié enregistré.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   body.querySelectorAll('[data-del]').forEach((btn) => btn.onclick = async () => {
     const u = active.find((x) => x.id === btn.dataset.del);
-    if (!confirm(`Supprimer définitivement ${u.firstName} ${u.lastName} et ses demandes ?`)) return;
+    if (!confirm(`⚠️ SUPPRESSION DÉFINITIVE\n\nConfirmez-vous la suppression de ${u.firstName} ${u.lastName} et de toutes ses demandes ? Cette action est irréversible.`)) return;
     try { await api('DELETE', `/admin/users/${u.id}`); toast('Utilisateur supprimé.', 'ok'); adminUsers(body); }
     catch (e) { toast(e.message, 'err'); }
   });
-  // Enregistrement groupe par groupe des soldes saisis dans le tableau.
+  body.querySelectorAll('[data-suspend]').forEach((btn) => btn.onclick = async () => {
+    const u = active.find((x) => x.id === btn.dataset.suspend);
+    const action = u.suspended ? 'réactiver' : 'suspendre';
+    if (!confirm(`Confirmez-vous de ${action} l'accès de ${u.firstName} ${u.lastName} ?`)) return;
+    try { await api('PUT', `/admin/users/${u.id}/suspend`, { suspended: !u.suspended }); toast(`Accès ${u.suspended?'réactivé':'suspendu'}.`, 'ok'); adminUsers(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-departure]').forEach((btn) => btn.onclick = () => departureModal(active.find((u) => u.id === btn.dataset.departure), body));
   body.querySelectorAll('[data-save-group]').forEach((btn) => btn.onclick = async () => {
-    const key = btn.dataset.saveGroup;
-    const list = byGroup[key] || [];
-    btn.disabled = true; btn.textContent = 'Enregistrement…';
-    try {
-      for (const u of list) {
-        const payload = {};
-        body.querySelectorAll(`[data-uid="${u.id}"]`).forEach((inp) => { payload[inp.dataset.bal] = inp.value; });
-        await api('PUT', `/admin/users/${u.id}`, payload);
-      }
-      toast('Soldes du groupe enregistrés.', 'ok');
-      adminUsers(body);
-    } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = '💾 Enregistrer ce groupe'; }
+    const list = byGroup[btn.dataset.saveGroup] || [];
+    try { for (const u of list) await saveUser(u.id); toast('Soldes du groupe enregistrés.', 'ok'); adminUsers(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Popup de confirmation de départ (démission / licenciement).
+function departureModal(u, body) {
+  modal({
+    title: `Départ de ${u.firstName} ${u.lastName}`,
+    bodyHTML: `
+      <p>Confirmez le départ de ce salarié. Toutes ses réservations sur le calendrier seront <strong>supprimées</strong> et son accès <strong>suspendu</strong> (le compte est conservé pour l'historique).</p>
+      <label>Motif du départ</label>
+      <select id="dep-mode"><option value="demission">Démission</option><option value="licenciement">Licenciement</option></select>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn" style="background:#f97316;color:#fff" id="dep-ok">Confirmer le départ</button>`,
+    onMount: (ov) => {
+      ov.querySelector('#dep-ok').onclick = async () => {
+        try { const r = await api('POST', `/admin/users/${u.id}/departure`, { mode: ov.querySelector('#dep-mode').value }); closeModal(); toast(`Départ enregistré, ${r.removed} réservation(s) libérée(s).`, 'ok'); adminUsers(body); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    },
   });
 }
 
@@ -1612,6 +1846,10 @@ function userModal(u, body) {
         <div><label>Téléphone</label><input id="eu-phone" type="tel" value="${u&&u.phone?esc(u.phone):''}" placeholder="06 12 34 56 78"></div>
         <div><label>Parent</label><select id="eu-parent"><option value="">Non</option><option value="1" ${u&&u.isParent?'selected':''}>Oui</option></select></div>
       </div>
+      <div class="row">
+        <div><label>Date d'entrée dans l'entreprise</label><input id="eu-hire" type="date" value="${u&&u.hireDate?esc(u.hireDate):''}"></div>
+        <div></div>
+      </div>
       <label>${isNew?'Mot de passe':'Nouveau mot de passe (laisser vide pour ne pas changer)'}</label>
       <input id="eu-password" type="password" autocomplete="new-password" placeholder="6 caractères minimum">
       <div class="row">
@@ -1632,7 +1870,7 @@ function userModal(u, body) {
       overlay.querySelector('#eu-save').onclick = async () => {
         const payload = {
           firstName: val('#eu-firstName'), lastName: val('#eu-lastName'),
-          username: val('#eu-username'), email: val('#eu-email'), phone: val('#eu-phone'),
+          username: val('#eu-username'), email: val('#eu-email'), phone: val('#eu-phone'), hireDate: val('#eu-hire'),
           isParent: !!val('#eu-parent'),
           password: val('#eu-password'),
           groupId: val('#eu-groupId'), role: val('#eu-role'),
@@ -1697,7 +1935,7 @@ async function adminCategories(body) {
     <p class="help">Ajustez chaque couleur pour qu'elle corresponde à votre planning. Vous pouvez aussi créer vos propres motifs.</p>
     <div class="table-wrap"><table><thead><tr><th>Code</th><th>Libellé</th><th>Couleur</th><th>Décompte</th><th></th></tr></thead>
     <tbody>${State.categories.map((c) => {
-      const ded = c.code==='CP' ? 'Congés N / N-1' : c.code==='RCP' ? 'RCC / Heures sup.' : c.code==='DCP' ? 'Demande de CP (en attente)' : 'Aucun (suivi)';
+      const ded = c.code==='CP' ? 'Congés N / N-1 (jours)' : c.code==='RCP' ? 'Heures supplémentaires (heures)' : c.code==='RCC' ? 'Compteur RCC (heures)' : c.code==='RET' ? 'Compteur de retards (nombre)' : c.code==='DCP' ? 'Demande de CP (en attente)' : 'Aucun (suivi)';
       return `<tr>
         <td><span class="group-chip" style="background:${c.color}">${esc(c.code)}</span></td>
         <td><input value="${esc(c.label)}" id="c-name-${c.code}"></td>
