@@ -133,6 +133,7 @@ function authRequired(req, res, next) {
     const user = getData().users.find((u) => u.id === payload.id);
     if (!user) return res.status(401).json({ error: 'Utilisateur introuvable' });
     if (user.status !== 'active') return res.status(403).json({ error: 'Compte non activé' });
+    if (user.suspended) return res.status(403).json({ error: 'Accès suspendu' });
     req.user = user;
     next();
   } catch (e) {
@@ -186,7 +187,7 @@ function makeUsername(db, firstName, lastName) {
 }
 
 app.post('/api/register', async (req, res) => {
-  const { firstName, lastName, email, password, phone } = req.body || {};
+  const { firstName, lastName, email, password, phone, hireDate } = req.body || {};
   if (!firstName || !lastName || !email || !password) {
     return res.status(400).json({ error: 'Tous les champs sont obligatoires' });
   }
@@ -211,6 +212,8 @@ app.post('/api/register', async (req, res) => {
     phone: String(phone || '').trim() || null,
     passwordHash,
     isParent: false,
+    suspended: false,
+    hireDate: validDate(hireDate) ? hireDate : null,
     // Le tout premier compte créé devient administrateur et est actif.
     role: isFirstUser ? 'admin' : 'employee',
     status: isFirstUser ? 'active' : 'pending',
@@ -246,6 +249,7 @@ app.post('/api/login', async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'Identifiants incorrects' });
   if (user.status === 'pending') return res.status(403).json({ error: 'Compte en attente de validation par l’administrateur' });
   if (user.status === 'rejected') return res.status(403).json({ error: 'Demande d’inscription refusée' });
+  if (user.suspended) return res.status(403).json({ error: 'Accès suspendu. Contactez la direction.' });
   res.json({ user: publicUser(user), token: signToken(user) });
 });
 
@@ -344,21 +348,28 @@ app.get('/api/holidays', authRequired, (req, res) => {
   res.json({ holidays: holidays.holidaysMap(years) });
 });
 
-// Liste des membres (visible de tous les inscrits)
+// Liste des membres (visible de tous les inscrits).
+// Les emails ne sont exposés que pour la direction (admins) à tous ; les autres
+// emails ne sont visibles que par un administrateur (organigramme).
 app.get('/api/team', authRequired, (req, res) => {
   const db = getData();
+  const isAdmin = req.user.role === 'admin';
   const team = db.users
-    .filter((u) => u.status === 'active')
-    .map((u) => ({
-      id: u.id,
-      firstName: u.firstName,
-      lastName: u.lastName,
-      role: u.role,
-      groupId: u.groupId,
-      email: u.email || null,
-      phone: u.phone || null,
-      isParent: Boolean(u.isParent),
-    }));
+    .filter((u) => u.status === 'active' && !u.suspended)
+    .map((u) => {
+      const emailVisible = isAdmin || u.role === 'admin';
+      return {
+        id: u.id,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        role: u.role,
+        groupId: u.groupId,
+        email: emailVisible ? (u.email || null) : null,
+        phone: u.phone || null,
+        isParent: Boolean(u.isParent),
+        hireDate: u.hireDate || null,
+      };
+    });
   res.json({ team });
 });
 
@@ -394,6 +405,8 @@ app.get('/api/calendar', authRequired, (req, res) => {
         startDate: r.startDate,
         endDate: r.endDate,
         days: r.days,
+        replacedByName: r.replacedByName || null,
+        fractionnement: r.fractionnement || null,
       };
     });
   res.json({ events });
@@ -411,7 +424,7 @@ app.get('/api/requests/mine', authRequired, (req, res) => {
 });
 
 app.post('/api/requests', authRequired, async (req, res) => {
-  const { category, pool, startDate, endDate, reason } = req.body || {};
+  const { category, pool, startDate, endDate, reason, fractionnement } = req.body || {};
   const cat = categoryByCode(category);
   if (!cat || !cat.requestable) return res.status(400).json({ error: 'Catégorie de demande invalide' });
   // Vérifie le "pool" pour les catégories qui en exigent un (CP : N ou N-1).
@@ -425,6 +438,18 @@ app.post('/api/requests', authRequired, async (req, res) => {
   }
   if (!validDate(startDate) || !validDate(endDate)) return res.status(400).json({ error: 'Dates invalides' });
   if (endDate < startDate) return res.status(400).json({ error: 'La date de fin précède la date de début' });
+
+  // Éligibilité : impossible de demander si le solde concerné est à zéro.
+  const b = req.user.balances;
+  if (category === 'CP' && chosenPool === 'N1' && (b.congesN1 || 0) <= 0) {
+    return res.status(400).json({ error: 'Solde de congés N-1 à 0 : vous n’êtes pas éligible à cette demande.' });
+  }
+  if (category === 'RCP' && (b.heuresSupp || 0) <= 0) {
+    return res.status(400).json({ error: 'Compteur d’heures supplémentaires à 0 : vous n’êtes pas éligible à une récupération.' });
+  }
+  if (category === 'RCC' && (b.rcc || 0) <= 0) {
+    return res.status(400).json({ error: 'Compteur RCC à 0 : vous n’êtes pas éligible à cette demande.' });
+  }
 
   // Période fermée à la prise de congé (ex. fêtes de fin d'année).
   const closed = closedPeriodOverlap(startDate, endDate);
@@ -463,16 +488,24 @@ app.post('/api/requests', authRequired, async (req, res) => {
     startDate,
     endDate,
     reason: finalReason,
+    fractionnement: category === 'PMT' ? (fractionnement === 'fractionne' ? 'fractionne' : 'complet') : null,
     days,
     hours,
     status: 'pending',
     createdAt: new Date().toISOString(),
+    createdBy: req.user.id,
     decidedAt: null,
     decidedBy: null,
+    replacedById: null,
+    replacedByName: null,
     adminNote: '',
   };
   getData().requests.push(request);
   await save();
+  // Accusé de réception : la demande est en cours d'étude.
+  if (req.user.email) {
+    mail.sendLeaveStatus({ to: req.user.email, firstName: req.user.firstName, status: 'pending', category: cat.label, startDate, endDate });
+  }
   res.json({ request });
 });
 
@@ -515,7 +548,7 @@ function loginTaken(db, { email, username }, exceptId) {
 // Créer directement un utilisateur (actif) avec toutes ses données.
 app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone, hireDate } = req.body || {};
   if (!firstName || !lastName) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
   let uname = String(username || '').trim().toLowerCase();
   const mailAddr = String(email || '').trim().toLowerCase();
@@ -533,6 +566,8 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     username: uname || null,
     email: mailAddr || null,
     phone: String(phone || '').trim() || null,
+    hireDate: validDate(hireDate) ? hireDate : null,
+    suspended: false,
     passwordHash: await bcrypt.hash(String(password), 10),
     isParent: Boolean(isParent),
     role: ROLES.includes(role) ? role : 'employee',
@@ -595,12 +630,13 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate } = req.body || {};
 
   // Identité et compte
   if (firstName !== undefined && String(firstName).trim()) user.firstName = capitalizeName(firstName);
   if (lastName !== undefined && String(lastName).trim()) user.lastName = capitalizeName(lastName);
   if (phone !== undefined) user.phone = String(phone || '').trim() || null;
+  if (hireDate !== undefined) user.hireDate = validDate(hireDate) ? hireDate : null;
   if (username !== undefined || email !== undefined) {
     const uname = username !== undefined ? String(username).trim().toLowerCase() : (user.username || '');
     const mail = email !== undefined ? String(email).trim().toLowerCase() : (user.email || '');
@@ -645,6 +681,39 @@ app.delete('/api/admin/users/:id', authRequired, adminRequired, async (req, res)
   res.json({ ok: true });
 });
 
+// Suspendre / réactiver l'accès d'un salarié.
+app.put('/api/admin/users/:id/suspend', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const user = db.users.find((u) => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  if (user.id === req.user.id) return res.status(400).json({ error: 'Vous ne pouvez pas suspendre votre propre compte' });
+  user.suspended = Boolean((req.body || {}).suspended);
+  await save();
+  res.json({ user: publicUser(user) });
+});
+
+// Départ (démission / licenciement) : libère toutes ses réservations du
+// calendrier et suspend son accès. Le compte est conservé pour l'historique.
+app.post('/api/admin/users/:id/departure', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const user = db.users.find((u) => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  const { mode } = req.body || {}; // 'demission' | 'licenciement'
+  const removed = db.requests.filter((r) => r.userId === user.id).length;
+  db.requests = db.requests.filter((r) => r.userId !== user.id);
+  user.suspended = true;
+  user.departure = { mode: mode === 'licenciement' ? 'licenciement' : 'demission', date: new Date().toISOString() };
+  await save();
+  res.json({ ok: true, removed });
+});
+
+// Auteur d'une demande : "Lui-même" si le salarié, sinon le nom du saisisseur.
+function createdByName(usersById, r) {
+  if (!r.createdBy || r.createdBy === r.userId) return 'Le salarié';
+  const c = usersById[r.createdBy];
+  return c ? `${c.firstName} ${c.lastName}` : 'Encadrement';
+}
+
 // Toutes les demandes (admin) avec infos utilisateur
 app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
   const db = getData();
@@ -664,6 +733,7 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
         groupColor: g ? g.color : '#64748b',
         categoryLabel: categoryLabel(r.category),
         containsHoliday: rangeContainsHoliday(r.startDate, r.endDate),
+        createdByName: createdByName(usersById, r),
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -675,7 +745,7 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
 // - Responsable : la demande est créée EN ATTENTE (l'administrateur tranche).
 app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) => {
   const db = getData();
-  const { userId, category, pool, startDate, endDate, reason } = req.body || {};
+  const { userId, category, pool, startDate, endDate, reason, replacedById, immediate, fractionnement } = req.body || {};
   const user = db.users.find((u) => u.id === userId);
   if (!user) return res.status(404).json({ error: 'Salarié introuvable' });
   const cat = categoryByCode(category);
@@ -693,7 +763,13 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
   const days = holidays.countWorkingDays(startDate, endDate);
   if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
 
+  // Remplaçant éventuel.
+  const replacer = replacedById ? db.users.find((u) => u.id === replacedById) : null;
+
+  // L'administrateur peut choisir d'attribuer directement (validé) ou plus tard
+  // (en attente). Le responsable propose toujours (en attente).
   const isAdmin = req.user.role === 'admin';
+  const approveNow = isAdmin && immediate !== false; // par défaut direct pour l'admin
   const request = {
     id: nextId('request'),
     userId,
@@ -702,23 +778,29 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
     startDate,
     endDate,
     reason: String(reason || '').trim() || cat.label,
+    fractionnement: category === 'PMT' ? (fractionnement === 'fractionne' ? 'fractionne' : 'complet') : null,
     days,
     hours: days * HOURS_PER_DAY,
-    status: isAdmin ? 'approved' : 'pending',
+    status: approveNow ? 'approved' : 'pending',
     createdAt: new Date().toISOString(),
-    decidedAt: isAdmin ? new Date().toISOString() : null,
-    decidedBy: isAdmin ? req.user.id : null,
+    decidedAt: approveNow ? new Date().toISOString() : null,
+    decidedBy: approveNow ? req.user.id : null,
     createdBy: req.user.id,
-    adminNote: isAdmin ? 'Attribué par l’administrateur' : `Proposé par le responsable ${req.user.firstName} ${req.user.lastName}`,
+    replacedById: replacer ? replacer.id : null,
+    replacedByName: replacer ? `${replacer.firstName} ${replacer.lastName}` : null,
+    adminNote: approveNow ? 'Attribué par l’administrateur' : (isAdmin ? 'Saisi par l’administrateur (à valider plus tard)' : `Proposé par le responsable ${req.user.firstName} ${req.user.lastName}`),
   };
-  // Le solde n'est décompté que si la demande est validée (admin).
-  if (isAdmin) {
+  // Le solde n'est décompté que si la demande est validée.
+  if (approveNow) {
     const d = deductionFor(request);
     if (d) user.balances[d.balance] = Math.round((user.balances[d.balance] - d.amount) * 100) / 100;
   }
   db.requests.push(request);
   await save();
-  res.json({ request, pendingValidation: !isAdmin });
+  if (approveNow && user.email) {
+    mail.sendLeaveStatus({ to: user.email, firstName: user.firstName, status: 'approved', category: cat.label, startDate, endDate });
+  }
+  res.json({ request, pendingValidation: !approveNow });
 });
 
 // Supprimer n'importe quelle demande (admin) — recrédite le solde si validée.
@@ -765,6 +847,11 @@ app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (r
   r.decidedAt = new Date().toISOString();
   r.decidedBy = req.user.id;
   await save();
+  // Email de confirmation (accepté / refusé) au salarié.
+  const reqUser = db.users.find((u) => u.id === r.userId);
+  if (reqUser && reqUser.email) {
+    mail.sendLeaveStatus({ to: reqUser.email, firstName: reqUser.firstName, status: decision, category: categoryLabel(r.category), startDate: r.startDate, endDate: r.endDate, note: r.adminNote });
+  }
   res.json({ request: r });
 });
 

@@ -313,3 +313,23 @@ tr:last-child td { border-bottom: 0; }
   .card { box-shadow: none; border: none; margin: 0; padding: 0; }
   #print-area { display: block; }
 }
+
+/* ---------------- Organigramme en colonnes ---------------- */
+.org-cols { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-start; justify-content: center; }
+.org-col { flex: 1 1 200px; max-width: 280px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.org-col-head { color: #fff; font-weight: 800; text-align: center; padding: .55rem; }
+.org-resp { padding: .6rem; background: #f8fafc; }
+.org-members { padding: .6rem; display: flex; flex-direction: column; gap: .5rem; }
+
+/* ---------------- Mini-calendrier équipe ---------------- */
+.team-weeks { display: flex; flex-wrap: wrap; gap: .35rem; margin: .4rem 0 .8rem; }
+.team-week { width: 64px; border-radius: 8px; padding: .35rem; text-align: center; font-size: .72rem; border: 1px solid var(--border); }
+.team-week.free { background: #dcfce7; border-color: #86efac; color: #166534; }
+.team-week.busy { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.team-week .tw-date { font-weight: 700; }
+.team-week .tw-state { margin-top: .15rem; }
+
+@media (max-width: 520px) {
+  .org-col { max-width: 100%; flex-basis: 100%; }
+  .team-week { width: 56px; }
+}
