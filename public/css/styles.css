@@ -1,7 +1,9 @@
 :root {
-  --brand: #0d3b66;
-  --brand-2: #1d6fb8;
-  --accent: #f4a259;
+  /* Palette reprise du logo : bleu marine + rouge */
+  --brand: #14427e;
+  --brand-2: #1f5ea8;
+  --accent: #d4302d;
+  --red: #d4302d;
   --bg: #f1f5f9;
   --surface: #ffffff;
   --text: #0f172a;
@@ -37,7 +39,7 @@ button { font-family: inherit; cursor: pointer; }
   grid-template-columns: 1.1fr 1fr;
 }
 .auth-hero {
-  background: linear-gradient(150deg, var(--brand), var(--brand-2));
+  background: linear-gradient(150deg, var(--red), #7c1a1a 45%, var(--brand) 55%, #0c2c5a);
   color: #fff;
   padding: 3rem;
   display: flex;
@@ -91,7 +93,8 @@ textarea { resize: vertical; min-height: 80px; }
 }
 .btn:hover { background: #0a3257; }
 .btn.full { width: 100%; margin-top: 1.4rem; }
-.btn.accent { background: var(--accent); color: #3b2400; }
+.btn.accent { background: var(--accent); color: #fff; }
+.btn.accent:hover { background: #b3211f; }
 .btn.ok { background: var(--ok); }
 .btn.danger { background: var(--danger); }
 .btn.ghost { background: transparent; color: var(--brand); border: 1px solid var(--border); }
@@ -106,7 +109,9 @@ textarea { resize: vertical; min-height: 80px; }
   background: var(--brand); color: #cdd9e8; display: flex; flex-direction: column;
   position: sticky; top: 0; height: 100vh;
 }
-.sidebar .brand { padding: 1.4rem 1.3rem; font-weight: 800; font-size: 1.2rem; color: #fff; display:flex; align-items:center; gap:.5rem; border-bottom: 1px solid rgba(255,255,255,.1);}
+.sidebar .brand { padding: 1.1rem 1.2rem; font-weight: 800; font-size: 1.1rem; color: #fff; display:flex; align-items:center; gap:.6rem; border-bottom: 1px solid rgba(255,255,255,.12); line-height:1.15;}
+.sidebar .brand .brand-logo { width: 38px; height: 38px; flex: 0 0 38px; border-radius: 8px; background:#fff; padding:2px; }
+.nav-section { padding: .9rem .9rem .3rem; font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8fa6c4; }
 .sidebar nav { flex: 1; padding: .8rem; overflow-y: auto; }
 .sidebar nav button {
   display: flex; align-items: center; gap: .7rem; width: 100%; text-align: left;
@@ -116,7 +121,7 @@ textarea { resize: vertical; min-height: 80px; }
 .sidebar nav button:hover { background: rgba(255,255,255,.08); color: #fff; }
 .sidebar nav button.active { background: var(--brand-2); color: #fff; font-weight: 600; }
 .sidebar nav button .ico { width: 20px; text-align: center; }
-.sidebar nav .badge { margin-left: auto; background: var(--accent); color:#3b2400; border-radius: 999px; padding: 0 .5rem; font-size: .75rem; font-weight: 700;}
+.sidebar nav .badge { margin-left: auto; background: var(--accent); color:#fff; border-radius: 999px; padding: 0 .5rem; font-size: .75rem; font-weight: 700;}
 .sidebar .userbox { padding: 1rem 1.3rem; border-top: 1px solid rgba(255,255,255,.1); font-size: .85rem; }
 .sidebar .userbox .name { color: #fff; font-weight: 600; }
 .sidebar .userbox .role { color: #9fb6cf; font-size: .78rem; text-transform: uppercase; letter-spacing: .5px;}
@@ -182,6 +187,10 @@ tr:last-child td { border-bottom: 0; }
 .month-grid .cell.out { background: #f8fafc; color: #cbd5e1; }
 .month-grid .cell.sunday { background: #fdf6f6; }
 .month-grid .cell.holiday { background: #f5f3ff; }
+.month-grid .cell.school { background: #eff6ff; }
+.month-grid .cell.closed { background: #fef2f2; box-shadow: inset 0 0 0 2px #fecaca; }
+.week-grid .wcell.school { background: #eff6ff; }
+.week-grid .wcell.closed { background: #fef2f2; }
 .month-grid .cell .num { font-weight: 700; font-size: .8rem; }
 .month-grid .cell.today .num { background: var(--brand); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;}
 .month-grid .cell .hol-label { font-size: .62rem; color: #7c3aed; display:block; margin-top:1px;}
@@ -247,3 +256,31 @@ tr:last-child td { border-bottom: 0; }
 .toast.err { background: var(--danger); }
 .toast.info { background: var(--brand-2); }
 @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ---------------- Organigramme ---------------- */
+.org-level { text-align: center; }
+.org-level-title { font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: .6rem; }
+.org-row { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: center; }
+.org-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: .7rem .9rem; min-width: 180px; text-align: center; }
+.org-name { font-weight: 700; }
+.org-role { font-size: .8rem; color: var(--muted); margin-top: .15rem; }
+.org-mail { display: inline-block; margin-top: .35rem; font-size: .8rem; }
+.org-connector { width: 2px; height: 26px; background: var(--border); margin: .2rem auto; }
+.org-branch { margin-top: 1rem; }
+.org-branch-title { margin-bottom: .5rem; }
+
+/* ---------------- Rapport / impression PDF ---------------- */
+.report-head h1 { font-size: 1.3rem; margin: 0 0 .2rem; color: var(--brand); }
+.report-head p { margin: 0 0 1rem; color: var(--muted); font-size: .85rem; }
+.report-table { width: 100%; border-collapse: collapse; margin-bottom: 1.2rem; }
+.report-table th, .report-table td { border: 1px solid #cbd5e1; padding: .4rem .55rem; text-align: left; font-size: .85rem; }
+.report-table thead th { background: #f1f5f9; }
+
+@media print {
+  body { background: #fff; }
+  .sidebar, .page-head, #admin-tabs, #toast-container, .modal-overlay, #exp-print, #exp-month, .help { display: none !important; }
+  .layout { display: block; }
+  .main { padding: 0; max-width: none; }
+  .card { box-shadow: none; border: none; margin: 0; padding: 0; }
+  #print-area { display: block; }
+}

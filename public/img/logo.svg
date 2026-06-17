@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Inter Colis Services">
+  <defs>
+    <linearGradient id="red" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d4302d"/>
+      <stop offset="1" stop-color="#7c1a1a"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f5ea8"/>
+      <stop offset="1" stop-color="#0c2c5a"/>
+    </linearGradient>
+  </defs>
+  <!-- carré arrondi rouge (haut) / bleu (bas) -->
+  <path d="M28 14 H92 a14 14 0 0 1 14 14 V60 H14 V28 a14 14 0 0 1 14-14 Z" fill="url(#red)"/>
+  <path d="M14 60 H106 V92 a14 14 0 0 1-14 14 H28 a14 14 0 0 1-14-14 Z" fill="url(#blue)"/>
+  <!-- silhouette dynamique blanche -->
+  <g fill="#fff">
+    <circle cx="64" cy="34" r="9"/>
+    <path d="M62 44 C58 52 50 56 40 58 C52 60 60 58 66 52 L74 70 C70 84 60 94 48 98 L56 99 C72 95 84 82 86 66 L98 40 C92 50 84 56 74 56 C70 52 66 48 62 44 Z"/>
+  </g>
+  <!-- anneau orbital blanc -->
+  <path d="M104 52 C96 78 70 96 42 92 C22 89 10 76 12 64 C14 55 24 49 38 49 C26 53 20 60 22 67 C25 78 44 86 66 80 C84 75 98 64 104 52 Z" fill="#fff" opacity="0.92"/>
+</svg>
