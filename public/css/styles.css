@@ -333,3 +333,15 @@ tr:last-child td { border-bottom: 0; }
   .org-col { max-width: 100%; flex-basis: 100%; }
   .team-week { width: 56px; }
 }
+
+/* ---------------- Gestion des absences : encadrés ---------------- */
+.person-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: .7rem; }
+.person-box { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .8rem; background: #f8fafc; }
+.person-box .pb-name { font-weight: 700; }
+
+/* Semaine "moi" dans le mini-calendrier d'année */
+.team-week.mine { background: #dbeafe; border-color: #93c5fd; color: #1e40af; }
+
+@media (max-width: 520px) {
+  .person-grid { grid-template-columns: 1fr 1fr; }
+}

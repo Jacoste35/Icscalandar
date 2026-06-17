@@ -78,6 +78,42 @@ function retardCountSince(requests, sinceDays) {
   return requests.filter((r) => r.category === 'RET' && r.status === 'approved' && r.startDate >= limit).length;
 }
 
+// Message philosophique selon le nombre de retards sur l'année (motivation).
+function philoMessageHTML(retardYear) {
+  const pick = (arr) => arr[Math.floor(Date.now() / 86400000) % arr.length];
+  let bg, emoji, msg;
+  if (retardYear === 0) {
+    bg = 'var(--ok)'; emoji = '🌟';
+    msg = pick([
+      "« La ponctualité est la politesse des rois. » Merci pour votre dévouement et votre régularité exemplaire.",
+      "Toujours à l'heure : votre fiabilité est un pilier de l'équipe. Merci pour votre engagement sans faille.",
+      "« Le succès, c'est se lever une fois de plus qu'on est tombé. » Votre constance fait la force du collectif. Bravo !",
+    ]);
+  } else if (retardYear <= 3) {
+    bg = '#eab308'; emoji = '⏳';
+    msg = pick([
+      "« Mieux vaut prévenir que guérir. » Quelques retards seulement : un petit effort et vous visez le sans-faute !",
+      "Chaque minute compte pour l'équipe. Vous êtes sur la bonne voie, gardez le cap !",
+      "« Le temps perdu ne se rattrape jamais. » Anticipez vos trajets, vous y êtes presque.",
+    ]);
+  } else if (retardYear <= 5) {
+    bg = '#f97316'; emoji = '⚠️';
+    msg = pick([
+      "« La discipline est le pont entre les objectifs et les réalisations. » Quelques retards de trop : reprenons de bonnes habitudes ensemble.",
+      "Votre équipe compte sur vous chaque matin. Un effort sur la ponctualité ferait une vraie différence.",
+      "« Qui veut voyager loin ménage sa monture… et part à l'heure. » Anticipons davantage les départs.",
+    ]);
+  } else {
+    bg = 'var(--danger)'; emoji = '🚨';
+    msg = pick([
+      "« On ne récolte que ce que l'on sème. » Le nombre de retards devient préoccupant : un vrai changement d'habitude est nécessaire.",
+      "La ponctualité est une marque de respect envers vos collègues. Reprenons ensemble le contrôle de vos horaires.",
+      "« Demain est aujourd'hui ce qu'aujourd'hui était hier. » Agissons dès maintenant pour inverser la tendance.",
+    ]);
+  }
+  return `<div class="card" style="border-left:5px solid ${bg}"><h3 style="margin:0">${emoji} Ponctualité</h3><p style="margin:.4rem 0 0">${msg}</p>${retardYear>0?`<p class="help" style="margin:.3rem 0 0">${retardYear} retard(s) enregistré(s) sur l'année.</p>`:''}</div>`;
+}
+
 /* ------------------------------ API ------------------------------------- */
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -262,21 +298,35 @@ function registerForm() {
       <button class="btn full accent" type="submit">Envoyer ma demande</button>
     </form>`;
 }
-function clientSlug(s) {
-  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '');
+function clientSlug(s) {  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '');
+}
+// Validation des formats (email + téléphone français/international).
+function isValidEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(s || '').trim()); }
+function isValidPhone(s) {
+  const v = String(s || '').replace(/[\s.\-]/g, '');
+  return v === '' || /^(?:\+?\d{1,3})?0?\d{9,10}$/.test(v);
+}
+// Normalise un numéro FR en "06 12 34 56 78" si possible.
+function formatPhone(s) {
+  const v = String(s || '').replace(/[\s.\-]/g, '');
+  if (/^0\d{9}$/.test(v)) return v.replace(/(\d{2})(?=\d)/g, '$1 ').trim();
+  return String(s || '').trim();
 }
 function bindRegister() {
   const f = document.getElementById('form-register');
   const sync = () => { f.username.value = `${clientSlug(f.firstName.value)}.${clientSlug(f.lastName.value)}`.replace(/^\.|\.$/g, ''); };
   f.firstName.addEventListener('input', sync);
   f.lastName.addEventListener('input', sync);
+  f.phone.addEventListener('blur', () => { f.phone.value = formatPhone(f.phone.value); });
   document.getElementById('form-register').onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
+    if (!isValidEmail(f.email.value)) { toast('Adresse email invalide.', 'err'); return; }
+    if (!isValidPhone(f.phone.value)) { toast('Numéro de téléphone invalide.', 'err'); return; }
     try {
       const r = await api('POST', '/register', {
         firstName: f.firstName.value, lastName: f.lastName.value,
-        email: f.email.value, password: f.password.value, phone: f.phone.value, hireDate: f.hireDate.value,
+        email: f.email.value, password: f.password.value, phone: formatPhone(f.phone.value), hireDate: f.hireDate.value,
       });
       if (r.token) {
         State.token = r.token; State.user = r.user; localStorage.setItem('ics_token', r.token);
@@ -299,13 +349,13 @@ function navSections() {
   const sections = [
     { title: '', items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
     { title: 'Planning', items: [
-      { id: 'calendar', icon: '📅', label: 'Calendrier' },
-      { id: 'team', icon: '👥', label: 'Équipe' },
+      { id: 'calendar', icon: '📅', label: 'Mon Planning' },
+      { id: 'team', icon: '👥', label: 'Mon équipe' },
       { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
     ] },
     { title: 'Mon espace', items: [
-      { id: 'mydata', icon: '👤', label: 'Mes données' },
-      { id: 'requests', icon: '📝', label: 'Mes demandes' },
+      { id: 'mydata', icon: '👤', label: 'Mon Profil' },
+      { id: 'requests', icon: '📝', label: 'Mes événements' },
       ...(isStaff() ? [{ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' }] : []),
     ] },
   ];
@@ -429,6 +479,7 @@ async function renderDashboard(main) {
       ${statCard('Retards (année)', retardCountSince(myRetards, 365), 'retard(s)', true)}
     </div>`;
     const classement = staff ? retardRankingHTML(events, team) : '';
+    const philo = philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Alerte conflits de dates dans mon groupe
     const conflictPanel = conflictAlertHTML(events, team);
@@ -449,6 +500,7 @@ async function renderDashboard(main) {
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
       ${retardCards}
+      ${philo}
       ${conflictPanel}
       ${pendingPanel}
       ${priorityPanel}
@@ -663,17 +715,19 @@ function renderDashWeekRows(weekAbs, weekDays) {
     return `<div class="wrow"><div class="wcell namecol" style="grid-column:1/-1;color:var(--muted);font-weight:500">
       ✅ Personne n'est absent sur cette semaine. Toute l'équipe est présente !</div></div>`;
   }
-  return rows.map((r) => `
+  return rows.map((r) => {
+    const repl = r.evs.map((ev) => ev.replacedByName).filter(Boolean)[0];
+    return `
     <div class="wrow">
-      <div class="wcell namecol"><span class="dot" style="background:${r.color}"></span> ${esc(r.name)}</div>
+      <div class="wcell namecol"><div><span class="dot" style="background:${r.color}"></span> ${esc(r.name)}</div>${repl?`<div class="help" style="color:var(--brand-2)">↪ ${esc(repl)} (remplaçant)</div>`:''}</div>
       ${weekDays.map((d) => {
         const ds = iso(d);
         const hit = r.evs.find((ev) => ev.startDate <= ds && ev.endDate >= ds);
         const isH = State.holidays[ds];
-        if (hit) { const c = catColor(hit.code); return `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff">${esc(hit.code)}</span></div>`; }
+        if (hit) { const c = catColor(hit.code); return `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff" title="${esc(calTooltip(hit))}">${esc(hit.code)}</span></div>`; }
         return `<div class="wcell ${isH?'holiday':''}"></div>`;
       }).join('')}
-    </div>`).join('');
+    </div>`; }).join('');
 }
 
 function statCard(label, value, unit, alt, sub) {
@@ -689,7 +743,7 @@ function hToDays(h) { return `≈ ${(Math.round((Number(h) / HPERDAY) * 10) / 10
 async function renderCalendar(main) {
   const staff = isStaff();
   const admin = State.user.role === 'admin';
-  main.innerHTML = `<div class="page-head"><div><h1>Calendrier de l'équipe</h1>
+  main.innerHTML = `<div class="page-head"><div><h1>Mon Planning</h1>
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${admin?`<button class="btn ghost" id="cal-close">🔒 Fermer des jours</button>`:''}
@@ -709,6 +763,18 @@ async function renderCalendar(main) {
 }
 
 // Modal admin/responsable : attribuer ou proposer une absence pour un salarié.
+// Options d'une liste déroulante d'utilisateurs, regroupées par groupe.
+function teamOptgroups(team) {
+  const order = State.groups.map((g) => g.id).concat([null]);
+  const byG = {}; team.forEach((m) => { const k = m.groupId || 'none'; (byG[k] = byG[k] || []).push(m); });
+  return order.map((gid) => {
+    const list = byG[gid || 'none']; if (!list || !list.length) return '';
+    const g = groupById(gid);
+    list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+    return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">${list.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</optgroup>`;
+  }).join('');
+}
+
 async function adminAssignModal(prefillDate, prefillUserId) {
   let team = [];
   try { team = (await api('GET', '/team')).team; } catch (e) { toast(e.message, 'err'); return; }
@@ -729,11 +795,13 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         <div id="pool-wrap" style="display:none"><label>Imputer sur le solde</label><select name="pool"></select></div>
         <div id="frac-wrap2" style="display:none"><label>Prise du congé (maternité/paternité)</label>
           <select name="fractionnement"><option value="complet">Complète</option><option value="fractionne">Fractionnée</option></select></div>
+        <div id="ret-wrap" style="display:none"><label>Durée du retard</label>
+          <select name="retardMinutes"><option value="30">30 minutes</option><option value="60">1 heure</option><option value="120">2 heures</option><option value="180">3 heures et plus</option></select></div>
         <label>Remplacé par (facultatif)</label>
-        <select name="replacedById"><option value="">— Personne —</option>${team.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
+        <select name="replacedById"><option value="">— Personne —</option>${teamOptgroups(team)}</select>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
-          <div><label>Au</label><input type="date" name="endDate" required value="${prefillDate||''}"></div>
+          <div id="end-col"><label>Au</label><input type="date" name="endDate" value="${prefillDate||''}"></div>
         </div>
         <p class="help" id="assign-preview"></p>
         <label>Motif / commentaire (facultatif)</label>
@@ -747,28 +815,41 @@ async function adminAssignModal(prefillDate, prefillUserId) {
       const f = overlay.querySelector('#form-assign');
       const poolWrap = overlay.querySelector('#pool-wrap');
       const fracWrap = overlay.querySelector('#frac-wrap2');
+      const retWrap = overlay.querySelector('#ret-wrap');
+      const endCol = overlay.querySelector('#end-col');
       const preview = overlay.querySelector('#assign-preview');
+      const todayStr = iso(new Date());
       const refreshPool = () => {
-        const opts = State.pools[f.category.value];
+        const cat = f.category.value;
+        const opts = State.pools[cat];
         if (opts && opts.length) { poolWrap.style.display = ''; f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)}</option>`).join(''); }
         else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
-        fracWrap.style.display = f.category.value === 'PMT' ? '' : 'none';
+        fracWrap.style.display = cat === 'PMT' ? '' : 'none';
+        const isRet = cat === 'RET';
+        retWrap.style.display = isRet ? '' : 'none';
+        endCol.style.display = isRet ? 'none' : '';       // retard = une seule date
+        f.startDate.max = isRet ? todayStr : '';          // pas de retard futur
       };
       const update = () => {
+        const cat = f.category.value;
+        if (cat === 'RET') { preview.textContent = f.startDate.value ? `→ Retard du ${fmtDate(f.startDate.value)}.` : ''; return; }
         const s = f.startDate.value, e = f.endDate.value;
         preview.textContent = (s && e && e >= s) ? `→ ${countWorkingDaysClient(s, e)} jour(s) ouvré(s).` : '';
       };
-      refreshPool();
+      refreshPool(); update();
       f.category.onchange = () => { refreshPool(); update(); };
       f.startDate.onchange = update; f.endDate.onchange = update;
       overlay.querySelector('#assign-save').onclick = async () => {
-        if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
+        const isRet = f.category.value === 'RET';
+        if (!f.startDate.value) { toast('Renseignez la date.', 'err'); return; }
+        if (!isRet && !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
         try {
           const r = await api('POST', '/admin/requests', {
             userId: f.userId.value, category: f.category.value, pool: f.pool.value || null,
-            startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value,
+            startDate: f.startDate.value, endDate: isRet ? f.startDate.value : f.endDate.value, reason: f.reason.value,
             replacedById: f.replacedById.value || null,
             fractionnement: f.fractionnement ? f.fractionnement.value : null,
+            retardMinutes: isRet ? Number(f.retardMinutes.value) : null,
             immediate: f.immediate ? f.immediate.checked : true,
           });
           closeModal();
@@ -896,6 +977,16 @@ function moveCal(dir) {
   refreshCalForYear();
 }
 
+// Résumé affiché au survol d'un évènement (durée + remplaçant).
+function calTooltip(ev) {
+  const range = ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
+  const dur = ev.category === 'RET' ? `Retard de ${ev.retardMinutes || '?'} min` : `${ev.days} jour(s) d'absence`;
+  let s = `${ev.userName} (${ev.groupName})\n${ev.categoryLabel}${ev.fractionnement ? ' — ' + (ev.fractionnement === 'fractionne' ? 'fractionné' : 'complet') : ''}\n${range} • ${dur}`;
+  if (ev.replacedByName) s += `\n↪ remplacé par ${ev.replacedByName}`;
+  if (ev.status === 'pending') s += `\n(en attente de validation)`;
+  return s;
+}
+
 function eventsOnDay(ds) {
   return (State._calEvents || []).filter((ev) => ev.startDate <= ds && ev.endDate >= ds);
 }
@@ -947,10 +1038,11 @@ function viewWeek(cursor) {
   html += `</div>`;
   if (rows.length === 0) html += `<div class="wrow"><div class="wcell namecol" style="grid-column:1/-1;color:var(--muted)">✅ Aucune absence cette semaine.</div></div>`;
   else rows.forEach((r) => {
-    html += `<div class="wrow"><div class="wcell namecol"><span class="dot" style="background:${r.color}"></span> ${esc(r.name)}</div>`;
+    const repl = r.evs.map((ev) => ev.replacedByName).filter(Boolean)[0];
+    html += `<div class="wrow"><div class="wcell namecol"><div><span class="dot" style="background:${r.color}"></span> ${esc(r.name)}</div>${repl?`<div class="help" style="color:var(--brand-2)">↪ ${esc(repl)} (remplaçant)</div>`:''}</div>`;
     days.forEach((d) => {
       const ds = iso(d); const hit = r.evs.find((ev) => ev.startDate <= ds && ev.endDate >= ds); const isH = State.holidays[ds];
-      if (hit) { const c = catColor(hit.code); html += `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff">${esc(hit.code)}</span></div>`; }
+      if (hit) { const c = catColor(hit.code); html += `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff" title="${esc(calTooltip(hit))}">${esc(hit.code)}</span>${State.user.role==='admin'?` <button class="btn danger sm" data-del-ev="${hit.id}" title="Supprimer / recréditer" style="padding:0 .35rem">✕</button>`:''}</div>`; }
       else html += `<div class="wcell ${isH?'holiday':''}"></div>`;
     });
     html += `</div>`;
@@ -987,7 +1079,7 @@ function viewMonth(cursor) {
     html += `<div class="${cls}" title="${closed ? 'Fermé : ' + esc(closed.label) : (vac ? esc(vac.label) : '')}">
       <span class="num">${d.getDate()}</span>
       ${closed && !out ? `<span class="hol-label" style="color:#b91c1c">🔒 ${esc(closed.label)}</span>` : (hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : (vac && !out ? `<span class="hol-label" style="color:#2563eb">${esc(vac.label)}</span>` : ''))}
-      ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(ev.userName)} (${esc(ev.groupName)}) — ${esc(ev.categoryLabel)}${ev.status==='pending'?' (demande)':''}">${esc(ev.code)} · ${esc(ev.userName)} (${esc(ev.groupName)})</span>`).join('')}
+      ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(calTooltip(ev))}">${esc(ev.code)} · ${esc(ev.userName)} (${esc(ev.groupName)})${ev.replacedByName?` ↪ ${esc(ev.replacedByName.split(' ')[0])}`:''}</span>`).join('')}
       ${evs.length > 6 ? `<span class="ev" style="background:#64748b">+${evs.length-6} autres</span>` : ''}
     </div>`;
   }
@@ -1053,7 +1145,7 @@ function suiviHighlight(approved, codes) {
 }
 
 async function renderMyData(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>Mes données</h1><p>Vos soldes et informations personnelles.</p></div></div><div id="md" class="empty">Chargement…</div>`;
+  main.innerHTML = `<div class="page-head"><div><h1>Mon Profil</h1><p>Vos soldes et informations personnelles.</p></div></div><div id="md" class="empty">Chargement…</div>`;
   try {
     const { user } = await api('GET', '/me');
     State.user = user;
@@ -1103,7 +1195,7 @@ async function renderMyData(main) {
         </table></div>
       </div>
       <div class="card">
-        <h3>Historique de mes congés validés</h3>
+        <h3>Mes derniers évènements</h3>
         ${approved.length === 0 ? `<div class="empty">Aucun congé validé pour le moment.</div>` : `
         <div class="table-wrap"><table>
           <thead><tr><th>Type</th><th>Du</th><th>Au</th><th>Jours</th></tr></thead>
@@ -1127,22 +1219,75 @@ async function renderMyData(main) {
    MES DEMANDES
    ========================================================================= */
 async function renderRequests(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>Mes demandes de congé</h1><p>Déposez et suivez vos demandes.</p></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Mes événements</h1><p>Vos soldes, vos demandes et votre disponibilité sur l'année.</p></div>
     <button class="btn accent" id="new-req">+ Nouvelle demande</button></div>
     <div id="req-list" class="empty">Chargement…</div>`;
   document.getElementById('new-req').onclick = openRequestModal;
   try {
+    const { user } = await api('GET', '/me'); State.user = user;
+    const { events } = await api('GET', '/calendar');
     const { requests } = await api('GET', '/requests/mine');
-    const list = document.getElementById('req-list'); list.className = 'card';
-    if (requests.length === 0) { list.innerHTML = `<div class="empty">Vous n'avez pas encore déposé de demande.</div>`; return; }
-    list.innerHTML = `<div class="table-wrap"><table>
-      <thead><tr><th>Type</th><th>Période</th><th>Jours</th><th>Motif</th><th>Statut</th><th></th></tr></thead>
-      <tbody>${requests.map(reqRow).join('')}</tbody></table></div>`;
+    const b = user.balances;
+    const recent = requests.filter((r) => new Date(r.createdAt) >= new Date(Date.now() - 92 * 86400000));
+    const list = document.getElementById('req-list'); list.className = '';
+    list.innerHTML = `
+      <div class="grid cols-4">
+        ${statCard('Congés N', b.congesN, 'jours')}
+        ${statCard('Congés N-1', b.congesN1, 'jours')}
+        ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
+        ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
+      </div>
+      <div class="card">
+        <h3>Disponibilité de l'année (52 semaines)</h3>
+        <p class="help" style="margin-top:-.6rem">Vert = libre, rouge = du monde absent dans votre groupe, 🔒 = période fermée à la réservation.</p>
+        ${yearAvailabilityHTML(user, events)}
+      </div>
+      <div class="card">
+        <h3>Mon historique récent <span class="help">(3 derniers mois)</span></h3>
+        ${recent.length===0?`<div class="empty">Aucun évènement sur les 3 derniers mois.</div>`:`<div class="table-wrap"><table>
+          <thead><tr><th>Type</th><th>Période</th><th>Jours</th><th>Statut</th><th>Déposé le</th></tr></thead>
+          <tbody>${recent.map((r)=>`<tr><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days} j${reqHours(r)}</td><td>${statusTag(r.status)}</td><td class="help">${fmtDateTime(r.createdAt)}</td></tr>`).join('')}</tbody></table></div>`}
+      </div>
+      <div class="card">
+        <h3>Toutes mes demandes</h3>
+        ${requests.length===0?`<div class="empty">Vous n'avez pas encore déposé de demande.</div>`:`<div class="table-wrap"><table>
+        <thead><tr><th>Type</th><th>Période</th><th>Jours</th><th>Motif</th><th>Statut</th><th></th></tr></thead>
+        <tbody>${requests.map(reqRow).join('')}</tbody></table></div>`}
+      </div>`;
     list.querySelectorAll('[data-cancel]').forEach((b) => b.onclick = async () => {
       try { await api('DELETE', '/requests/' + b.dataset.cancel); toast('Demande annulée.', 'ok'); renderRequests(main); }
       catch (e) { toast(e.message, 'err'); }
     });
   } catch (e) { document.getElementById('req-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+}
+
+// Disponibilité sur 52 semaines pour le groupe de l'utilisateur.
+function yearAvailabilityHTML(user, events) {
+  let ws = startOfWeekMonday(new Date());
+  let html = '<div class="team-weeks">';
+  for (let i = 0; i < 52; i++) {
+    const we = addDays(ws, 5);
+    const wsS = iso(ws), weS = iso(we);
+    const closed = (State.closedPeriods || []).some((p) => p.start <= weS && p.end >= wsS);
+    const groupBusy = events.filter((ev) => ev.groupId === user.groupId && ev.userId !== user.id && ev.startDate <= weS && ev.endDate >= wsS);
+    const mine = events.filter((ev) => ev.userId === user.id && ev.startDate <= weS && ev.endDate >= wsS);
+    let cls = 'free', state = '✓';
+    if (closed) { cls = 'closed'; state = '🔒'; }
+    else if (mine.length) { cls = 'mine'; state = 'moi'; }
+    else if (groupBusy.length) { cls = 'busy'; state = groupBusy.length + '👤'; }
+    const title = closed ? 'Fermé à la réservation' : (mine.length ? 'Vous êtes absent' : (groupBusy.length ? groupBusy.length + ' absent(s) dans le groupe' : 'Libre'));
+    html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)} — ${title}"><div class="tw-date">S${weekNum(ws)} ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div><div class="tw-state">${state}</div></div>`;
+    ws = addDays(ws, 7);
+  }
+  return html + '</div>';
+}
+function weekNum(d) {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+  const diff = (date - firstThursday) / 86400000;
+  return 1 + Math.round((diff - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
 }
 
 function statusTag(s) {
@@ -1162,27 +1307,41 @@ function reqRow(r) {
   </tr>`;
 }
 
+// Durées légales du congé maternité/paternité (jours calendaires).
+const PMT_DURATIONS = {
+  pat: { label: 'Paternité (25 jours)', days: 25 },
+  pat_mult: { label: 'Paternité, naissances multiples (32 jours)', days: 32 },
+  mat12: { label: 'Maternité 1er/2e enfant (16 semaines)', days: 112 },
+  mat3: { label: 'Maternité 3e enfant ou + (26 semaines)', days: 182 },
+  mat_jum: { label: 'Maternité jumeaux (34 semaines)', days: 238 },
+  mat_tri: { label: 'Maternité triplés ou + (46 semaines)', days: 322 },
+};
 function openRequestModal() {
   const selectable = State.categories.filter((c) => c.requestable);
+  const b = State.user.balances;
+  const soldeExtra = (c) => c.code === 'RCP' ? ` — solde : ${b.heuresSupp} h` : c.code === 'RCC' ? ` — solde : ${b.rcc} h` : '';
   modal({
     title: 'Nouvelle demande',
     bodyHTML: `
       <form id="form-req">
         <label>Catégorie</label>
         <select name="category" required>
-          ${selectable.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}
+          ${selectable.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}${soldeExtra(c)}</option>`).join('')}
         </select>
+        <p class="help" id="solde-info"></p>
         <div id="pool-wrap" style="display:none">
           <label id="pool-label">Imputer sur le solde</label>
           <select name="pool"></select>
         </div>
         <div id="frac-wrap" style="display:none">
-          <label>Prise du congé (maternité / paternité)</label>
+          <label>Type de congé</label>
+          <select name="pmtType">${Object.entries(PMT_DURATIONS).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}</select>
+          <label>Prise du congé</label>
           <select name="fractionnement">
-            <option value="complet">Complète (en une seule fois)</option>
-            <option value="fractionne">Fractionnée (en plusieurs périodes)</option>
+            <option value="complet">Complète (la date de fin est calculée automatiquement)</option>
+            <option value="fractionne">Fractionnée (vous saisissez chaque période)</option>
           </select>
-          <p class="help">Le congé paternité (25 j) peut être fractionné en plusieurs périodes selon la loi.</p>
+          <p class="help">Congé pris en une fois : indiquez la date de début, la date de fin théorique est calculée selon la loi. Vous n'avez plus qu'à valider.</p>
         </div>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required /></div>
@@ -1198,21 +1357,35 @@ function openRequestModal() {
       const f = overlay.querySelector('#form-req');
       const preview = overlay.querySelector('#days-preview');
       const poolWrap = overlay.querySelector('#pool-wrap');
-      const b = State.user.balances;
-      const balanceFor = { N: b.congesN + ' j', N1: b.congesN1 + ' j', RCC: b.rcc + ' j', HS: b.heuresSupp + ' h' };
+      const soldeInfo = overlay.querySelector('#solde-info');
+      const balanceFor = { N: b.congesN + ' j', N1: b.congesN1 + ' j' };
       const fracWrap = overlay.querySelector('#frac-wrap');
+      const hourBal = { RCP: b.heuresSupp, RCC: b.rcc };
+      // Calcule la date de fin théorique d'un congé maternité/paternité complet.
+      const computePmtEnd = () => {
+        if (f.category.value !== 'PMT' || f.fractionnement.value !== 'complet' || !f.startDate.value) return;
+        const dur = PMT_DURATIONS[f.pmtType.value]; if (!dur) return;
+        const end = addDays(parseISO(f.startDate.value), dur.days - 1);
+        f.endDate.value = iso(end);
+        f.endDate.readOnly = true;
+      };
       const refreshPool = () => {
-        const opts = State.pools[f.category.value];
+        const cat = f.category.value;
+        const opts = State.pools[cat];
         if (opts && opts.length) {
           poolWrap.style.display = '';
           f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)} (solde : ${balanceFor[p.value] ?? '—'})</option>`).join('');
         } else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
-        fracWrap.style.display = f.category.value === 'PMT' ? '' : 'none';
+        const isPmt = cat === 'PMT';
+        fracWrap.style.display = isPmt ? '' : 'none';
+        f.endDate.readOnly = false;
+        soldeInfo.textContent = cat === 'RCP' ? `Solde de récupération (heures sup.) disponible : ${b.heuresSupp} h.` : cat === 'RCC' ? `Solde RCC disponible : ${b.rcc} h.` : '';
+        computePmtEnd();
       };
-      const hourBal = { RCP: b.heuresSupp, RCC: b.rcc };
       const update = () => {
         const s = f.startDate.value, e = f.endDate.value;
         const cat = f.category.value;
+        computePmtEnd();
         if (s && e && e >= s) {
           const n = countWorkingDaysClient(s, e);
           const isHour = cat in hourBal;
@@ -1223,6 +1396,8 @@ function openRequestModal() {
       };
       refreshPool();
       f.category.onchange = () => { refreshPool(); update(); };
+      if (f.pmtType) f.pmtType.onchange = () => { computePmtEnd(); update(); };
+      if (f.fractionnement) f.fractionnement.onchange = () => { f.endDate.readOnly = false; computePmtEnd(); update(); };
       f.startDate.onchange = update; f.endDate.onchange = update; f.pool.onchange = update;
       overlay.querySelector('#submit-req').onclick = async () => {
         if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
@@ -1276,7 +1451,7 @@ function memberAbsenceChips(memberId, events) {
 }
 
 async function renderTeam(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>L'équipe</h1><p>Salariés, groupes et dates de congés / absences.</p></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Mon équipe</h1><p>Salariés, groupes et dates de congés / absences.</p></div></div>
     <div class="legend" style="margin-bottom:1rem">
       <div class="item"><span class="date-chip past">passées</span></div>
       <div class="item"><span class="date-chip current">en cours</span></div>
@@ -1347,17 +1522,21 @@ async function renderAbsenceManagement(main) {
     const byGroup = {};
     employees.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
     const order = State.groups.map((g) => g.id).concat([null]);
-    const rowBtn = (m) => `<tr><td>${esc(m.lastName)} ${esc(m.firstName)}</td><td><button class="btn ghost sm" data-abs="${m.id}">Saisir une absence</button></td></tr>`;
+    const personBox = (m, sub) => `<div class="person-box" style="border-left:4px solid ${(groupById(m.groupId)||{}).color||'#94a3b8'}">
+      <div class="pb-name">${esc(m.firstName)} ${esc(m.lastName)}</div>
+      ${sub?`<div class="help">${sub}</div>`:''}
+      <button class="btn ghost sm" data-abs="${m.id}" style="margin-top:.4rem">Saisir une absence</button>
+    </div>`;
     const sections = order.map((gid) => {
       const list = byGroup[gid || 'none']; if (!list || !list.length) return '';
       const g = groupById(gid);
       list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
       return `<div class="card"><h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${list.length}</span></h3>
-        <div class="table-wrap"><table><tbody>${list.map(rowBtn).join('')}</tbody></table></div></div>`;
+        <div class="person-grid">${list.map((m) => personBox(m)).join('')}</div></div>`;
     }).join('');
     staffMembers.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
     const staffSection = staffMembers.length ? `<div class="card" style="border-left:4px solid var(--brand)"><h3>👔 Encadrement (responsables & administration)</h3>
-      <div class="table-wrap"><table><tbody>${staffMembers.map((m) => `<tr><td>${esc(m.lastName)} ${esc(m.firstName)} <span class="help">${roleLabel(m.role)}</span></td><td><button class="btn ghost sm" data-abs="${m.id}">Saisir une absence</button></td></tr>`).join('')}</tbody></table></div></div>` : '';
+      <div class="person-grid">${staffMembers.map((m) => personBox(m, roleLabel(m.role))).join('')}</div></div>` : '';
     el.innerHTML = sections + staffSection;
     el.querySelectorAll('[data-abs]').forEach((b) => b.onclick = () => adminAssignModal(null, b.dataset.abs));
   } catch (e) { document.getElementById('abs-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
@@ -1449,12 +1628,20 @@ function editInfoModal(content) {
    ADMINISTRATION
    ========================================================================= */
 async function renderAdmin(main) {
+  // Compteurs de notifications à traiter.
+  let nbPending = 0, nbReqs = 0;
+  try {
+    const [{ users }, { requests }] = await Promise.all([api('GET', '/admin/pending'), api('GET', '/admin/requests')]);
+    nbPending = users.length;
+    nbReqs = requests.filter((r) => r.status === 'pending').length;
+  } catch (e) {}
+  const badge = (n) => n > 0 ? ` <span class="badge" style="background:var(--accent);color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700">${n}</span>` : '';
   main.innerHTML = `<div class="page-head"><div><h1>Administration</h1><p>Validez les inscriptions, gérez les soldes et les demandes.</p></div></div>
     <div class="view-switch" id="admin-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-tab="pending" class="active">Inscriptions</button>
-      <button data-tab="reqs">Demandes</button>
-      <button data-tab="users">Salariés & soldes</button>
-      <button data-tab="export">Export</button>
+      <button data-tab="pending" class="active">Nouveaux inscrits${badge(nbPending)}</button>
+      <button data-tab="reqs">En attente d'approbation${badge(nbReqs)}</button>
+      <button data-tab="users">Paramétrages salariés</button>
+      <button data-tab="export">Exporter des données</button>
       <button data-tab="groups">Groupes</button>
       <button data-tab="categories">Catégories</button>
     </div>

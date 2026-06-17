@@ -405,8 +405,12 @@ app.get('/api/calendar', authRequired, (req, res) => {
         startDate: r.startDate,
         endDate: r.endDate,
         days: r.days,
+        hours: r.hours,
+        retardMinutes: r.retardMinutes || null,
         replacedByName: r.replacedByName || null,
+        replacedById: r.replacedById || null,
         fractionnement: r.fractionnement || null,
+        reason: r.reason || null,
       };
     });
   res.json({ events });
@@ -489,6 +493,7 @@ app.post('/api/requests', authRequired, async (req, res) => {
     endDate,
     reason: finalReason,
     fractionnement: category === 'PMT' ? (fractionnement === 'fractionne' ? 'fractionne' : 'complet') : null,
+    retardMinutes: null,
     days,
     hours,
     status: 'pending',
@@ -568,6 +573,7 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     phone: String(phone || '').trim() || null,
     hireDate: validDate(hireDate) ? hireDate : null,
     suspended: false,
+    rccAnchor: new Date().toISOString().slice(0, 10),
     passwordHash: await bcrypt.hash(String(password), 10),
     isParent: Boolean(isParent),
     role: ROLES.includes(role) ? role : 'employee',
@@ -663,6 +669,8 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
     heuresSupp: heuresSupp !== undefined ? Number(heuresSupp) || 0 : user.balances.heuresSupp,
   };
   if (congesN !== undefined) enableAccrual(user); // (ré)active l'acquisition CP
+  // Réamorce le cycle glissant de 3 mois du RCC à chaque (ré)attribution.
+  if (rcc !== undefined) user.rccAnchor = new Date().toISOString().slice(0, 10);
   if (isParent !== undefined) user.isParent = Boolean(isParent);
   if (ROLES.includes(role)) user.role = role;
   await save();
@@ -745,7 +753,7 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
 // - Responsable : la demande est créée EN ATTENTE (l'administrateur tranche).
 app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) => {
   const db = getData();
-  const { userId, category, pool, startDate, endDate, reason, replacedById, immediate, fractionnement } = req.body || {};
+  const { userId, category, pool, startDate, endDate, reason, replacedById, immediate, fractionnement, retardMinutes } = req.body || {};
   const user = db.users.find((u) => u.id === userId);
   if (!user) return res.status(404).json({ error: 'Salarié introuvable' });
   const cat = categoryByCode(category);
@@ -758,10 +766,25 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
     }
     chosenPool = pool;
   }
-  if (!validDate(startDate) || !validDate(endDate)) return res.status(400).json({ error: 'Dates invalides' });
-  if (endDate < startDate) return res.status(400).json({ error: 'La date de fin précède la date de début' });
-  const days = holidays.countWorkingDays(startDate, endDate);
-  if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
+  if (!validDate(startDate)) return res.status(400).json({ error: 'Date invalide' });
+
+  // RETARD : une seule date, jamais dans le futur, durée en minutes.
+  let days, hours, end = endDate, retMin = null;
+  const RET_DURATIONS = [30, 60, 120, 180];
+  if (category === 'RET') {
+    const today = new Date().toISOString().slice(0, 10);
+    if (startDate > today) return res.status(400).json({ error: 'Un retard ne peut pas être saisi dans le futur.' });
+    end = startDate; // date unique
+    retMin = RET_DURATIONS.includes(Number(retardMinutes)) ? Number(retardMinutes) : 30;
+    days = 0; // un retard ne consomme pas de journée
+    hours = Math.round((retMin / 60) * 100) / 100;
+  } else {
+    if (!validDate(end)) return res.status(400).json({ error: 'Dates invalides' });
+    if (end < startDate) return res.status(400).json({ error: 'La date de fin précède la date de début' });
+    days = holidays.countWorkingDays(startDate, end);
+    if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
+    hours = days * HOURS_PER_DAY;
+  }
 
   // Remplaçant éventuel.
   const replacer = replacedById ? db.users.find((u) => u.id === replacedById) : null;
@@ -776,11 +799,12 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
     category,
     pool: chosenPool,
     startDate,
-    endDate,
+    endDate: end,
     reason: String(reason || '').trim() || cat.label,
     fractionnement: category === 'PMT' ? (fractionnement === 'fractionne' ? 'fractionne' : 'complet') : null,
+    retardMinutes: retMin,
     days,
-    hours: days * HOURS_PER_DAY,
+    hours,
     status: approveNow ? 'approved' : 'pending',
     createdAt: new Date().toISOString(),
     decidedAt: approveNow ? new Date().toISOString() : null,
