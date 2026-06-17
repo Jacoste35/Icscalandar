@@ -69,12 +69,43 @@ function displayCode(req) {
 function deductionFor(r) {
   if (r.category === 'CP') return { balance: r.pool === 'N1' ? 'congesN1' : 'congesN', amount: r.days };
   if (r.category === 'RCP') return { balance: 'heuresSupp', amount: r.hours };
-  if (r.category === 'RCC') return { balance: 'rcc', amount: r.days };
+  if (r.category === 'RCC') return { balance: 'rcc', amount: r.hours };
   return null; // PMT, AM, ABS, etc. : pas de décompte
+}
+
+// Catégories décomptées en HEURES et leur compteur (RCP = heures sup., RCC).
+const HOUR_BASED = { RCP: 'heuresSupp', RCC: 'rcc' };
+
+// Pour une catégorie en heures, renvoie la date de fin maximale atteignable
+// depuis startStr avec le nombre d'heures disponibles (jours ouvrés * 7h).
+function maxEndDateForHours(startStr, balanceHours) {
+  const maxDays = Math.floor((Number(balanceHours) || 0) / HOURS_PER_DAY);
+  if (maxDays <= 0) return null;
+  let count = 0;
+  let last = null;
+  let cur = new Date(startStr + 'T00:00:00Z');
+  for (let i = 0; i < 400 && count < maxDays; i++) {
+    const ds = cur.toISOString().slice(0, 10);
+    if (holidays.isWorkingDay(ds)) { count++; last = ds; }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return last;
 }
 
 function rangesOverlap(s1, e1, s2, e2) {
   return s1 <= e2 && e1 >= s2;
+}
+
+// Indique si la période [start, end] contient au moins un jour férié.
+function rangeContainsHoliday(startStr, endStr) {
+  if (!validDate(startStr) || !validDate(endStr)) return false;
+  let cur = new Date(startStr + 'T00:00:00Z');
+  const end = new Date(endStr + 'T00:00:00Z');
+  for (let i = 0; i < 400 && cur.getTime() <= end.getTime(); i++) {
+    if (holidays.isHoliday(cur.toISOString().slice(0, 10))) return true;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return false;
 }
 
 // Renvoie la période fermée chevauchant [startDate, endDate], ou null.
@@ -138,6 +169,12 @@ function slug(s) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+// Met une majuscule à la première lettre de chaque partie d'un nom propre.
+function capitalizeName(s) {
+  return String(s || '').trim().toLowerCase()
+    .replace(/(^|[\s\-'])([a-zà-ÿ])/g, (m, sep, ch) => sep + ch.toUpperCase());
+}
+
 // Génère un nom de compte "prenom.nom" unique.
 function makeUsername(db, firstName, lastName) {
   const base = `${slug(firstName)}.${slug(lastName)}`.replace(/^\.|\.$/g, '') || 'utilisateur';
@@ -149,7 +186,7 @@ function makeUsername(db, firstName, lastName) {
 }
 
 app.post('/api/register', async (req, res) => {
-  const { firstName, lastName, email, password } = req.body || {};
+  const { firstName, lastName, email, password, phone } = req.body || {};
   if (!firstName || !lastName || !email || !password) {
     return res.status(400).json({ error: 'Tous les champs sont obligatoires' });
   }
@@ -167,10 +204,11 @@ app.post('/api/register', async (req, res) => {
   const username = makeUsername(db, firstName, lastName);
   const user = {
     id: nextId('user'),
-    firstName: String(firstName).trim(),
-    lastName: String(lastName).trim(),
+    firstName: capitalizeName(firstName),
+    lastName: capitalizeName(lastName),
     username,
     email: normEmail,
+    phone: String(phone || '').trim() || null,
     passwordHash,
     isParent: false,
     // Le tout premier compte créé devient administrateur et est actif.
@@ -215,10 +253,11 @@ app.get('/api/me', authRequired, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-// Le salarié met à jour ses propres informations (ex. statut de parent).
+// Le salarié met à jour ses propres informations (statut de parent, téléphone).
 app.put('/api/me', authRequired, async (req, res) => {
-  const { isParent } = req.body || {};
+  const { isParent, phone } = req.body || {};
   if (isParent !== undefined) req.user.isParent = Boolean(isParent);
+  if (phone !== undefined) req.user.phone = String(phone || '').trim() || null;
   await save();
   res.json({ user: publicUser(req.user) });
 });
@@ -317,6 +356,7 @@ app.get('/api/team', authRequired, (req, res) => {
       role: u.role,
       groupId: u.groupId,
       email: u.email || null,
+      phone: u.phone || null,
       isParent: Boolean(u.isParent),
     }));
   res.json({ team });
@@ -392,6 +432,28 @@ app.post('/api/requests', authRequired, async (req, res) => {
 
   const days = holidays.countWorkingDays(startDate, endDate);
   if (days <= 0) return res.status(400).json({ error: 'Aucun jour ouvré sur cette période (dimanches/fériés exclus)' });
+  const hours = days * HOURS_PER_DAY;
+
+  // Catégories en heures (RCP, RCC) : refuser si la demande dépasse le solde,
+  // et suggérer la période maximale possible depuis la date de début.
+  const hourBalanceKey = HOUR_BASED[category];
+  if (hourBalanceKey) {
+    const available = req.user.balances[hourBalanceKey] || 0;
+    if (hours > available) {
+      const maxEnd = maxEndDateForHours(startDate, available);
+      const suggestion = maxEnd
+        ? ` Vous disposez de ${available} h : au maximum jusqu'au ${maxEnd} à partir du ${startDate}.`
+        : ` Vous disposez de ${available} h, insuffisant pour une journée.`;
+      return res.status(400).json({
+        error: `Demande de ${hours} h supérieure à votre solde disponible (${available} h).${suggestion}`,
+        suggestedEndDate: maxEnd,
+        availableHours: available,
+      });
+    }
+  }
+
+  // Motif par défaut : si rien n'est précisé, on reprend le libellé de la catégorie.
+  const finalReason = String(reason || '').trim() || cat.label;
 
   const request = {
     id: nextId('request'),
@@ -400,9 +462,9 @@ app.post('/api/requests', authRequired, async (req, res) => {
     pool: chosenPool,
     startDate,
     endDate,
-    reason: String(reason || '').trim(),
+    reason: finalReason,
     days,
-    hours: days * HOURS_PER_DAY,
+    hours,
     status: 'pending',
     createdAt: new Date().toISOString(),
     decidedAt: null,
@@ -453,9 +515,9 @@ function loginTaken(db, { email, username }, exceptId) {
 // Créer directement un utilisateur (actif) avec toutes ses données.
 app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone } = req.body || {};
   if (!firstName || !lastName) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
-  let uname = String(username || '').trim();
+  let uname = String(username || '').trim().toLowerCase();
   const mailAddr = String(email || '').trim().toLowerCase();
   // Si aucun nom de compte n'est fourni, on le génère automatiquement (prenom.nom).
   if (!uname) uname = makeUsername(db, firstName, lastName);
@@ -466,10 +528,11 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   }
   const user = {
     id: nextId('user'),
-    firstName: String(firstName).trim(),
-    lastName: String(lastName).trim(),
+    firstName: capitalizeName(firstName),
+    lastName: capitalizeName(lastName),
     username: uname || null,
     email: mailAddr || null,
+    phone: String(phone || '').trim() || null,
     passwordHash: await bcrypt.hash(String(password), 10),
     isParent: Boolean(isParent),
     role: ROLES.includes(role) ? role : 'employee',
@@ -532,13 +595,14 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone } = req.body || {};
 
   // Identité et compte
-  if (firstName !== undefined && String(firstName).trim()) user.firstName = String(firstName).trim();
-  if (lastName !== undefined && String(lastName).trim()) user.lastName = String(lastName).trim();
+  if (firstName !== undefined && String(firstName).trim()) user.firstName = capitalizeName(firstName);
+  if (lastName !== undefined && String(lastName).trim()) user.lastName = capitalizeName(lastName);
+  if (phone !== undefined) user.phone = String(phone || '').trim() || null;
   if (username !== undefined || email !== undefined) {
-    const uname = username !== undefined ? String(username).trim() : (user.username || '');
+    const uname = username !== undefined ? String(username).trim().toLowerCase() : (user.username || '');
     const mail = email !== undefined ? String(email).trim().toLowerCase() : (user.email || '');
     if (!uname && !mail) return res.status(400).json({ error: 'Renseignez un nom de compte ou un email' });
     if (loginTaken(db, { email: mail, username: uname }, user.id)) {
@@ -594,10 +658,12 @@ app.get('/api/admin/requests', authRequired, adminRequired, (req, res) => {
         ...r,
         userName: u ? `${u.firstName} ${u.lastName}` : 'Inconnu',
         isParent: u ? Boolean(u.isParent) : false,
+        phone: u ? (u.phone || null) : null,
         groupId: u ? u.groupId : null,
         groupName: g ? g.name : '—',
         groupColor: g ? g.color : '#64748b',
         categoryLabel: categoryLabel(r.category),
+        containsHoliday: rangeContainsHoliday(r.startDate, r.endDate),
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -635,7 +701,7 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
     pool: chosenPool,
     startDate,
     endDate,
-    reason: String(reason || '').trim(),
+    reason: String(reason || '').trim() || cat.label,
     days,
     hours: days * HOURS_PER_DAY,
     status: isAdmin ? 'approved' : 'pending',
@@ -712,6 +778,29 @@ app.put('/api/admin/groups/:id', authRequired, adminRequired, async (req, res) =
   if (color && /^#[0-9a-fA-F]{6}$/.test(color)) g.color = color;
   await save();
   res.json({ group: g });
+});
+
+// Créer un groupe de travail.
+app.post('/api/admin/groups', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { name, color } = req.body || {};
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'Nom du groupe obligatoire' });
+  const id = 'grp_' + slug(name) + '_' + Math.random().toString(36).slice(2, 6);
+  const group = { id, name: String(name).trim(), color: /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#64748b' };
+  db.groups.push(group);
+  await save();
+  res.json({ group });
+});
+
+// Supprimer un groupe (les salariés du groupe repassent "sans groupe").
+app.delete('/api/admin/groups/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const id = req.params.id;
+  if (!db.groups.some((g) => g.id === id)) return res.status(404).json({ error: 'Groupe introuvable' });
+  db.groups = db.groups.filter((g) => g.id !== id);
+  db.users.forEach((u) => { if (u.groupId === id) u.groupId = null; });
+  await save();
+  res.json({ ok: true });
 });
 
 // --- Fermetures (prise de congé interdite) -----------------------------------
