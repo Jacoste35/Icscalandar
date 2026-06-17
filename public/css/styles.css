@@ -46,7 +46,8 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   justify-content: center;
 }
-.auth-hero .logo { font-size: 2.2rem; font-weight: 800; letter-spacing: .5px; display:flex; align-items:center; gap:.6rem;}
+.auth-hero .logo { font-size: 2.2rem; font-weight: 800; letter-spacing: .5px; display:flex; align-items:center; gap:.7rem;}
+.auth-hero .hero-logo { width: 64px; height: 64px; border-radius: 12px; background:#fff; padding:4px; object-fit: contain; }
 .auth-hero h1 { font-size: 2rem; margin: 1.5rem 0 .5rem; line-height: 1.2; }
 .auth-hero p { opacity: .9; font-size: 1.05rem; max-width: 460px; line-height: 1.6; }
 .auth-hero ul { margin-top: 1.5rem; padding-left: 1.1rem; line-height: 2; opacity: .92; }
@@ -110,7 +111,7 @@ textarea { resize: vertical; min-height: 80px; }
   position: sticky; top: 0; height: 100vh;
 }
 .sidebar .brand { padding: 1.1rem 1.2rem; font-weight: 800; font-size: 1.1rem; color: #fff; display:flex; align-items:center; gap:.6rem; border-bottom: 1px solid rgba(255,255,255,.12); line-height:1.15;}
-.sidebar .brand .brand-logo { width: 38px; height: 38px; flex: 0 0 38px; border-radius: 8px; background:#fff; padding:2px; }
+.sidebar .brand .brand-logo { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 8px; background:#fff; padding:2px; object-fit: contain; }
 .nav-section { padding: .9rem .9rem .3rem; font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8fa6c4; }
 .sidebar nav { flex: 1; padding: .8rem; overflow-y: auto; }
 .sidebar nav button {

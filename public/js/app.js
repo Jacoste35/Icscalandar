@@ -165,7 +165,7 @@ function renderAuth(tab = 'login') {
   $app.innerHTML = `
   <div class="auth-wrap">
     <div class="auth-hero">
-      <div class="logo">📦 INTER COLIS SERVICES</div>
+      <div class="logo"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" alt="" class="hero-logo" /> INTER COLIS SERVICES</div>
       <h1>Le portail de suivi de vos congés et absences</h1>
       <p>Suivez vos congés payés, vos RCC et vos heures de récupération. Déposez vos demandes en ligne et consultez le planning de toute l'équipe.</p>
       <ul>
