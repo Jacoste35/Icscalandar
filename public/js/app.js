@@ -53,7 +53,7 @@ function poolLabel(r) {
 // Libellé complet d'une demande : catégorie + solde imputé.
 function reqLabel(r) { return catLabel(r.category) + poolLabel(r); }
 // Affiche les heures pour une récupération imputée sur les heures sup.
-function reqHours(r) { return r.category === 'RCP' ? ` (${r.hours}h)` : ''; }
+function reqHours(r) { return (r.category === 'RCP' || r.category === 'RCC') ? ` (${r.hours}h)` : ''; }
 
 /* ------------------------------ API ------------------------------------- */
 async function api(method, path, body) {
@@ -65,7 +65,9 @@ async function api(method, path, body) {
   try { data = await res.json(); } catch (e) {}
   if (!res.ok) {
     if (res.status === 401) { logout(true); }
-    throw new Error(data.error || 'Erreur serveur');
+    const err = new Error(data.error || 'Erreur serveur');
+    err.payload = data;
+    throw err;
   }
   return data;
 }
@@ -225,6 +227,8 @@ function registerForm() {
       <label>Nom de compte (automatique)</label>
       <input name="username" readonly placeholder="prenom.nom" style="background:#f1f5f9;color:#475569" />
       <p class="help">Généré automatiquement. C'est avec ce nom que vous vous connecterez.</p>
+      <label>Téléphone</label>
+      <input name="phone" type="tel" autocomplete="tel" placeholder="06 12 34 56 78" />
       <label>Email</label>
       <input name="email" type="email" required autocomplete="email" />
       <label>Mot de passe</label>
@@ -247,7 +251,7 @@ function bindRegister() {
     try {
       const r = await api('POST', '/register', {
         firstName: f.firstName.value, lastName: f.lastName.value,
-        email: f.email.value, password: f.password.value,
+        email: f.email.value, password: f.password.value, phone: f.phone.value,
       });
       if (r.token) {
         State.token = r.token; State.user = r.user; localStorage.setItem('ics_token', r.token);
@@ -277,6 +281,7 @@ function navSections() {
     { title: 'Mon espace', items: [
       { id: 'mydata', icon: '👤', label: 'Mes données' },
       { id: 'requests', icon: '📝', label: 'Mes demandes' },
+      ...(isStaff() ? [{ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' }] : []),
     ] },
   ];
   if (State.user.role === 'admin') {
@@ -294,7 +299,8 @@ function renderApp() {
   $app.innerHTML = `
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand"><img src="/img/logo.svg" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
+      <div class="brand"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
+      <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰ Menu</button>
       <nav id="nav">
         ${sections.map((s) => `
           ${s.title ? `<div class="nav-section">${s.title}</div>` : ''}
@@ -315,6 +321,8 @@ function renderApp() {
   </div>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   document.getElementById('logout').onclick = () => logout();
+  const toggle = document.getElementById('nav-toggle');
+  if (toggle) toggle.onclick = () => document.querySelector('.sidebar').classList.toggle('nav-open');
   renderView();
   if (u.role === 'admin') refreshAdminBadge();
 }
@@ -339,6 +347,7 @@ function renderView() {
   if (v === 'requests') return renderRequests(main);
   if (v === 'team') return renderTeam(main);
   if (v === 'organigramme') return renderOrganigramme(main);
+  if (v === 'absmgmt') return renderAbsenceManagement(main);
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
 }
@@ -386,12 +395,12 @@ async function renderDashboard(main) {
       <div class="grid cols-4">
         ${statCard('Congés N', b.congesN, 'jours')}
         ${statCard('Congés N-1', b.congesN1, 'jours')}
-        ${statCard('RCC', b.rcc, 'jours')}
-        ${statCard('Heures sup. dues', b.heuresSupp, 'h', true)}
+        ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
+        ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
       ${priorityPanel}
       ${colleaguesPanel}
-      ${dashWeekCard('Semaine précédente', prevStart, events)}
+      ${dashWeekCard('Semaine précédente', prevStart, events, false, true)}
       ${dashWeekCard('Semaine en cours', curStart, events, true)}
       ${dashWeekCard('Semaine à venir (+1)', next1, events)}
       ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
@@ -485,26 +494,35 @@ function colleaguesUpcomingHTML(team, events) {
     </div>`;
 }
 
-// Carte "qui est absent" pour une semaine donnée (lundi -> samedi).
-function dashWeekCard(title, weekStart, events, isCurrent) {
+// Carte "qui est/était absent" pour une semaine donnée (lundi -> samedi).
+function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
   const weekEnd = addDays(weekStart, 5);
   const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
   const weekAbs = events.filter((ev) => ev.startDate <= iso(weekEnd) && ev.endDate >= iso(weekStart));
+  // Liste détaillée : salarié, groupe, dates et motif.
+  const byUser = {};
+  weekAbs.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { ev }).ev = byUser[ev.userId].ev; (byUser[ev.userId].list = byUser[ev.userId].list || []).push(ev); });
+  const detail = Object.values(byUser).map((o) => o.list.map((ev) => {
+    const range = ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
+    return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td></tr>`;
+  }).join('')).join('');
   return `
     <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
       <div class="cal-toolbar"><h3 style="margin:0">${isCurrent?'📍 ':''}${esc(title)} — ${label}</h3></div>
-      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">Qui sera absent ?</p>
+      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">${isPast?'Qui était absent ?':'Qui sera absent ?'}</p>
       <div class="week-grid">
         <div class="wrow whead">
           <div class="wcell namecol">Salarié</div>
           ${weekDays.map((d) => {
-            const h = State.holidays[iso(d)];
-            return `<div class="wcell ${h?'holiday':''}">${DOW_SHORT[(d.getDay()+6)%7]} ${pad(d.getDate())}<div class="sub">${h?esc(h):''}</div></div>`;
+            const ds = iso(d); const h = State.holidays[ds]; const vac = schoolHolidayFor(ds); const closed = closedPeriodFor(ds);
+            const cls = closed ? 'closed' : (h ? 'holiday' : (vac ? 'school' : ''));
+            return `<div class="wcell ${cls}">${DOW_SHORT[(d.getDay()+6)%7]} ${pad(d.getDate())}<div class="sub">${h?esc(h):(closed?'🔒':(vac?'vac.':''))}</div></div>`;
           }).join('')}
         </div>
         ${renderDashWeekRows(weekAbs, weekDays)}
       </div>
+      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th></tr></thead><tbody>${detail}</tbody></table></div>` : ''}
     </div>`;
 }
 
@@ -530,9 +548,12 @@ function renderDashWeekRows(weekAbs, weekDays) {
     </div>`).join('');
 }
 
-function statCard(label, value, unit, alt) {
-  return `<div class="stat ${alt?'alt':''}"><div class="value">${value} <span class="unit">${unit}</span></div><div class="label">${label}</div></div>`;
+function statCard(label, value, unit, alt, sub) {
+  return `<div class="stat ${alt?'alt':''}"><div class="value">${value} <span class="unit">${unit}</span></div><div class="label">${label}${sub?` <span class="help" style="display:block;margin-top:.1rem">${sub}</span>`:''}</div></div>`;
 }
+// Correspondance heures -> jours (7 h = 1 j) pour information.
+const HPERDAY = 7;
+function hToDays(h) { return `≈ ${(Math.round((Number(h) / HPERDAY) * 10) / 10)} j`; }
 
 /* =========================================================================
    CALENDRIER — jour / semaine / mois / année
@@ -559,8 +580,8 @@ async function renderCalendar(main) {
   }
 }
 
-// Modal admin : attribuer une absence à un salarié (tous motifs).
-async function adminAssignModal(prefillDate) {
+// Modal admin/responsable : attribuer ou proposer une absence pour un salarié.
+async function adminAssignModal(prefillDate, prefillUserId) {
   let team = [];
   try { team = (await api('GET', '/team')).team; } catch (e) { toast(e.message, 'err'); return; }
   team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
@@ -568,12 +589,12 @@ async function adminAssignModal(prefillDate) {
   const cats = State.categories.filter((c) => c.code !== 'DCP');
   const isResp = State.user.role === 'responsable';
   modal({
-    title: 'Attribuer une absence',
+    title: 'Saisir une absence pour un salarié',
     bodyHTML: `
-      ${isResp?`<div class="alert info">En tant que responsable, votre attribution sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:''}
+      ${isResp?`<div class="alert info">En tant que responsable, votre saisie sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:`<div class="alert info">En tant qu'administrateur, l'absence sera <strong>inscrite directement au calendrier</strong>.</div>`}
       <form id="form-assign">
         <label>Salarié</label>
-        <select name="userId" required>${team.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
+        <select name="userId" required>${team.map((m) => `<option value="${m.id}" ${m.id===prefillUserId?'selected':''}>${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
         <label>Motif</label>
         <select name="category" required>${cats.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}</select>
         <div id="pool-wrap" style="display:none"><label>Imputer sur le solde</label><select name="pool"></select></div>
@@ -658,7 +679,7 @@ function calLegend() {
     : State.categories.map((c) => `<div class="item"><span class="dot" style="background:${c.color}"></span><strong>${esc(c.code)}</strong> — ${esc(c.label)}</div>`);
   return `<div class="legend">
     ${items.join('')}
-    <div class="item"><span class="dot" style="background:#f5f3ff;border:1px solid #ddd"></span>Jour férié</div>
+    <div class="item"><span class="dot" style="background:#fde68a;border:1px solid #f59e0b"></span>Jour férié</div>
     <div class="item"><span class="dot" style="background:#dbeafe;border:1px solid #93c5fd"></span>Vacances scolaires (Zone B)</div>
     <div class="item"><span class="dot" style="background:#fee2e2;border:1px solid #fca5a5"></span>🔒 Fermé aux congés</div>
     <div class="item"><span class="tag is-pending" style="background:#94a3b8;color:#fff">code</span> = demande en attente</div>
@@ -861,18 +882,28 @@ function viewYear(cursor) {
 /* =========================================================================
    MES DONNÉES
    ========================================================================= */
-// Décompte (cumul de jours pris) par motif, calculé sur les absences validées.
+// Décompte (cumul) par motif sur les absences validées : en jours ET en heures.
 function decompteRows(approved) {
   const days = {}, hours = {};
   approved.forEach((r) => {
     days[r.category] = (days[r.category] || 0) + r.days;
-    if (r.category === 'RCP') hours[r.category] = (hours[r.category] || 0) + r.hours;
+    hours[r.category] = (hours[r.category] || 0) + r.hours;
   });
   return State.categories.filter((c) => c.code !== 'DCP').map((c) => `
     <tr>
       <td><span class="group-chip" style="background:${c.color}">${esc(c.code)}</span> ${esc(c.label)}</td>
-      <td style="text-align:right;font-weight:600">${days[c.code] || 0} j${hours[c.code] ? ` (${hours[c.code]} h)` : ''}</td>
+      <td style="text-align:right;font-weight:600">${days[c.code] || 0} j</td>
+      <td style="text-align:right;font-weight:600">${hours[c.code] || 0} h</td>
     </tr>`).join('');
+}
+// Sélection des compteurs mis en avant (jours + heures) pour le tableau de bord.
+function suiviHighlight(approved, codes) {
+  const days = {}, hours = {};
+  approved.forEach((r) => { if (codes.includes(r.category)) { days[r.category] = (days[r.category]||0)+r.days; hours[r.category] = (hours[r.category]||0)+r.hours; } });
+  return codes.map((code) => {
+    const c = State.catByCode[code]; if (!c) return '';
+    return `<div class="stat"><div class="value" style="font-size:1.3rem">${days[code]||0} <span class="unit">j</span> / ${hours[code]||0} <span class="unit">h</span></div><div class="label">${esc(c.label)}</div></div>`;
+  }).join('');
 }
 
 async function renderMyData(main) {
@@ -888,8 +919,8 @@ async function renderMyData(main) {
       <div class="grid cols-4">
         ${statCard('Congés N', user.balances.congesN, 'jours')}
         ${statCard('Congés N-1', user.balances.congesN1, 'jours')}
-        ${statCard('RCC', user.balances.rcc, 'jours')}
-        ${statCard('Heures sup. dues', user.balances.heuresSupp, 'h', true)}
+        ${statCard('RCC', user.balances.rcc, 'h', false, hToDays(user.balances.rcc))}
+        ${statCard('Récup. / Heures sup.', user.balances.heuresSupp, 'h', true, hToDays(user.balances.heuresSupp))}
       </div>
       <div class="card">
         <h3>Profil</h3>
@@ -897,6 +928,7 @@ async function renderMyData(main) {
           <tr><th>Nom</th><td>${esc(user.firstName)} ${esc(user.lastName)}</td></tr>
           ${user.username?`<tr><th>Nom de compte</th><td>${esc(user.username)}</td></tr>`:''}
           <tr><th>Email</th><td>${user.email?esc(user.email):'<em>—</em>'}</td></tr>
+          <tr><th>Téléphone</th><td><span style="display:inline-flex;gap:.4rem;align-items:center"><input id="md-phone" value="${user.phone?esc(user.phone):''}" placeholder="06 12 34 56 78" style="max-width:200px"><button class="btn sm" id="md-phone-save">Enregistrer</button></span></td></tr>
           <tr><th>Groupe de travail</th><td>${g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Non attribué</em>'}</td></tr>
           <tr><th>Rôle</th><td>${roleLabel(user.role)}</td></tr>
           <tr><th>Statut</th><td><span class="tag approved">Actif</span></td></tr>
@@ -909,10 +941,15 @@ async function renderMyData(main) {
         </table></div>
       </div>
       <div class="card">
-        <h3>Décompte par motif (jours pris)</h3>
+        <h3>Suivi : maladie, accident, absences</h3>
+        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures.</p>
+        <div class="grid cols-3">${suiviHighlight(approved, ['AM','AT','ANRN'])}</div>
+      </div>
+      <div class="card">
+        <h3>Décompte par motif (jours et heures pris)</h3>
         <p class="help" style="margin-top:-.6rem">Cumul de vos absences validées pour chaque libellé.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Motif</th><th style="text-align:right">Décompte</th></tr></thead>
+          <thead><tr><th>Motif</th><th style="text-align:right">Jours</th><th style="text-align:right">Heures</th></tr></thead>
           <tbody>${decompteRows(approved)}</tbody>
         </table></div>
       </div>
@@ -928,6 +965,11 @@ async function renderMyData(main) {
     if (parentBox) parentBox.onchange = async () => {
       try { const r = await api('PUT', '/me', { isParent: parentBox.checked }); State.user = r.user; toast('Information enregistrée.', 'ok'); }
       catch (e) { toast(e.message, 'err'); parentBox.checked = !parentBox.checked; }
+    };
+    const phoneSave = document.getElementById('md-phone-save');
+    if (phoneSave) phoneSave.onclick = async () => {
+      try { const r = await api('PUT', '/me', { phone: document.getElementById('md-phone').value }); State.user = r.user; toast('Téléphone enregistré.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
     };
   } catch (e) { document.getElementById('md').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
@@ -1008,12 +1050,16 @@ function openRequestModal() {
           f.pool.innerHTML = opts.map((p) => `<option value="${p.value}">${esc(p.label)} (solde : ${balanceFor[p.value] ?? '—'})</option>`).join('');
         } else { poolWrap.style.display = 'none'; f.pool.innerHTML = ''; }
       };
+      const hourBal = { RCP: b.heuresSupp, RCC: b.rcc };
       const update = () => {
         const s = f.startDate.value, e = f.endDate.value;
+        const cat = f.category.value;
         if (s && e && e >= s) {
           const n = countWorkingDaysClient(s, e);
-          const showHours = f.category.value === 'RCP' && f.pool.value === 'HS';
-          preview.textContent = n > 0 ? `→ ${n} jour(s) ouvré(s)${showHours?` (${n*7} h)`:''} décompté(s).` : '→ Aucun jour ouvré sur cette période.';
+          const isHour = cat in hourBal;
+          let txt = n > 0 ? `→ ${n} jour(s) ouvré(s)${isHour?` = ${n*7} h`:''} décompté(s).` : '→ Aucun jour ouvré sur cette période.';
+          if (isHour) txt += ` Solde disponible : ${hourBal[cat]} h.`;
+          preview.textContent = txt;
         } else preview.textContent = '';
       };
       refreshPool();
@@ -1025,7 +1071,14 @@ function openRequestModal() {
           await api('POST', '/requests', { category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value });
           closeModal(); toast('Demande envoyée à l\'administrateur.', 'ok');
           if (State.view === 'requests') renderRequests(document.getElementById('main'));
-        } catch (e) { toast(e.message, 'err'); }
+        } catch (e) {
+          toast(e.message, 'err');
+          // Si le serveur suggère une date de fin maximale, on l'applique.
+          if (e.payload && e.payload.suggestedEndDate) {
+            f.endDate.value = e.payload.suggestedEndDate; update();
+            toast('Date de fin ajustée au maximum possible.', 'info');
+          }
+        }
       };
     },
   });
@@ -1094,6 +1147,35 @@ async function renderTeam(main) {
 }
 
 /* =========================================================================
+   GESTION DES ABSENCES (responsable / administrateur)
+   ========================================================================= */
+async function renderAbsenceManagement(main) {
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  const isAdmin = State.user.role === 'admin';
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des absences</h1>
+    <p>Saisissez une absence ou une demande de congé pour le compte d'un salarié.</p></div>
+    <button class="btn accent" id="abs-new">+ Saisir une absence</button></div>
+    <div class="alert info">${isAdmin
+      ? "Vos saisies sont <strong>directement ajoutées au calendrier</strong>."
+      : "Vos saisies sont <strong>envoyées à l'administrateur pour validation</strong> avant d'apparaître au planning."}</div>
+    <div id="abs-list" class="empty">Chargement…</div>`;
+  document.getElementById('abs-new').onclick = () => adminAssignModal();
+  try {
+    const { team } = await api('GET', '/team');
+    team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+    const el = document.getElementById('abs-list'); el.className = 'card';
+    el.innerHTML = `<h3>Salariés</h3><div class="table-wrap"><table>
+      <thead><tr><th>Salarié</th><th>Groupe</th><th></th></tr></thead>
+      <tbody>${team.map((m) => { const g = groupById(m.groupId); return `<tr>
+        <td>${esc(m.lastName)} ${esc(m.firstName)}</td>
+        <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'—'}</td>
+        <td><button class="btn ghost sm" data-abs="${m.id}">Saisir une absence</button></td>
+      </tr>`; }).join('')}</tbody></table></div>`;
+    el.querySelectorAll('[data-abs]').forEach((b) => b.onclick = () => adminAssignModal(null, b.dataset.abs));
+  } catch (e) { document.getElementById('abs-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+}
+
+/* =========================================================================
    ORGANIGRAMME
    ========================================================================= */
 async function renderOrganigramme(main) {
@@ -1108,7 +1190,8 @@ async function renderOrganigramme(main) {
       return `<div class="org-card" style="border-top:4px solid ${g ? g.color : 'var(--brand)'}">
         <div class="org-name">${esc(m.firstName)} ${esc(m.lastName)}</div>
         <div class="org-role">${roleLabel(m.role)}${g ? ' • ' + esc(g.name) : ''}</div>
-        ${m.email ? `<a class="org-mail" href="mailto:${esc(m.email)}">${esc(m.email)}</a>` : ''}
+        ${m.phone ? `<a class="org-mail" href="tel:${esc(m.phone)}">📞 ${esc(m.phone)}</a>` : ''}
+        ${m.email ? `<a class="org-mail" href="mailto:${esc(m.email)}">✉️ ${esc(m.email)}</a>` : ''}
       </div>`;
     };
 
@@ -1272,7 +1355,7 @@ function orderBadge(rank) {
 }
 
 function parentTag(r) {
-  return r.isParent ? ' <span class="tag" style="background:#0d9488;color:#fff">parent</span>' : '';
+  return r.isParent ? ' <span class="tag" style="background:#0d9488;color:#fff"><strong>Parent</strong></span>' : '';
 }
 
 async function adminReqs(body) {
@@ -1328,7 +1411,7 @@ function adminReqRow(r, rank) {
     <td>${esc(r.userName)}${parentTag(r)}</td>
     <td>${groupChip(r)}</td>
     <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
-    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td>
+    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}</td>
     <td>${orderBadge(rank)}</td>
     <td>${r.days} j${reqHours(r)}</td>
     <td class="help">${fmtDateTime(r.createdAt)}</td>
@@ -1350,7 +1433,7 @@ async function adminUsers(body) {
   const numCell = (u, f) => `<td><input type="number" step="0.5" data-uid="${u.id}" data-bal="${f}" value="${u.balances[f]}" style="width:74px"></td>`;
   function userRow(u) {
     return `<tr>
-      <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${roleLabel(u.role)}${u.isParent?' • parent':''}</div></td>
+      <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${roleLabel(u.role)}${u.isParent?' • <strong style="color:var(--text)">Parent</strong>':''}</div></td>
       <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
       ${numCell(u,'congesN')}${numCell(u,'congesN1')}${numCell(u,'rcc')}${numCell(u,'heuresSupp')}
       <td style="white-space:nowrap">
@@ -1425,10 +1508,11 @@ async function userDecompteModal(u) {
     const subset = year === 'all' ? requests : requests.filter((r) => r.startDate.slice(0, 4) === year);
     const rows = decompteRows(subset);
     const totalDays = subset.reduce((s, r) => s + r.days, 0);
+    const totalHours = subset.reduce((s, r) => s + r.hours, 0);
     return `<div class="table-wrap"><table>
-      <thead><tr><th>Motif</th><th style="text-align:right">Décompte</th></tr></thead>
+      <thead><tr><th>Motif</th><th style="text-align:right">Jours</th><th style="text-align:right">Heures</th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><th>Total jours d'absence</th><th style="text-align:right">${totalDays} j</th></tr></tfoot>
+      <tfoot><tr><th>Total absences</th><th style="text-align:right">${totalDays} j</th><th style="text-align:right">${totalHours} h</th></tr></tfoot>
     </table></div>`;
   }
 
@@ -1524,6 +1608,10 @@ function userModal(u, body) {
         <div><label>Nom de compte</label><input id="eu-username" value="${u&&u.username?esc(u.username):''}" autocomplete="off" placeholder="ex. m.dupont"></div>
         <div><label>Email (facultatif)</label><input id="eu-email" type="email" value="${u&&u.email?esc(u.email):''}" autocomplete="off"></div>
       </div>
+      <div class="row">
+        <div><label>Téléphone</label><input id="eu-phone" type="tel" value="${u&&u.phone?esc(u.phone):''}" placeholder="06 12 34 56 78"></div>
+        <div><label>Parent</label><select id="eu-parent"><option value="">Non</option><option value="1" ${u&&u.isParent?'selected':''}>Oui</option></select></div>
+      </div>
       <label>${isNew?'Mot de passe':'Nouveau mot de passe (laisser vide pour ne pas changer)'}</label>
       <input id="eu-password" type="password" autocomplete="new-password" placeholder="6 caractères minimum">
       <div class="row">
@@ -1544,7 +1632,8 @@ function userModal(u, body) {
       overlay.querySelector('#eu-save').onclick = async () => {
         const payload = {
           firstName: val('#eu-firstName'), lastName: val('#eu-lastName'),
-          username: val('#eu-username'), email: val('#eu-email'),
+          username: val('#eu-username'), email: val('#eu-email'), phone: val('#eu-phone'),
+          isParent: !!val('#eu-parent'),
           password: val('#eu-password'),
           groupId: val('#eu-groupId'), role: val('#eu-role'),
           congesN: val('#eu-congesN'), congesN1: val('#eu-congesN1'),
@@ -1561,14 +1650,27 @@ function userModal(u, body) {
 }
 
 async function adminGroups(body) {
-  body.innerHTML = `<div class="card"><h3>Groupes de travail & couleurs</h3>
-    <p class="help">Chaque groupe a une couleur utilisée sur le calendrier.</p>
+  body.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem">
+      <h3 style="margin:0">Groupes de travail & couleurs</h3>
+      <button class="btn accent" id="new-group">+ Ajouter un groupe</button>
+    </div>
+    <p class="help">Chaque groupe a une couleur utilisée sur le calendrier. Supprimer un groupe replace ses salariés en « sans groupe ».</p>
     <div class="table-wrap"><table><thead><tr><th>Nom</th><th>Couleur</th><th></th></tr></thead>
     <tbody>${State.groups.map((g) => `<tr>
-      <td><input value="${esc(g.name)}" id="g-name-${g.id}" style="max-width:200px"></td>
+      <td><input value="${esc(g.name)}" id="g-name-${g.id}" style="max-width:220px"></td>
       <td><input type="color" value="${g.color}" id="g-color-${g.id}" style="width:60px;height:38px;padding:2px"></td>
-      <td><button class="btn sm" data-save-group="${g.id}">Enregistrer</button></td>
+      <td style="white-space:nowrap"><button class="btn sm" data-save-group="${g.id}">Enregistrer</button> <button class="btn danger sm" data-del-group="${g.id}">Suppr.</button></td>
     </tr>`).join('')}</tbody></table></div></div>`;
+  body.querySelector('#new-group').onclick = () => modal({
+    title: 'Nouveau groupe de travail',
+    bodyHTML: `<label>Nom</label><input id="ng-name" placeholder="Ex. Nuit"><label>Couleur</label><input type="color" id="ng-color" value="#64748b" style="width:80px;height:40px;padding:2px">`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ng-save">Créer</button>`,
+    onMount: (ov) => { ov.querySelector('#ng-save').onclick = async () => {
+      try { const { group } = await api('POST', '/admin/groups', { name: ov.querySelector('#ng-name').value, color: ov.querySelector('#ng-color').value }); State.groups.push(group); closeModal(); toast('Groupe créé.', 'ok'); adminGroups(body); }
+      catch (e) { toast(e.message, 'err'); }
+    }; },
+  });
   body.querySelectorAll('[data-save-group]').forEach((btn) => btn.onclick = async () => {
     const id = btn.dataset.saveGroup;
     try {
@@ -1576,6 +1678,12 @@ async function adminGroups(body) {
       const idx = State.groups.findIndex((g) => g.id === id); State.groups[idx] = group;
       toast('Groupe mis à jour.', 'ok');
     } catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-del-group]').forEach((btn) => btn.onclick = async () => {
+    const g = groupById(btn.dataset.delGroup);
+    if (!confirm(`Supprimer le groupe « ${g ? g.name : ''} » ? Ses salariés seront « sans groupe ».`)) return;
+    try { await api('DELETE', `/admin/groups/${btn.dataset.delGroup}`); State.groups = State.groups.filter((x) => x.id !== btn.dataset.delGroup); toast('Groupe supprimé.', 'ok'); adminGroups(body); }
+    catch (e) { toast(e.message, 'err'); }
   });
 }
 
