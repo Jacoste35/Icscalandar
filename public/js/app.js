@@ -72,6 +72,17 @@ function ancienneteText(hireDate) {
   if (!p) return '—';
   return `${p.years} an${p.years>1?'s':''}, ${p.months} mois, ${p.days} j`;
 }
+// Message de remerciement proportionnel à l'ancienneté.
+function anciennetePhilo(hireDate) {
+  const p = ancienneteParts(hireDate);
+  if (!p) return '';
+  const y = p.years;
+  if (y < 1) return "Bienvenue dans l'aventure ! Vos premiers pas comptent déjà pour toute l'équipe. 🌱";
+  if (y < 3) return `${y} an${y>1?'s':''} déjà : votre engagement prend racine. Merci pour votre implication ! 🌿`;
+  if (y < 5) return `${y} ans de fidélité : votre expérience est précieuse pour le collectif. Merci de votre constance. 🌳`;
+  if (y < 10) return `${y} ans parmi nous : un pilier de la maison. Votre dévouement force le respect. Merci infiniment. 🏅`;
+  return `${y} ans de loyauté : une véritable mémoire vivante de l'entreprise. Du fond du cœur, merci pour tout. 🎖️`;
+}
 // Nombre de retards (RET validés) d'un utilisateur depuis N jours.
 function retardCountSince(requests, sinceDays) {
   const limit = iso(addDays(new Date(), -sinceDays));
@@ -350,12 +361,12 @@ function navSections() {
     { title: '', items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
     { title: 'Planning', items: [
       { id: 'calendar', icon: '📅', label: 'Mon Planning' },
-      { id: 'team', icon: '👥', label: 'Mon équipe' },
       { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
     ] },
     { title: 'Mon espace', items: [
       { id: 'mydata', icon: '👤', label: 'Mon Profil' },
       { id: 'requests', icon: '📝', label: 'Mes événements' },
+      { id: 'team', icon: '👥', label: 'Mon équipe' },
       ...(isStaff() ? [{ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' }] : []),
     ] },
   ];
@@ -368,14 +379,61 @@ function navSections() {
 
 let adminBadgeCount = 0;
 
+// Page de garde / conditions d'utilisation, affichée au tout premier accès.
+function renderCGU() {
+  const u = State.user;
+  $app.innerHTML = `
+  <div class="cgu-wrap">
+    <div class="cgu-card">
+      <div class="cgu-head"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" class="cgu-logo" alt=""><h1>Bienvenue ${esc(u.firstName)}</h1></div>
+      <p class="cgu-lead">Avant d'accéder au portail, merci de lire et d'accepter les conditions d'utilisation ci-dessous.</p>
+      <div class="cgu-body">
+        <h3>1. Objet du site</h3>
+        <p>Ce portail est un <strong>outil d'organisation interne</strong> destiné à faciliter le suivi des congés payés, des absences, des heures de récupération (RCC, heures supplémentaires) et du planning des équipes d'INTER COLIS SERVICES. Il a une finalité <strong>purement organisationnelle et informative</strong>.</p>
+        <h3>2. Congés payés et absences</h3>
+        <p>Conformément aux articles <strong>L3141-15 et L3141-16 du Code du travail</strong>, <strong>l'employeur fixe l'ordre et les dates des départs en congé</strong> en fonction des nécessités du service, de l'organisation et de l'activité de l'entreprise.</p>
+        <p>Le dépôt ou la demande d'une date de congé via ce site <strong>ne vaut en aucun cas attribution ou acceptation automatique</strong>. Toute demande doit faire l'objet d'une <strong>validation expresse de la direction</strong> pour être effective. L'enregistrement d'une demande dans l'outil ne crée aucun droit acquis sur la période sollicitée.</p>
+        <p>L'employeur se réserve le droit, pour des raisons de service, de modifier ou refuser une demande, et de fermer certaines périodes à la prise de congé.</p>
+        <h3>3. Exactitude des informations</h3>
+        <p>Les soldes et compteurs affichés sont fournis à titre indicatif. En cas de divergence, les éléments contractuels et les bulletins de paie font foi.</p>
+        <h3>4. Protection des données personnelles (RGPD)</h3>
+        <p>Dans le cadre du fonctionnement du site, INTER COLIS SERVICES traite des données strictement nécessaires : <strong>nom, prénom, nom de compte, mot de passe (chiffré), email, numéro de téléphone, groupe de travail, date d'entrée, soldes de congés et historique des absences</strong>.</p>
+        <ul>
+          <li><strong>Finalité :</strong> gestion et organisation des congés et absences.</li>
+          <li><strong>Base légale :</strong> intérêt légitime de l'employeur et obligations liées à la gestion du personnel.</li>
+          <li><strong>Destinataires :</strong> la direction et l'encadrement habilité de l'entreprise uniquement.</li>
+          <li><strong>Conservation :</strong> pendant la durée du contrat de travail et les délais légaux applicables.</li>
+          <li><strong>Vos droits :</strong> accès, rectification, effacement et limitation de vos données, en vous adressant à la direction (responsable de traitement), conformément au RGPD et à la loi « Informatique et Libertés ».</li>
+        </ul>
+        <p>Les données ne sont ni revendues ni transmises à des tiers à des fins commerciales.</p>
+      </div>
+      <label class="cgu-check"><input type="checkbox" id="cgu-ok"> J'ai lu et j'accepte les conditions d'utilisation et la politique de confidentialité ci-dessus.</label>
+      <div class="cgu-actions">
+        <button class="btn ghost" id="cgu-logout">Se déconnecter</button>
+        <button class="btn accent" id="cgu-accept" disabled>Accéder au portail</button>
+      </div>
+    </div>
+  </div>`;
+  const chk = document.getElementById('cgu-ok');
+  const acc = document.getElementById('cgu-accept');
+  chk.onchange = () => { acc.disabled = !chk.checked; };
+  document.getElementById('cgu-logout').onclick = () => logout();
+  acc.onclick = async () => {
+    try { const r = await api('POST', '/me/accept-cgu'); State.user = r.user; toast('Bienvenue ! Bonne utilisation.', 'ok'); renderApp(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+}
+
 function renderApp() {
   const u = State.user;
+  // Page de garde (conditions d'utilisation) au premier accès.
+  if (!u.cguAccepted) { renderCGU(); return; }
   const sections = navSections();
   $app.innerHTML = `
   <div class="layout">
     <aside class="sidebar">
       <div class="brand"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
-      <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰ Menu</button>
+      <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰</button>
       <nav id="nav">
         ${sections.map((s) => `
           ${s.title ? `<div class="nav-section">${s.title}</div>` : ''}
@@ -487,7 +545,7 @@ async function renderDashboard(main) {
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
     const colleaguesPanel = colleaguesUpcomingHTML(team, events);
 
-    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
+    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(State.user.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
@@ -499,8 +557,8 @@ async function renderDashboard(main) {
         ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
-      ${retardCards}
       ${philo}
+      ${retardCards}
       ${conflictPanel}
       ${pendingPanel}
       ${priorityPanel}
@@ -651,25 +709,53 @@ function conflictAlertHTML(events, team) {
 
 // Congés à venir des collègues du même groupe (anti-doublon de semaine).
 function colleaguesUpcomingHTML(team, events) {
+  const t = iso(new Date());
+  const staff = isStaff();
   const myGroup = State.user.groupId;
   const g = groupById(myGroup);
-  if (!myGroup) return '';
+  const range = (e) => e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
+
+  // Bloc « Mes remplacements à venir » : périodes où je remplace un collègue.
+  const myReplacements = events
+    .filter((e) => e.replacedById === State.user.id && e.endDate >= t && e.category !== 'RET')
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const replBlock = myReplacements.length ? `
+    <div class="card" style="border-left:5px solid var(--accent)">
+      <h3>🔁 Mes remplacements à venir</h3>
+      <p class="help" style="margin-top:-.6rem">Périodes où vous remplacez un collègue absent.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+        ${myReplacements.map((e) => `<span class="date-chip future" title="${esc(e.categoryLabel)}">Remplace ${esc(e.userName)} (${esc(e.groupName)}) : ${range(e)}</span>`).join('')}
+      </div>
+    </div>` : '';
+
+  // Encadrement : vision d'ensemble de TOUTES les absences à venir (tous groupes).
+  if (staff) {
+    const upcoming = events.filter((e) => e.endDate >= t && e.category !== 'RET')
+      .sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(0, 80);
+    return `${replBlock}
+      <div class="card" style="border-left:5px solid var(--brand)">
+        <h3>🗓️ Absences à venir — tous les groupes</h3>
+        <p class="help" style="margin-top:-.6rem">Vision d'ensemble pour anticiper l'organisation.</p>
+        ${upcoming.length === 0 ? `<div class="empty">Aucune absence à venir. 👍</div>` : `
+        <div class="table-wrap"><table>
+          <thead><tr><th>Salarié</th><th>Groupe</th><th>Période</th><th>Motif</th><th>Remplaçant</th></tr></thead>
+          <tbody>${upcoming.map((e) => `<tr><td>${esc(e.userName)}</td><td>${e.groupName!=='—'?`<span class="group-chip" style="background:${e.groupColor}">${esc(e.groupName)}</span>`:'—'}</td><td>${range(e)}</td><td><span class="tag" style="background:${catColor(e.code)}22;color:${catColor(e.code)}">${esc(e.code)}</span> ${esc(e.categoryLabel)}${e.status==='pending'?' <em>(en attente)</em>':''}</td><td>${e.replacedByName?esc(e.replacedByName):'<span class="help">—</span>'}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+  }
+
+  // Salarié : congés à venir de son groupe.
+  if (!myGroup) return replBlock;
   const mates = new Set(team.filter((m) => m.groupId === myGroup && m.id !== State.user.id).map((m) => m.id));
-  const t = iso(new Date());
-  const upcoming = events
-    .filter((e) => mates.has(e.userId) && e.endDate >= t)
-    .sort((a, b) => a.startDate.localeCompare(b.startDate))
-    .slice(0, 30);
-  return `
+  const upcoming = events.filter((e) => mates.has(e.userId) && e.endDate >= t && e.category !== 'RET')
+    .sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(0, 30);
+  return `${replBlock}
     <div class="card" style="border-left:5px solid ${g ? g.color : 'var(--brand-2)'}">
       <h3>🗓️ Congés à venir de mes collègues ${g ? `— ${esc(g.name)}` : ''}</h3>
       <p class="help" style="margin-top:-.6rem">Vérifiez avant de demander une semaine, pour éviter que tout le groupe soit absent en même temps.</p>
       ${upcoming.length === 0 ? `<div class="empty">Aucun congé à venir dans votre groupe. 👍</div>` : `
       <div style="display:flex;flex-wrap:wrap;gap:.4rem">
-        ${upcoming.map((e) => {
-          const range = e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
-          return `<span class="date-chip future ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}">${esc(e.userName)} : ${range} (${esc(e.code)})</span>`;
-        }).join('')}
+        ${upcoming.map((e) => `<span class="date-chip future ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}">${esc(e.userName)} : ${range(e)} (${esc(e.code)})</span>`).join('')}
       </div>`}
     </div>`;
 }
@@ -690,7 +776,7 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
   return `
     <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
       <div class="cal-toolbar"><h3 style="margin:0">${isCurrent?'📍 ':''}${esc(title)} — ${label}</h3></div>
-      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">${isPast?'Qui était absent ?':'Qui sera absent ?'}</p>
+      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">${isPast?'Qui était absent ?':(isCurrent?'Qui est absent ?':'Qui sera absent ?')}</p>
       <div class="week-grid">
         <div class="wrow whead">
           <div class="wcell namecol">Salarié</div>
@@ -747,10 +833,12 @@ async function renderCalendar(main) {
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${admin?`<button class="btn ghost" id="cal-close">🔒 Fermer des jours</button>`:''}
+      ${staff?`<button class="btn ghost" id="cal-lock">🔐 Verrouiller mon planning</button>`:''}
       ${staff?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}
     </div></div>
     <div class="card" id="cal-card"><div class="empty">Chargement…</div></div>`;
   if (staff) document.getElementById('cal-add').onclick = () => adminAssignModal();
+  if (staff) document.getElementById('cal-lock').onclick = () => myUnavailModal();
   if (admin) document.getElementById('cal-close').onclick = () => closedPeriodsModal(main);
   try {
     await ensureHolidays(State.cal.cursor.getFullYear());
@@ -764,20 +852,39 @@ async function renderCalendar(main) {
 
 // Modal admin/responsable : attribuer ou proposer une absence pour un salarié.
 // Options d'une liste déroulante d'utilisateurs, regroupées par groupe.
-function teamOptgroups(team) {
+// annotate(m) peut renvoyer un suffixe (ex. " (pas disponible)") ; si elle
+// renvoie false, l'option est désactivée.
+function teamOptgroups(team, selectedId, annotate) {
   const order = State.groups.map((g) => g.id).concat([null]);
   const byG = {}; team.forEach((m) => { const k = m.groupId || 'none'; (byG[k] = byG[k] || []).push(m); });
   return order.map((gid) => {
     const list = byG[gid || 'none']; if (!list || !list.length) return '';
     const g = groupById(gid);
     list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-    return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">${list.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</optgroup>`;
+    return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">${list.map((m) => {
+      const suf = annotate ? annotate(m) : '';
+      const dis = suf && /pas disponible/i.test(suf) ? ' disabled' : '';
+      return `<option value="${m.id}" ${m.id===selectedId?'selected':''}${dis}>${esc(m.lastName)} ${esc(m.firstName)}${suf?esc(suf):''}</option>`;
+    }).join('')}</optgroup>`;
   }).join('');
+}
+// Conflit de remplacement côté client (pour annoter la liste des remplaçants).
+const REPLACER_BLOCKING_CODES = ['CP', 'RCC', 'RCP'];
+function replacerUnavailableClient(member, events, start, end, exceptUserId) {
+  if (!start || !end) return null;
+  if (member.id === exceptUserId) return 'le salarié concerné';
+  if ((member.unavail || []).some((p) => p.start <= end && p.end >= start)) return 'planning verrouillé';
+  for (const ev of events) {
+    if (!(ev.startDate <= end && ev.endDate >= start)) continue;
+    if (ev.userId === member.id && REPLACER_BLOCKING_CODES.includes(ev.category)) return 'en congé/repos';
+    if (ev.replacedById === member.id) return 'déjà remplaçant';
+  }
+  return null;
 }
 
 async function adminAssignModal(prefillDate, prefillUserId) {
-  let team = [];
-  try { team = (await api('GET', '/team')).team; } catch (e) { toast(e.message, 'err'); return; }
+  let team = [], allEvents = [];
+  try { team = (await api('GET', '/team')).team; allEvents = (await api('GET', '/calendar')).events; } catch (e) { toast(e.message, 'err'); return; }
   team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
   // Tous les motifs sauf DCP (état dérivé d'une demande de CP en attente).
   const cats = State.categories.filter((c) => c.code !== 'DCP');
@@ -789,16 +896,18 @@ async function adminAssignModal(prefillDate, prefillUserId) {
       ${isResp?`<div class="alert info">En tant que responsable, votre saisie sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:''}
       <form id="form-assign">
         <label>Salarié</label>
-        <select name="userId" required>${team.map((m) => `<option value="${m.id}" ${m.id===prefillUserId?'selected':''}>${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
+        <select name="userId" required>${teamOptgroups(team, prefillUserId)}</select>
         <label>Motif</label>
         <select name="category" required>${cats.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}</select>
+        <div id="assign-solde" class="assign-solde"></div>
         <div id="pool-wrap" style="display:none"><label>Imputer sur le solde</label><select name="pool"></select></div>
         <div id="frac-wrap2" style="display:none"><label>Prise du congé (maternité/paternité)</label>
           <select name="fractionnement"><option value="complet">Complète</option><option value="fractionne">Fractionnée</option></select></div>
         <div id="ret-wrap" style="display:none"><label>Durée du retard</label>
           <select name="retardMinutes"><option value="30">30 minutes</option><option value="60">1 heure</option><option value="120">2 heures</option><option value="180">3 heures et plus</option></select></div>
         <label>Remplacé par (facultatif)</label>
-        <select name="replacedById"><option value="">— Personne —</option>${teamOptgroups(team)}</select>
+        <select name="replacedById"><option value="">— Personne —</option></select>
+        <p class="help" id="repl-note" style="display:none"></p>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
           <div id="end-col"><label>Au</label><input type="date" name="endDate" value="${prefillDate||''}"></div>
@@ -818,7 +927,22 @@ async function adminAssignModal(prefillDate, prefillUserId) {
       const retWrap = overlay.querySelector('#ret-wrap');
       const endCol = overlay.querySelector('#end-col');
       const preview = overlay.querySelector('#assign-preview');
+      const soldeDiv = overlay.querySelector('#assign-solde');
       const todayStr = iso(new Date());
+      // Affiche le décompte disponible du salarié sélectionné pour ce motif.
+      const refreshSolde = () => {
+        const m = team.find((x) => x.id === f.userId.value);
+        const cat = f.category.value;
+        const bal = m && m.balances;
+        if (!bal) { soldeDiv.innerHTML = ''; soldeDiv.style.display = 'none'; return; }
+        let txt = '';
+        if (cat === 'CP') txt = `Solde du salarié — Congés N : <strong>${bal.congesN} j</strong> · Congés N-1 : <strong>${bal.congesN1} j</strong>`;
+        else if (cat === 'RCP') txt = `Solde de récupération (heures sup.) : <strong>${bal.heuresSupp} h</strong> ${hToDays(bal.heuresSupp)}`;
+        else if (cat === 'RCC') txt = `Solde RCC : <strong>${bal.rcc} h</strong> ${hToDays(bal.rcc)}`;
+        else { soldeDiv.style.display = 'none'; soldeDiv.innerHTML = ''; return; }
+        soldeDiv.style.display = '';
+        soldeDiv.innerHTML = `📊 ${txt}<div class="help" style="margin-top:.2rem">N'attribuez que ce qui figure dans son décompte.</div>`;
+      };
       const refreshPool = () => {
         const cat = f.category.value;
         const opts = State.pools[cat];
@@ -829,9 +953,25 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         retWrap.style.display = isRet ? '' : 'none';
         endCol.style.display = isRet ? 'none' : '';       // retard = une seule date
         f.startDate.max = isRet ? todayStr : '';          // pas de retard futur
+        refreshSolde();
       };
+      const replNote = overlay.querySelector('#repl-note');
+      // Recompose la liste des remplaçants disponibles selon les dates choisies.
+      const refreshReplacers = () => {
+        const isRet = f.category.value === 'RET';
+        const s = f.startDate.value, e = isRet ? f.startDate.value : f.endDate.value;
+        const exceptId = f.userId.value;
+        const current = f.replacedById.value;
+        const annotate = (m) => { const c = replacerUnavailableClient(m, allEvents, s, e, exceptId); return c ? ` (pas disponible — ${c})` : ''; };
+        f.replacedById.innerHTML = `<option value="">— Personne —</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId), current, annotate);
+        if (![...f.replacedById.options].some((o) => o.value === current)) f.replacedById.value = '';
+        replNote.style.display = (s && e) ? '' : 'none';
+        replNote.textContent = (s && e) ? 'Seuls les salariés disponibles sur la période peuvent être choisis comme remplaçants.' : '';
+      };
+      f.userId.onchange = () => { refreshSolde(); refreshReplacers(); };
       const update = () => {
         const cat = f.category.value;
+        refreshReplacers();
         if (cat === 'RET') { preview.textContent = f.startDate.value ? `→ Retard du ${fmtDate(f.startDate.value)}.` : ''; return; }
         const s = f.startDate.value, e = f.endDate.value;
         preview.textContent = (s && e && e >= s) ? `→ ${countWorkingDaysClient(s, e)} jour(s) ouvré(s).` : '';
@@ -862,11 +1002,49 @@ async function adminAssignModal(prefillDate, prefillUserId) {
   });
 }
 
+// Modal « Verrouiller mon planning » : indisponibilités personnelles.
+function myUnavailModal() {
+  const list = () => (State.user.unavail || []).slice().sort((a, b) => a.start.localeCompare(b.start)).map((p) => `
+    <tr><td>${esc(p.label)}</td><td>${fmtDate(p.start)} → ${fmtDate(p.end)}</td>
+    <td><button class="btn danger sm" data-del-un="${p.id}">Suppr.</button></td></tr>`).join('');
+  modal({
+    title: '🔐 Verrouiller mon planning',
+    bodyHTML: `
+      <p class="help">Indiquez les jours ou semaines où vous n'êtes pas disponible. Sur ces dates, vous serez retiré du vivier de remplaçants proposés pour les autres salariés.</p>
+      <form id="form-un">
+        <label>Intitulé</label><input name="label" placeholder="Ex. Indisponible / formation">
+        <div class="row"><div><label>Du</label><input type="date" name="start" required></div><div><label>Au</label><input type="date" name="end" required></div></div>
+        <button class="btn accent full" type="submit">Ajouter l'indisponibilité</button>
+      </form>
+      <h4 style="margin:1.2rem 0 .4rem">Mes indisponibilités</h4>
+      <div class="table-wrap"><table><tbody id="un-list">${list() || '<tr><td colspan="3" class="help">Aucune.</td></tr>'}</tbody></table></div>`,
+    footHTML: `<button class="btn" data-close>Fermer</button>`,
+    onMount: (ov) => {
+      const refresh = () => { ov.querySelector('#un-list').innerHTML = list() || '<tr><td colspan="3" class="help">Aucune.</td></tr>'; bindDel(); };
+      const bindDel = () => ov.querySelectorAll('[data-del-un]').forEach((b) => b.onclick = async () => {
+        try { const r = await api('DELETE', '/me/unavail/' + b.dataset.delUn); State.user = r.user; toast('Indisponibilité supprimée.', 'ok'); refresh(); }
+        catch (e) { toast(e.message, 'err'); }
+      });
+      bindDel();
+      ov.querySelector('#form-un').onsubmit = async (e) => {
+        e.preventDefault(); const f = e.target;
+        try { const r = await api('POST', '/me/unavail', { label: f.label.value, start: f.start.value, end: f.end.value }); State.user = r.user; toast('Indisponibilité ajoutée.', 'ok'); f.reset(); refresh(); }
+        catch (err) { toast(err.message, 'err'); }
+      };
+    },
+  });
+}
+
 // Modal admin : gérer les journées fermées à la prise de congé.
 function closedPeriodsModal(main) {
+  // Chaque fermeture est modifiable (intitulé + dates), même déjà verrouillée.
   const list = () => (State.closedPeriods || []).slice().sort((a, b) => a.start.localeCompare(b.start)).map((p) => `
-    <tr><td>${esc(p.label)}</td><td>${fmtDate(p.start)} → ${fmtDate(p.end)}</td>
-    <td><button class="btn danger sm" data-del-closed="${p.id}">Suppr.</button></td></tr>`).join('');
+    <tr>
+      <td><input id="cl-label-${p.id}" value="${esc(p.label)}" style="min-width:140px"></td>
+      <td><input type="date" id="cl-start-${p.id}" value="${p.start}"></td>
+      <td><input type="date" id="cl-end-${p.id}" value="${p.end}"></td>
+      <td style="white-space:nowrap"><button class="btn ok sm" data-edit-closed="${p.id}">💾</button> <button class="btn danger sm" data-del-closed="${p.id}">Suppr.</button></td>
+    </tr>`).join('');
   modal({
     title: 'Fermer des journées à la prise de congé',
     bodyHTML: `
@@ -880,16 +1058,24 @@ function closedPeriodsModal(main) {
         </div>
         <button class="btn accent full" type="submit">Ajouter la fermeture</button>
       </form>
-      <h4 style="margin:1.2rem 0 .4rem">Fermetures actuelles</h4>
-      <div class="table-wrap"><table><tbody id="closed-list">${list() || '<tr><td colspan="3" class="help">Aucune fermeture.</td></tr>'}</tbody></table></div>`,
+      <h4 style="margin:1.2rem 0 .4rem">Fermetures actuelles (modifiables)</h4>
+      <div class="table-wrap"><table><thead><tr><th>Intitulé</th><th>Du</th><th>Au</th><th></th></tr></thead><tbody id="closed-list">${list() || '<tr><td colspan="4" class="help">Aucune fermeture.</td></tr>'}</tbody></table></div>`,
     footHTML: `<button class="btn" data-close>Fermer</button>`,
     onMount: (overlay) => {
-      const refresh = () => { overlay.querySelector('#closed-list').innerHTML = list() || '<tr><td colspan="3" class="help">Aucune fermeture.</td></tr>'; bindDel(); if (State.view==='calendar') drawCalendar(); };
-      const bindDel = () => overlay.querySelectorAll('[data-del-closed]').forEach((b) => b.onclick = async () => {
-        try { const r = await api('DELETE', '/admin/closed-periods/' + b.dataset.delClosed); State.closedPeriods = r.closedPeriods; toast('Fermeture supprimée.', 'ok'); refresh(); }
-        catch (e) { toast(e.message, 'err'); }
-      });
-      bindDel();
+      const refresh = () => { overlay.querySelector('#closed-list').innerHTML = list() || '<tr><td colspan="4" class="help">Aucune fermeture.</td></tr>'; bindRows(); if (State.view==='calendar') drawCalendar(); };
+      const bindRows = () => {
+        overlay.querySelectorAll('[data-del-closed]').forEach((b) => b.onclick = async () => {
+          try { const r = await api('DELETE', '/admin/closed-periods/' + b.dataset.delClosed); State.closedPeriods = r.closedPeriods; toast('Fermeture supprimée.', 'ok'); refresh(); }
+          catch (e) { toast(e.message, 'err'); }
+        });
+        overlay.querySelectorAll('[data-edit-closed]').forEach((b) => b.onclick = async () => {
+          const id = b.dataset.editClosed;
+          const payload = { label: overlay.querySelector('#cl-label-'+id).value, start: overlay.querySelector('#cl-start-'+id).value, end: overlay.querySelector('#cl-end-'+id).value };
+          try { const r = await api('PUT', '/admin/closed-periods/' + id, payload); State.closedPeriods = r.closedPeriods; toast('Fermeture mise à jour.', 'ok'); refresh(); }
+          catch (e) { toast(e.message, 'err'); }
+        });
+      };
+      bindRows();
       overlay.querySelector('#form-closed').onsubmit = async (e) => {
         e.preventDefault(); const f = e.target;
         try { const r = await api('POST', '/admin/closed-periods', { label: f.label.value, start: f.start.value, end: f.end.value }); State.closedPeriods = r.closedPeriods; toast('Fermeture ajoutée.', 'ok'); f.reset(); refresh(); }
@@ -1102,8 +1288,12 @@ function viewYear(cursor) {
       const d = addDays(gridStart, i);
       if (d.getMonth() !== m) { html += `<span class="dim">${d.getDate()}</span>`; continue; }
       const ds = iso(d);
+      const closed = closedPeriodFor(ds);
       const evs = eventsOnDay(ds);
-      if (evs.length) {
+      if (closed) {
+        // Jour fermé à la réservation : en rouge.
+        html += `<span class="mini-closed" title="Fermé à la réservation : ${esc(closed.label)}">${d.getDate()}</span>`;
+      } else if (evs.length) {
         const color = evColor(evs[0]);
         html += `<span class="has-ev" style="background:${color}" title="${evs.length} absence(s) le ${fmtDate(ds)} : ${esc(evs.map((e)=>e.userName.split(' ')[0]+' '+e.code).join(', '))}">${d.getDate()}</span>`;
       } else {
@@ -1220,9 +1410,13 @@ async function renderMyData(main) {
    ========================================================================= */
 async function renderRequests(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mes événements</h1><p>Vos soldes, vos demandes et votre disponibilité sur l'année.</p></div>
-    <button class="btn accent" id="new-req">+ Nouvelle demande</button></div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      <button class="btn ghost" id="req-lock">🔐 Verrouiller mon planning</button>
+      <button class="btn accent" id="new-req">+ Nouvelle demande</button>
+    </div></div>
     <div id="req-list" class="empty">Chargement…</div>`;
   document.getElementById('new-req').onclick = openRequestModal;
+  document.getElementById('req-lock').onclick = () => myUnavailModal();
   try {
     const { user } = await api('GET', '/me'); State.user = user;
     const { events } = await api('GET', '/calendar');
@@ -1238,8 +1432,8 @@ async function renderRequests(main) {
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
       <div class="card">
-        <h3>Disponibilité de l'année (52 semaines)</h3>
-        <p class="help" style="margin-top:-.6rem">Vert = libre, rouge = du monde absent dans votre groupe, 🔒 = période fermée à la réservation.</p>
+        <h3>${events.filter((ev) => ev.category!=='RET' && ev.groupId===user.groupId && ev.endDate>=iso(startOfWeekMonday(new Date())) && ev.startDate<=iso(addDays(startOfWeekMonday(new Date()),83))).length} absence(s) à prévoir dans les 12 prochaines semaines — Disponibilité de l'année</h3>
+        <p class="help" style="margin-top:-.6rem">Vert = libre · rouge = absence prévue dans votre groupe (avec le nombre) · bleu = vous · 🔒 = fermé. Les retards n'affectent pas la disponibilité.</p>
         ${yearAvailabilityHTML(user, events)}
       </div>
       <div class="card">
@@ -1263,19 +1457,20 @@ async function renderRequests(main) {
 
 // Disponibilité sur 52 semaines pour le groupe de l'utilisateur.
 function yearAvailabilityHTML(user, events) {
+  // Les retards (RET) n'affectent pas la disponibilité à la réservation.
   let ws = startOfWeekMonday(new Date());
   let html = '<div class="team-weeks">';
   for (let i = 0; i < 52; i++) {
     const we = addDays(ws, 5);
     const wsS = iso(ws), weS = iso(we);
     const closed = (State.closedPeriods || []).some((p) => p.start <= weS && p.end >= wsS);
-    const groupBusy = events.filter((ev) => ev.groupId === user.groupId && ev.userId !== user.id && ev.startDate <= weS && ev.endDate >= wsS);
-    const mine = events.filter((ev) => ev.userId === user.id && ev.startDate <= weS && ev.endDate >= wsS);
+    const groupBusy = events.filter((ev) => ev.category !== 'RET' && ev.groupId === user.groupId && ev.userId !== user.id && ev.startDate <= weS && ev.endDate >= wsS);
+    const mine = events.filter((ev) => ev.category !== 'RET' && ev.userId === user.id && ev.startDate <= weS && ev.endDate >= wsS);
     let cls = 'free', state = '✓';
     if (closed) { cls = 'closed'; state = '🔒'; }
     else if (mine.length) { cls = 'mine'; state = 'moi'; }
-    else if (groupBusy.length) { cls = 'busy'; state = groupBusy.length + '👤'; }
-    const title = closed ? 'Fermé à la réservation' : (mine.length ? 'Vous êtes absent' : (groupBusy.length ? groupBusy.length + ' absent(s) dans le groupe' : 'Libre'));
+    else if (groupBusy.length) { cls = 'busy'; state = String(groupBusy.length); }
+    const title = closed ? 'Fermé à la réservation' : (mine.length ? 'Vous êtes absent' : (groupBusy.length ? groupBusy.length + ' absence(s) prévue(s) dans le groupe' : 'Libre'));
     html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)} — ${title}"><div class="tw-date">S${weekNum(ws)} ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div><div class="tw-state">${state}</div></div>`;
     ws = addDays(ws, 7);
   }
@@ -1316,10 +1511,14 @@ const PMT_DURATIONS = {
   mat_jum: { label: 'Maternité jumeaux (34 semaines)', days: 238 },
   mat_tri: { label: 'Maternité triplés ou + (46 semaines)', days: 322 },
 };
-function openRequestModal() {
+async function openRequestModal() {
   const selectable = State.categories.filter((c) => c.requestable);
   const b = State.user.balances;
   const soldeExtra = (c) => c.code === 'RCP' ? ` — solde : ${b.heuresSupp} h` : c.code === 'RCC' ? ` — solde : ${b.rcc} h` : '';
+  // Pour les notes contextuelles (responsable disponible, période fermée).
+  let allEvents = [], allTeam = [];
+  try { allEvents = (await api('GET', '/calendar')).events; allTeam = (await api('GET', '/team')).team; } catch (e) {}
+  const myRespIds = allTeam.filter((m) => m.role === 'responsable' && m.groupId === State.user.groupId).map((m) => m.id);
   modal({
     title: 'Nouvelle demande',
     bodyHTML: `
@@ -1391,6 +1590,14 @@ function openRequestModal() {
           const isHour = cat in hourBal;
           let txt = n > 0 ? `→ ${n} jour(s) ouvré(s)${isHour?` = ${n*7} h`:''} décompté(s).` : '→ Aucun jour ouvré sur cette période.';
           if (isHour) txt += ` Solde disponible : ${hourBal[cat]} h.`;
+          // Période fermée à la réservation ?
+          const closedOverlap = (State.closedPeriods || []).some((p) => p.start <= e && p.end >= s);
+          if (closedOverlap) { preview.innerHTML = esc(txt) + ` <span style="color:var(--danger);font-weight:700">(Dates non disponible à la réservation)</span>`; return; }
+          // Un responsable du groupe disponible sur la période ?
+          if (myRespIds.length) {
+            const respBusy = allEvents.some((ev) => myRespIds.includes(ev.userId) && ev.category !== 'RET' && ev.startDate <= e && ev.endDate >= s);
+            if (!respBusy) { preview.innerHTML = esc(txt) + ` <span style="color:var(--ok);font-weight:700">(Un responsable semble être disponible à cette date)</span>`; return; }
+          }
           preview.textContent = txt;
         } else preview.textContent = '';
       };
@@ -1439,62 +1646,88 @@ function dateStatus(startDate, endDate) {
   return 'current';
 }
 
-// Pastilles de dates d'absence d'un membre, triées et colorées par statut.
+// Pastilles d'absences PRÉVUES d'un membre (hors retards), colorées par statut.
 function memberAbsenceChips(memberId, events) {
-  const evs = events.filter((e) => e.userId === memberId).sort((a, b) => a.startDate.localeCompare(b.startDate));
-  if (!evs.length) return '<span class="help">Aucune absence enregistrée.</span>';
+  const evs = events.filter((e) => e.userId === memberId && e.category !== 'RET').sort((a, b) => a.startDate.localeCompare(b.startDate));
+  if (!evs.length) return '<span class="help">Aucune absence prévue.</span>';
   return evs.map((e) => {
     const st = dateStatus(e.startDate, e.endDate);
     const range = e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
-    return `<span class="date-chip ${st} ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}${e.status==='pending'?' (en attente)':''}">${esc(e.code)} ${range}</span>`;
+    return `<span class="date-chip ${st} ${e.status==='pending'?'is-pending':''}" title="${esc(calTooltip(e))}">${esc(e.code)} ${range}</span>`;
   }).join(' ');
+}
+// Pastilles de retards d'un membre (en jaune).
+function memberRetardChips(memberId, events) {
+  const rs = events.filter((e) => e.userId === memberId && e.category === 'RET').sort((a, b) => b.startDate.localeCompare(a.startDate));
+  if (!rs.length) return '';
+  return rs.map((e) => `<span class="date-chip retard">⏱️ Retard ${fmtDate(e.startDate)}${e.retardMinutes?` (${e.retardMinutes} min)`:''}</span>`).join(' ');
+}
+
+// Mini-calendrier de disponibilité (12 semaines). Les retards n'affectent PAS
+// la disponibilité ; seules les absences prévues (hors retard) bloquent la semaine.
+function teamWeeksMini(members, events) {
+  const ids = new Set(members.map((m) => m.id));
+  let ws = startOfWeekMonday(new Date());
+  let html = '<div class="team-weeks">';
+  for (let i = 0; i < 12; i++) {
+    const we = addDays(ws, 5);
+    const wsS = iso(ws), weS = iso(we);
+    const planned = events.filter((ev) => ids.has(ev.userId) && ev.category !== 'RET' && ev.startDate <= weS && ev.endDate >= wsS);
+    const closedWeek = (State.closedPeriods || []).some((p) => p.start <= weS && p.end >= wsS);
+    const names = [...new Set(planned.map((t) => t.userName.split(' ')[0]))];
+    let cls = 'free', state = '✓';
+    if (closedWeek) { cls = 'closed'; state = '🔒'; }
+    else if (planned.length) { cls = 'busy'; state = String(planned.length); }
+    html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}${closedWeek?' — fermée':(planned.length?' — '+esc(names.join(', ')):' — libre')}"><div class="tw-date">S${weekNum(ws)} ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div><div class="tw-state">${state}</div></div>`;
+    ws = addDays(ws, 7);
+  }
+  return html + '</div>';
+}
+// Nombre d'absences prévues (hors retard) sur les 12 prochaines semaines.
+function plannedCount12w(members, events) {
+  const ids = new Set(members.map((m) => m.id));
+  const start = iso(startOfWeekMonday(new Date()));
+  const end = iso(addDays(startOfWeekMonday(new Date()), 12 * 7 - 1));
+  return events.filter((ev) => ids.has(ev.userId) && ev.category !== 'RET' && ev.startDate <= end && ev.endDate >= start).length;
 }
 
 async function renderTeam(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>Mon équipe</h1><p>Salariés, groupes et dates de congés / absences.</p></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Mon équipe</h1><p>Disponibilité des équipes, congés prévus et retards.</p></div></div>
     <div class="legend" style="margin-bottom:1rem">
-      <div class="item"><span class="date-chip past">passées</span></div>
-      <div class="item"><span class="date-chip current">en cours</span></div>
-      <div class="item"><span class="date-chip future">à venir</span></div>
+      <div class="item"><span class="team-week free" style="width:auto;padding:.1rem .5rem">vert</span> semaine libre</div>
+      <div class="item"><span class="team-week busy" style="width:auto;padding:.1rem .5rem">rouge</span> absence prévue (avec le nombre)</div>
+      <div class="item"><span class="date-chip retard">jaune</span> retard (n'affecte pas les congés)</div>
+      <div class="item"><span class="team-week closed" style="width:auto;padding:.1rem .5rem">🔒</span> fermé</div>
     </div>
     <div id="team" class="empty">Chargement…</div>`;
   try {
     const { team } = await api('GET', '/team');
     const { events } = await api('GET', '/calendar');
+    // Les responsables d'une équipe sont rattachés au tableau de leur équipe.
+    const RESP_TO_TEAM = { grp_resp_gls: 'grp_gls', grp_resp_ciblex: 'grp_ciblex', grp_resp_fedex: 'grp_fedex' };
+    const teamGroupOf = (m) => RESP_TO_TEAM[m.groupId] || m.groupId;
     const byGroup = {};
-    team.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
+    team.forEach((m) => { const k = teamGroupOf(m) || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
     const el = document.getElementById('team'); el.className = '';
-    // Mini-calendrier : 12 prochaines semaines, indique les semaines réservées.
-    const teamWeeksMini = (members) => {
-      const memberIds = new Set(members.map((m) => m.id));
-      let ws = startOfWeekMonday(new Date());
-      let html = '<div class="team-weeks">';
-      for (let i = 0; i < 12; i++) {
-        const we = addDays(ws, 5);
-        const taken = events.filter((ev) => memberIds.has(ev.userId) && ev.startDate <= iso(we) && ev.endDate >= iso(ws));
-        const names = [...new Set(taken.map((t) => t.userName.split(' ')[0]))];
-        const cls = taken.length ? 'busy' : 'free';
-        html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}${taken.length?' — '+esc(names.join(', ')):' — libre'}">
-          <div class="tw-date">${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div>
-          <div class="tw-state">${taken.length ? names.length + '👤' : '✓ libre'}</div>
-        </div>`;
-        ws = addDays(ws, 7);
-      }
-      return html + '</div>';
-    };
-    const groupCard = (g, members) => `<div class="card">
-      <h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} &nbsp;${members.length} membre(s)</h3>
-      ${members.length?`<p class="help" style="margin-top:-.4rem">Disponibilité des 12 prochaines semaines (vert = libre) :</p>${teamWeeksMini(members)}`:''}
-      ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => `
-        <div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
+    const groupCard = (g, members) => {
+      members = members.slice().sort((a, b) => (a.role === 'responsable' ? 0 : 1) - (b.role === 'responsable' ? 0 : 1) || (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+      const n12 = plannedCount12w(members, events);
+      return `<div class="card">
+      <h3>${n12} absence(s) à prévoir dans les 12 prochaines semaines — ${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${members.length} membre(s)</span></h3>
+      ${members.length?`<p class="help" style="margin-top:-.4rem">Disponibilité des 12 prochaines semaines :</p>${teamWeeksMini(members, events)}`:''}
+      ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => {
+        const ret = memberRetardChips(m.id, events);
+        return `<div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap">
             <strong>${g?`<span class="dot" style="background:${g.color}"></span> `:''}${esc(m.firstName)} ${esc(m.lastName)}</strong>
-            <span class="help">${roleLabel(m.role)}</span>
+            <span class="help">${roleLabel(m.role)}${m.role==='responsable'?' (planning inclus)':''}</span>
           </div>
+          ${ret?`<div style="margin-top:.35rem;display:flex;flex-wrap:wrap;gap:.3rem">${ret}</div>`:''}
           <div style="margin-top:.45rem;display:flex;flex-wrap:wrap;gap:.35rem">${memberAbsenceChips(m.id, events)}</div>
-        </div>`).join('')}
-    </div>`;
-    el.innerHTML = State.groups.map((g) => groupCard(g, byGroup[g.id] || [])).join('')
+        </div>`; }).join('')}
+    </div>`; };
+    const shown = new Set(Object.keys(RESP_TO_TEAM));
+    el.innerHTML = State.groups.filter((g) => !shown.has(g.id)).map((g) => groupCard(g, byGroup[g.id] || [])).join('')
       + (byGroup['none'] ? groupCard(null, byGroup['none']) : '');
   } catch (e) { document.getElementById('team').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
@@ -1773,12 +2006,39 @@ async function adminReqs(body) {
     let note = '';
     if (decision === 'rejected') { note = prompt('Motif du refus (facultatif) :') || ''; }
     try { await api('POST', `/admin/requests/${id}/decide`, { decision, adminNote: note }); toast(decision==='approved'?'Demande validée, solde mis à jour.':'Demande refusée.', 'ok'); refreshAdminBadge(); adminReqs(body); }
-    catch (e) { toast(e.message, 'err'); }
+    catch (e) {
+      // Conflit de remplaçant : popup bloquant, on ne valide pas.
+      if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message);
+      else toast(e.message, 'err');
+    }
   });
+  body.querySelectorAll('[data-repl]').forEach((btn) => btn.onclick = () => replacementModal(requests.find((r) => r.id === btn.dataset.repl), body));
   body.querySelectorAll('[data-del-req]').forEach((btn) => btn.onclick = async () => {
     if (!confirm('Supprimer cet évènement et libérer les dates ? (le solde est recrédité si la demande était validée)')) return;
     try { await api('DELETE', `/admin/requests/${btn.dataset.delReq}`); toast('Évènement supprimé, dates libérées.', 'ok'); refreshAdminBadge(); adminReqs(body); }
     catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Attribuer / changer le remplaçant d'une demande (depuis les demandes en attente).
+async function replacementModal(req, body) {
+  if (!req) return;
+  let team = [], events = [];
+  try { team = (await api('GET', '/team')).team; events = (await api('GET', '/calendar')).events; } catch (e) { toast(e.message, 'err'); return; }
+  const annotate = (m) => { const c = replacerUnavailableClient(m, events, req.startDate, req.endDate, req.userId); return c ? ` (pas disponible — ${c})` : ''; };
+  modal({
+    title: `Remplaçant — ${req.userName}`,
+    bodyHTML: `
+      <p class="help">Période : ${fmtDate(req.startDate)} → ${fmtDate(req.endDate)}. Seuls les salariés disponibles sur cette période sont proposés.</p>
+      <label>Remplaçant</label>
+      <select id="repl-sel"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById, annotate)}</select>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="repl-save">Enregistrer</button>`,
+    onMount: (ov) => {
+      ov.querySelector('#repl-save').onclick = async () => {
+        try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: ov.querySelector('#repl-sel').value || null }); closeModal(); toast('Remplaçant mis à jour.', 'ok'); adminReqs(body); }
+        catch (e) { if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message); else toast(e.message, 'err'); }
+      };
+    },
   });
 }
 
@@ -1793,7 +2053,8 @@ function adminReqRow(r, rank) {
     <td>${esc(r.userName)}${parentTag(r)}</td>
     <td>${groupChip(r)}</td>
     <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
-    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}</td>
+    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}
+      <div style="margin-top:.2rem">${r.replacedByName?`<span class="help" style="color:var(--brand-2)">Remplacé par : <strong>${esc(r.replacedByName)}</strong></span> `:''}<button class="btn ghost sm" data-repl="${r.id}">${r.replacedByName?'Modifier remplaçant':'+ Remplaçant'}</button></div></td>
     <td>${orderBadge(rank)}</td>
     <td>${r.days} j${reqHours(r)}</td>
     <td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td>

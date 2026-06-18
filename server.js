@@ -213,6 +213,8 @@ app.post('/api/register', async (req, res) => {
     passwordHash,
     isParent: false,
     suspended: false,
+    cguAccepted: false,
+    unavail: [],
     hireDate: validDate(hireDate) ? hireDate : null,
     // Le tout premier compte créé devient administrateur et est actif.
     role: isFirstUser ? 'admin' : 'employee',
@@ -265,6 +267,51 @@ app.put('/api/me', authRequired, async (req, res) => {
   await save();
   res.json({ user: publicUser(req.user) });
 });
+
+// Acceptation des conditions d'utilisation (page de garde au 1er accès).
+app.post('/api/me/accept-cgu', authRequired, async (req, res) => {
+  req.user.cguAccepted = true;
+  req.user.cguAcceptedAt = new Date().toISOString();
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+
+// --- Indisponibilités personnelles (« Verrouiller mon planning ») -----------
+// Tout utilisateur peut déclarer des jours/semaines où il n'est pas disponible.
+// Ces dates le retirent du vivier de remplaçants pour les autres salariés.
+app.post('/api/me/unavail', authRequired, async (req, res) => {
+  const { start, end, label } = req.body || {};
+  if (!validDate(start) || !validDate(end)) return res.status(400).json({ error: 'Dates invalides' });
+  if (end < start) return res.status(400).json({ error: 'La date de fin précède la date de début' });
+  if (!Array.isArray(req.user.unavail)) req.user.unavail = [];
+  req.user.unavail.push({ id: nextId('request'), start, end, label: String(label || 'Indisponible').trim() });
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+app.delete('/api/me/unavail/:id', authRequired, async (req, res) => {
+  req.user.unavail = (req.user.unavail || []).filter((u) => u.id !== req.params.id);
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+
+// Indique si un salarié peut servir de remplaçant sur [start, end] :
+// - pas en congé payé / repos / récupération (CP, RCC, RCP) validé ou en attente
+// - pas déjà affecté comme remplaçant d'une autre tâche sur la période
+// - pas en indisponibilité personnelle (planning verrouillé)
+const REPLACER_BLOCKING = ['CP', 'RCC', 'RCP'];
+function replacerConflict(db, replacerId, start, end, exceptReqId) {
+  const u = db.users.find((x) => x.id === replacerId);
+  if (!u) return 'introuvable';
+  if ((u.unavail || []).some((p) => rangesOverlap(start, end, p.start, p.end))) return 'planning verrouillé';
+  for (const r of db.requests) {
+    if (r.id === exceptReqId) continue;
+    if (r.status === 'rejected') continue;
+    if (!rangesOverlap(start, end, r.startDate, r.endDate)) continue;
+    if (r.userId === replacerId && REPLACER_BLOCKING.includes(r.category)) return 'en congé/repos';
+    if (r.replacedById === replacerId) return 'déjà remplaçant ailleurs';
+  }
+  return null;
+}
 
 // Réglages calendrier (vacances scolaires, fermetures) — lecture pour tous.
 app.get('/api/settings', authRequired, (req, res) => {
@@ -354,6 +401,7 @@ app.get('/api/holidays', authRequired, (req, res) => {
 app.get('/api/team', authRequired, (req, res) => {
   const db = getData();
   const isAdmin = req.user.role === 'admin';
+  const isStaff = isAdmin || req.user.role === 'responsable';
   const team = db.users
     .filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => {
@@ -368,6 +416,9 @@ app.get('/api/team', authRequired, (req, res) => {
         phone: u.phone || null,
         isParent: Boolean(u.isParent),
         hireDate: u.hireDate || null,
+        // Les soldes et indisponibilités ne sont exposés qu'à l'encadrement.
+        balances: isStaff ? { ...u.balances } : undefined,
+        unavail: isStaff ? (u.unavail || []) : undefined,
       };
     });
   res.json({ team });
@@ -573,6 +624,8 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     phone: String(phone || '').trim() || null,
     hireDate: validDate(hireDate) ? hireDate : null,
     suspended: false,
+    cguAccepted: false,
+    unavail: [],
     rccAnchor: new Date().toISOString().slice(0, 10),
     passwordHash: await bcrypt.hash(String(password), 10),
     isParent: Boolean(isParent),
@@ -842,6 +895,23 @@ app.delete('/api/admin/requests/:id', authRequired, adminRequired, async (req, r
   res.json({ ok: true });
 });
 
+// Attribuer / changer le remplaçant d'une demande (admin).
+app.put('/api/admin/requests/:id/replacement', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const r = db.requests.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Demande introuvable' });
+  const { replacedById } = req.body || {};
+  if (!replacedById) { r.replacedById = null; r.replacedByName = null; await save(); return res.json({ request: r }); }
+  const replacer = db.users.find((u) => u.id === replacedById);
+  if (!replacer) return res.status(404).json({ error: 'Remplaçant introuvable' });
+  const conflict = replacerConflict(db, replacedById, r.startDate, r.endDate, r.id);
+  if (conflict) return res.status(409).json({ error: `${replacer.firstName} ${replacer.lastName} n'est pas disponible (${conflict}) sur cette période — il ne peut pas être à deux endroits en même temps.` });
+  r.replacedById = replacer.id;
+  r.replacedByName = `${replacer.firstName} ${replacer.lastName}`;
+  await save();
+  res.json({ request: r });
+});
+
 // Décision admin sur une demande (validation = déduction du solde)
 app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (req, res) => {
   const db = getData();
@@ -849,6 +919,14 @@ app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (r
   if (!r) return res.status(404).json({ error: 'Demande introuvable' });
   const { decision, adminNote } = req.body || {};
   if (!['approved', 'rejected'].includes(decision)) return res.status(400).json({ error: 'Décision invalide' });
+
+  // À la validation : vérifier que le remplaçant n'est pas déjà pris ailleurs.
+  if (decision === 'approved' && r.replacedById) {
+    const conflict = replacerConflict(db, r.replacedById, r.startDate, r.endDate, r.id);
+    if (conflict) {
+      return res.status(409).json({ error: `Validation impossible : le remplaçant ${r.replacedByName || ''} est déjà indisponible (${conflict}). Il ne peut pas être à deux endroits en même temps.` });
+    }
+  }
 
   if (decision === 'approved' && r.status !== 'approved') {
     const user = db.users.find((u) => u.id === r.userId);
@@ -922,6 +1000,20 @@ app.post('/api/admin/closed-periods', authRequired, adminRequired, async (req, r
   if (end < start) return res.status(400).json({ error: 'La date de fin précède la date de début' });
   const period = { id: nextId('request'), label: String(label || 'Fermeture').trim(), start, end };
   db.settings.closedPeriods.push(period);
+  await save();
+  res.json({ closedPeriods: db.settings.closedPeriods });
+});
+
+// Modifier une fermeture (intitulé et/ou dates) même déjà verrouillée.
+app.put('/api/admin/closed-periods/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const p = (db.settings.closedPeriods || []).find((x) => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'Période introuvable' });
+  const { label, start, end } = req.body || {};
+  if (label !== undefined) p.label = String(label || 'Fermeture').trim();
+  if (start !== undefined) { if (!validDate(start)) return res.status(400).json({ error: 'Date de début invalide' }); p.start = start; }
+  if (end !== undefined) { if (!validDate(end)) return res.status(400).json({ error: 'Date de fin invalide' }); p.end = end; }
+  if (p.end < p.start) return res.status(400).json({ error: 'La date de fin précède la date de début' });
   await save();
   res.json({ closedPeriods: db.settings.closedPeriods });
 });
