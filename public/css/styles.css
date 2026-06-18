@@ -139,11 +139,11 @@ textarea { resize: vertical; min-height: 80px; }
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { position: sticky; top: 0; z-index: 20; height: auto; flex-direction: column; }
-  .sidebar .brand { flex: 1; }
+  .sidebar .brand { flex: 1; padding-left: 3.6rem; }
   .nav-toggle {
-    display: block; position: absolute; top: .8rem; right: .8rem;
+    display: block; position: absolute; top: .7rem; left: .7rem; right: auto; z-index: 2;
     background: rgba(255,255,255,.15); color: #fff; border: 0; border-radius: 8px;
-    padding: .45rem .7rem; font-weight: 700; font-size: .9rem;
+    padding: .45rem .65rem; font-weight: 700; font-size: 1.05rem; line-height: 1;
   }
   /* Menu replié par défaut ; ouvert via .nav-open */
   .sidebar nav { display: none; }

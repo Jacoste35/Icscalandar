@@ -433,7 +433,7 @@ function renderApp() {
   <div class="layout">
     <aside class="sidebar">
       <div class="brand"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
-      <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰ Menu</button>
+      <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰</button>
       <nav id="nav">
         ${sections.map((s) => `
           ${s.title ? `<div class="nav-section">${s.title}</div>` : ''}
@@ -557,8 +557,8 @@ async function renderDashboard(main) {
         ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
-      ${retardCards}
       ${philo}
+      ${retardCards}
       ${conflictPanel}
       ${pendingPanel}
       ${priorityPanel}
@@ -709,25 +709,53 @@ function conflictAlertHTML(events, team) {
 
 // Congés à venir des collègues du même groupe (anti-doublon de semaine).
 function colleaguesUpcomingHTML(team, events) {
+  const t = iso(new Date());
+  const staff = isStaff();
   const myGroup = State.user.groupId;
   const g = groupById(myGroup);
-  if (!myGroup) return '';
+  const range = (e) => e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
+
+  // Bloc « Mes remplacements à venir » : périodes où je remplace un collègue.
+  const myReplacements = events
+    .filter((e) => e.replacedById === State.user.id && e.endDate >= t && e.category !== 'RET')
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const replBlock = myReplacements.length ? `
+    <div class="card" style="border-left:5px solid var(--accent)">
+      <h3>🔁 Mes remplacements à venir</h3>
+      <p class="help" style="margin-top:-.6rem">Périodes où vous remplacez un collègue absent.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:.4rem">
+        ${myReplacements.map((e) => `<span class="date-chip future" title="${esc(e.categoryLabel)}">Remplace ${esc(e.userName)} (${esc(e.groupName)}) : ${range(e)}</span>`).join('')}
+      </div>
+    </div>` : '';
+
+  // Encadrement : vision d'ensemble de TOUTES les absences à venir (tous groupes).
+  if (staff) {
+    const upcoming = events.filter((e) => e.endDate >= t && e.category !== 'RET')
+      .sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(0, 80);
+    return `${replBlock}
+      <div class="card" style="border-left:5px solid var(--brand)">
+        <h3>🗓️ Absences à venir — tous les groupes</h3>
+        <p class="help" style="margin-top:-.6rem">Vision d'ensemble pour anticiper l'organisation.</p>
+        ${upcoming.length === 0 ? `<div class="empty">Aucune absence à venir. 👍</div>` : `
+        <div class="table-wrap"><table>
+          <thead><tr><th>Salarié</th><th>Groupe</th><th>Période</th><th>Motif</th><th>Remplaçant</th></tr></thead>
+          <tbody>${upcoming.map((e) => `<tr><td>${esc(e.userName)}</td><td>${e.groupName!=='—'?`<span class="group-chip" style="background:${e.groupColor}">${esc(e.groupName)}</span>`:'—'}</td><td>${range(e)}</td><td><span class="tag" style="background:${catColor(e.code)}22;color:${catColor(e.code)}">${esc(e.code)}</span> ${esc(e.categoryLabel)}${e.status==='pending'?' <em>(en attente)</em>':''}</td><td>${e.replacedByName?esc(e.replacedByName):'<span class="help">—</span>'}</td></tr>`).join('')}</tbody>
+        </table></div>`}
+      </div>`;
+  }
+
+  // Salarié : congés à venir de son groupe.
+  if (!myGroup) return replBlock;
   const mates = new Set(team.filter((m) => m.groupId === myGroup && m.id !== State.user.id).map((m) => m.id));
-  const t = iso(new Date());
-  const upcoming = events
-    .filter((e) => mates.has(e.userId) && e.endDate >= t)
-    .sort((a, b) => a.startDate.localeCompare(b.startDate))
-    .slice(0, 30);
-  return `
+  const upcoming = events.filter((e) => mates.has(e.userId) && e.endDate >= t && e.category !== 'RET')
+    .sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(0, 30);
+  return `${replBlock}
     <div class="card" style="border-left:5px solid ${g ? g.color : 'var(--brand-2)'}">
       <h3>🗓️ Congés à venir de mes collègues ${g ? `— ${esc(g.name)}` : ''}</h3>
       <p class="help" style="margin-top:-.6rem">Vérifiez avant de demander une semaine, pour éviter que tout le groupe soit absent en même temps.</p>
       ${upcoming.length === 0 ? `<div class="empty">Aucun congé à venir dans votre groupe. 👍</div>` : `
       <div style="display:flex;flex-wrap:wrap;gap:.4rem">
-        ${upcoming.map((e) => {
-          const range = e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
-          return `<span class="date-chip future ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}">${esc(e.userName)} : ${range} (${esc(e.code)})</span>`;
-        }).join('')}
+        ${upcoming.map((e) => `<span class="date-chip future ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}">${esc(e.userName)} : ${range(e)} (${esc(e.code)})</span>`).join('')}
       </div>`}
     </div>`;
 }
@@ -748,7 +776,7 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
   return `
     <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
       <div class="cal-toolbar"><h3 style="margin:0">${isCurrent?'📍 ':''}${esc(title)} — ${label}</h3></div>
-      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">${isPast?'Qui était absent ?':'Qui sera absent ?'}</p>
+      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">${isPast?'Qui était absent ?':(isCurrent?'Qui est absent ?':'Qui sera absent ?')}</p>
       <div class="week-grid">
         <div class="wrow whead">
           <div class="wcell namecol">Salarié</div>
@@ -805,10 +833,12 @@ async function renderCalendar(main) {
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
       ${admin?`<button class="btn ghost" id="cal-close">🔒 Fermer des jours</button>`:''}
+      ${staff?`<button class="btn ghost" id="cal-lock">🔐 Verrouiller mon planning</button>`:''}
       ${staff?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}
     </div></div>
     <div class="card" id="cal-card"><div class="empty">Chargement…</div></div>`;
   if (staff) document.getElementById('cal-add').onclick = () => adminAssignModal();
+  if (staff) document.getElementById('cal-lock').onclick = () => myUnavailModal();
   if (admin) document.getElementById('cal-close').onclick = () => closedPeriodsModal(main);
   try {
     await ensureHolidays(State.cal.cursor.getFullYear());
@@ -822,20 +852,39 @@ async function renderCalendar(main) {
 
 // Modal admin/responsable : attribuer ou proposer une absence pour un salarié.
 // Options d'une liste déroulante d'utilisateurs, regroupées par groupe.
-function teamOptgroups(team) {
+// annotate(m) peut renvoyer un suffixe (ex. " (pas disponible)") ; si elle
+// renvoie false, l'option est désactivée.
+function teamOptgroups(team, selectedId, annotate) {
   const order = State.groups.map((g) => g.id).concat([null]);
   const byG = {}; team.forEach((m) => { const k = m.groupId || 'none'; (byG[k] = byG[k] || []).push(m); });
   return order.map((gid) => {
     const list = byG[gid || 'none']; if (!list || !list.length) return '';
     const g = groupById(gid);
     list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-    return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">${list.map((m) => `<option value="${m.id}">${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</optgroup>`;
+    return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">${list.map((m) => {
+      const suf = annotate ? annotate(m) : '';
+      const dis = suf && /pas disponible/i.test(suf) ? ' disabled' : '';
+      return `<option value="${m.id}" ${m.id===selectedId?'selected':''}${dis}>${esc(m.lastName)} ${esc(m.firstName)}${suf?esc(suf):''}</option>`;
+    }).join('')}</optgroup>`;
   }).join('');
+}
+// Conflit de remplacement côté client (pour annoter la liste des remplaçants).
+const REPLACER_BLOCKING_CODES = ['CP', 'RCC', 'RCP'];
+function replacerUnavailableClient(member, events, start, end, exceptUserId) {
+  if (!start || !end) return null;
+  if (member.id === exceptUserId) return 'le salarié concerné';
+  if ((member.unavail || []).some((p) => p.start <= end && p.end >= start)) return 'planning verrouillé';
+  for (const ev of events) {
+    if (!(ev.startDate <= end && ev.endDate >= start)) continue;
+    if (ev.userId === member.id && REPLACER_BLOCKING_CODES.includes(ev.category)) return 'en congé/repos';
+    if (ev.replacedById === member.id) return 'déjà remplaçant';
+  }
+  return null;
 }
 
 async function adminAssignModal(prefillDate, prefillUserId) {
-  let team = [];
-  try { team = (await api('GET', '/team')).team; } catch (e) { toast(e.message, 'err'); return; }
+  let team = [], allEvents = [];
+  try { team = (await api('GET', '/team')).team; allEvents = (await api('GET', '/calendar')).events; } catch (e) { toast(e.message, 'err'); return; }
   team.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
   // Tous les motifs sauf DCP (état dérivé d'une demande de CP en attente).
   const cats = State.categories.filter((c) => c.code !== 'DCP');
@@ -847,7 +896,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
       ${isResp?`<div class="alert info">En tant que responsable, votre saisie sera <strong>soumise à validation</strong> de l'administrateur avant d'être inscrite au planning.</div>`:''}
       <form id="form-assign">
         <label>Salarié</label>
-        <select name="userId" required>${team.map((m) => `<option value="${m.id}" ${m.id===prefillUserId?'selected':''}>${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
+        <select name="userId" required>${teamOptgroups(team, prefillUserId)}</select>
         <label>Motif</label>
         <select name="category" required>${cats.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}</select>
         <div id="assign-solde" class="assign-solde"></div>
@@ -857,7 +906,8 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         <div id="ret-wrap" style="display:none"><label>Durée du retard</label>
           <select name="retardMinutes"><option value="30">30 minutes</option><option value="60">1 heure</option><option value="120">2 heures</option><option value="180">3 heures et plus</option></select></div>
         <label>Remplacé par (facultatif)</label>
-        <select name="replacedById"><option value="">— Personne —</option>${teamOptgroups(team)}</select>
+        <select name="replacedById"><option value="">— Personne —</option></select>
+        <p class="help" id="repl-note" style="display:none"></p>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
           <div id="end-col"><label>Au</label><input type="date" name="endDate" value="${prefillDate||''}"></div>
@@ -905,9 +955,23 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         f.startDate.max = isRet ? todayStr : '';          // pas de retard futur
         refreshSolde();
       };
-      f.userId.onchange = refreshSolde;
+      const replNote = overlay.querySelector('#repl-note');
+      // Recompose la liste des remplaçants disponibles selon les dates choisies.
+      const refreshReplacers = () => {
+        const isRet = f.category.value === 'RET';
+        const s = f.startDate.value, e = isRet ? f.startDate.value : f.endDate.value;
+        const exceptId = f.userId.value;
+        const current = f.replacedById.value;
+        const annotate = (m) => { const c = replacerUnavailableClient(m, allEvents, s, e, exceptId); return c ? ` (pas disponible — ${c})` : ''; };
+        f.replacedById.innerHTML = `<option value="">— Personne —</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId), current, annotate);
+        if (![...f.replacedById.options].some((o) => o.value === current)) f.replacedById.value = '';
+        replNote.style.display = (s && e) ? '' : 'none';
+        replNote.textContent = (s && e) ? 'Seuls les salariés disponibles sur la période peuvent être choisis comme remplaçants.' : '';
+      };
+      f.userId.onchange = () => { refreshSolde(); refreshReplacers(); };
       const update = () => {
         const cat = f.category.value;
+        refreshReplacers();
         if (cat === 'RET') { preview.textContent = f.startDate.value ? `→ Retard du ${fmtDate(f.startDate.value)}.` : ''; return; }
         const s = f.startDate.value, e = f.endDate.value;
         preview.textContent = (s && e && e >= s) ? `→ ${countWorkingDaysClient(s, e)} jour(s) ouvré(s).` : '';
@@ -933,6 +997,39 @@ async function adminAssignModal(prefillDate, prefillUserId) {
           if (State.view === 'calendar') renderCalendar(document.getElementById('main'));
           if (State.view === 'absmgmt') renderAbsenceManagement(document.getElementById('main'));
         } catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
+}
+
+// Modal « Verrouiller mon planning » : indisponibilités personnelles.
+function myUnavailModal() {
+  const list = () => (State.user.unavail || []).slice().sort((a, b) => a.start.localeCompare(b.start)).map((p) => `
+    <tr><td>${esc(p.label)}</td><td>${fmtDate(p.start)} → ${fmtDate(p.end)}</td>
+    <td><button class="btn danger sm" data-del-un="${p.id}">Suppr.</button></td></tr>`).join('');
+  modal({
+    title: '🔐 Verrouiller mon planning',
+    bodyHTML: `
+      <p class="help">Indiquez les jours ou semaines où vous n'êtes pas disponible. Sur ces dates, vous serez retiré du vivier de remplaçants proposés pour les autres salariés.</p>
+      <form id="form-un">
+        <label>Intitulé</label><input name="label" placeholder="Ex. Indisponible / formation">
+        <div class="row"><div><label>Du</label><input type="date" name="start" required></div><div><label>Au</label><input type="date" name="end" required></div></div>
+        <button class="btn accent full" type="submit">Ajouter l'indisponibilité</button>
+      </form>
+      <h4 style="margin:1.2rem 0 .4rem">Mes indisponibilités</h4>
+      <div class="table-wrap"><table><tbody id="un-list">${list() || '<tr><td colspan="3" class="help">Aucune.</td></tr>'}</tbody></table></div>`,
+    footHTML: `<button class="btn" data-close>Fermer</button>`,
+    onMount: (ov) => {
+      const refresh = () => { ov.querySelector('#un-list').innerHTML = list() || '<tr><td colspan="3" class="help">Aucune.</td></tr>'; bindDel(); };
+      const bindDel = () => ov.querySelectorAll('[data-del-un]').forEach((b) => b.onclick = async () => {
+        try { const r = await api('DELETE', '/me/unavail/' + b.dataset.delUn); State.user = r.user; toast('Indisponibilité supprimée.', 'ok'); refresh(); }
+        catch (e) { toast(e.message, 'err'); }
+      });
+      bindDel();
+      ov.querySelector('#form-un').onsubmit = async (e) => {
+        e.preventDefault(); const f = e.target;
+        try { const r = await api('POST', '/me/unavail', { label: f.label.value, start: f.start.value, end: f.end.value }); State.user = r.user; toast('Indisponibilité ajoutée.', 'ok'); f.reset(); refresh(); }
+        catch (err) { toast(err.message, 'err'); }
       };
     },
   });
@@ -1313,9 +1410,13 @@ async function renderMyData(main) {
    ========================================================================= */
 async function renderRequests(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mes événements</h1><p>Vos soldes, vos demandes et votre disponibilité sur l'année.</p></div>
-    <button class="btn accent" id="new-req">+ Nouvelle demande</button></div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      <button class="btn ghost" id="req-lock">🔐 Verrouiller mon planning</button>
+      <button class="btn accent" id="new-req">+ Nouvelle demande</button>
+    </div></div>
     <div id="req-list" class="empty">Chargement…</div>`;
   document.getElementById('new-req').onclick = openRequestModal;
+  document.getElementById('req-lock').onclick = () => myUnavailModal();
   try {
     const { user } = await api('GET', '/me'); State.user = user;
     const { events } = await api('GET', '/calendar');
@@ -1410,10 +1511,14 @@ const PMT_DURATIONS = {
   mat_jum: { label: 'Maternité jumeaux (34 semaines)', days: 238 },
   mat_tri: { label: 'Maternité triplés ou + (46 semaines)', days: 322 },
 };
-function openRequestModal() {
+async function openRequestModal() {
   const selectable = State.categories.filter((c) => c.requestable);
   const b = State.user.balances;
   const soldeExtra = (c) => c.code === 'RCP' ? ` — solde : ${b.heuresSupp} h` : c.code === 'RCC' ? ` — solde : ${b.rcc} h` : '';
+  // Pour les notes contextuelles (responsable disponible, période fermée).
+  let allEvents = [], allTeam = [];
+  try { allEvents = (await api('GET', '/calendar')).events; allTeam = (await api('GET', '/team')).team; } catch (e) {}
+  const myRespIds = allTeam.filter((m) => m.role === 'responsable' && m.groupId === State.user.groupId).map((m) => m.id);
   modal({
     title: 'Nouvelle demande',
     bodyHTML: `
@@ -1485,6 +1590,14 @@ function openRequestModal() {
           const isHour = cat in hourBal;
           let txt = n > 0 ? `→ ${n} jour(s) ouvré(s)${isHour?` = ${n*7} h`:''} décompté(s).` : '→ Aucun jour ouvré sur cette période.';
           if (isHour) txt += ` Solde disponible : ${hourBal[cat]} h.`;
+          // Période fermée à la réservation ?
+          const closedOverlap = (State.closedPeriods || []).some((p) => p.start <= e && p.end >= s);
+          if (closedOverlap) { preview.innerHTML = esc(txt) + ` <span style="color:var(--danger);font-weight:700">(Dates non disponible à la réservation)</span>`; return; }
+          // Un responsable du groupe disponible sur la période ?
+          if (myRespIds.length) {
+            const respBusy = allEvents.some((ev) => myRespIds.includes(ev.userId) && ev.category !== 'RET' && ev.startDate <= e && ev.endDate >= s);
+            if (!respBusy) { preview.innerHTML = esc(txt) + ` <span style="color:var(--ok);font-weight:700">(Un responsable semble être disponible à cette date)</span>`; return; }
+          }
           preview.textContent = txt;
         } else preview.textContent = '';
       };
@@ -1893,12 +2006,39 @@ async function adminReqs(body) {
     let note = '';
     if (decision === 'rejected') { note = prompt('Motif du refus (facultatif) :') || ''; }
     try { await api('POST', `/admin/requests/${id}/decide`, { decision, adminNote: note }); toast(decision==='approved'?'Demande validée, solde mis à jour.':'Demande refusée.', 'ok'); refreshAdminBadge(); adminReqs(body); }
-    catch (e) { toast(e.message, 'err'); }
+    catch (e) {
+      // Conflit de remplaçant : popup bloquant, on ne valide pas.
+      if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message);
+      else toast(e.message, 'err');
+    }
   });
+  body.querySelectorAll('[data-repl]').forEach((btn) => btn.onclick = () => replacementModal(requests.find((r) => r.id === btn.dataset.repl), body));
   body.querySelectorAll('[data-del-req]').forEach((btn) => btn.onclick = async () => {
     if (!confirm('Supprimer cet évènement et libérer les dates ? (le solde est recrédité si la demande était validée)')) return;
     try { await api('DELETE', `/admin/requests/${btn.dataset.delReq}`); toast('Évènement supprimé, dates libérées.', 'ok'); refreshAdminBadge(); adminReqs(body); }
     catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Attribuer / changer le remplaçant d'une demande (depuis les demandes en attente).
+async function replacementModal(req, body) {
+  if (!req) return;
+  let team = [], events = [];
+  try { team = (await api('GET', '/team')).team; events = (await api('GET', '/calendar')).events; } catch (e) { toast(e.message, 'err'); return; }
+  const annotate = (m) => { const c = replacerUnavailableClient(m, events, req.startDate, req.endDate, req.userId); return c ? ` (pas disponible — ${c})` : ''; };
+  modal({
+    title: `Remplaçant — ${req.userName}`,
+    bodyHTML: `
+      <p class="help">Période : ${fmtDate(req.startDate)} → ${fmtDate(req.endDate)}. Seuls les salariés disponibles sur cette période sont proposés.</p>
+      <label>Remplaçant</label>
+      <select id="repl-sel"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById, annotate)}</select>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="repl-save">Enregistrer</button>`,
+    onMount: (ov) => {
+      ov.querySelector('#repl-save').onclick = async () => {
+        try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: ov.querySelector('#repl-sel').value || null }); closeModal(); toast('Remplaçant mis à jour.', 'ok'); adminReqs(body); }
+        catch (e) { if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message); else toast(e.message, 'err'); }
+      };
+    },
   });
 }
 
@@ -1913,7 +2053,8 @@ function adminReqRow(r, rank) {
     <td>${esc(r.userName)}${parentTag(r)}</td>
     <td>${groupChip(r)}</td>
     <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
-    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}${r.replacedByName?`<div class="help" style="color:var(--brand-2)">Remplacé par : <strong>${esc(r.replacedByName)}</strong></div>`:''}</td>
+    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}
+      <div style="margin-top:.2rem">${r.replacedByName?`<span class="help" style="color:var(--brand-2)">Remplacé par : <strong>${esc(r.replacedByName)}</strong></span> `:''}<button class="btn ghost sm" data-repl="${r.id}">${r.replacedByName?'Modifier remplaçant':'+ Remplaçant'}</button></div></td>
     <td>${orderBadge(rank)}</td>
     <td>${r.days} j${reqHours(r)}</td>
     <td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td>
