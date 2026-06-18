@@ -213,6 +213,7 @@ app.post('/api/register', async (req, res) => {
     passwordHash,
     isParent: false,
     suspended: false,
+    cguAccepted: false,
     hireDate: validDate(hireDate) ? hireDate : null,
     // Le tout premier compte créé devient administrateur et est actif.
     role: isFirstUser ? 'admin' : 'employee',
@@ -262,6 +263,14 @@ app.put('/api/me', authRequired, async (req, res) => {
   const { isParent, phone } = req.body || {};
   if (isParent !== undefined) req.user.isParent = Boolean(isParent);
   if (phone !== undefined) req.user.phone = String(phone || '').trim() || null;
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+
+// Acceptation des conditions d'utilisation (page de garde au 1er accès).
+app.post('/api/me/accept-cgu', authRequired, async (req, res) => {
+  req.user.cguAccepted = true;
+  req.user.cguAcceptedAt = new Date().toISOString();
   await save();
   res.json({ user: publicUser(req.user) });
 });
@@ -354,6 +363,7 @@ app.get('/api/holidays', authRequired, (req, res) => {
 app.get('/api/team', authRequired, (req, res) => {
   const db = getData();
   const isAdmin = req.user.role === 'admin';
+  const isStaff = isAdmin || req.user.role === 'responsable';
   const team = db.users
     .filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => {
@@ -368,6 +378,8 @@ app.get('/api/team', authRequired, (req, res) => {
         phone: u.phone || null,
         isParent: Boolean(u.isParent),
         hireDate: u.hireDate || null,
+        // Les soldes ne sont exposés qu'à l'encadrement (saisie d'absence).
+        balances: isStaff ? { ...u.balances } : undefined,
       };
     });
   res.json({ team });
@@ -573,6 +585,7 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     phone: String(phone || '').trim() || null,
     hireDate: validDate(hireDate) ? hireDate : null,
     suspended: false,
+    cguAccepted: false,
     rccAnchor: new Date().toISOString().slice(0, 10),
     passwordHash: await bcrypt.hash(String(password), 10),
     isParent: Boolean(isParent),
@@ -922,6 +935,20 @@ app.post('/api/admin/closed-periods', authRequired, adminRequired, async (req, r
   if (end < start) return res.status(400).json({ error: 'La date de fin précède la date de début' });
   const period = { id: nextId('request'), label: String(label || 'Fermeture').trim(), start, end };
   db.settings.closedPeriods.push(period);
+  await save();
+  res.json({ closedPeriods: db.settings.closedPeriods });
+});
+
+// Modifier une fermeture (intitulé et/ou dates) même déjà verrouillée.
+app.put('/api/admin/closed-periods/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const p = (db.settings.closedPeriods || []).find((x) => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'Période introuvable' });
+  const { label, start, end } = req.body || {};
+  if (label !== undefined) p.label = String(label || 'Fermeture').trim();
+  if (start !== undefined) { if (!validDate(start)) return res.status(400).json({ error: 'Date de début invalide' }); p.start = start; }
+  if (end !== undefined) { if (!validDate(end)) return res.status(400).json({ error: 'Date de fin invalide' }); p.end = end; }
+  if (p.end < p.start) return res.status(400).json({ error: 'La date de fin précède la date de début' });
   await save();
   res.json({ closedPeriods: db.settings.closedPeriods });
 });

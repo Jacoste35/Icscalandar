@@ -345,3 +345,25 @@ tr:last-child td { border-bottom: 0; }
 @media (max-width: 520px) {
   .person-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------------- Retard chip & décompte saisie ---------------- */
+.date-chip.retard { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
+.assign-solde { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; border-radius: 8px; padding: .55rem .7rem; margin: .5rem 0; font-size: .9rem; }
+.mini-grid span.mini-closed { background: var(--danger); color: #fff; font-weight: 700; border-radius: 4px; }
+
+/* ---------------- Page de garde / CGU ---------------- */
+.cgu-wrap { min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem; background: var(--bg); }
+.cgu-card { width: 100%; max-width: 760px; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 2rem; }
+.cgu-head { display: flex; align-items: center; gap: 1rem; margin-bottom: .5rem; }
+.cgu-head h1 { margin: 0; font-size: 1.5rem; }
+.cgu-logo { width: 56px; height: 56px; border-radius: 10px; background: #fff; object-fit: contain; }
+.cgu-lead { color: var(--muted); }
+.cgu-body { max-height: 48vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; background: #fafbfc; }
+.cgu-body h3 { margin: 1rem 0 .3rem; font-size: 1rem; color: var(--brand); }
+.cgu-body h3:first-child { margin-top: 0; }
+.cgu-body p, .cgu-body li { font-size: .9rem; line-height: 1.55; }
+.cgu-check { display: flex; align-items: flex-start; gap: .6rem; font-weight: 600; cursor: pointer; }
+.cgu-check input { width: auto; margin-top: .2rem; }
+.cgu-actions { display: flex; justify-content: space-between; gap: .8rem; margin-top: 1.2rem; flex-wrap: wrap; }
+
+@media (max-width: 520px) { .cgu-card { padding: 1.2rem; } .cgu-body { max-height: 50vh; } }

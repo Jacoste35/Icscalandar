@@ -72,6 +72,17 @@ function ancienneteText(hireDate) {
   if (!p) return '—';
   return `${p.years} an${p.years>1?'s':''}, ${p.months} mois, ${p.days} j`;
 }
+// Message de remerciement proportionnel à l'ancienneté.
+function anciennetePhilo(hireDate) {
+  const p = ancienneteParts(hireDate);
+  if (!p) return '';
+  const y = p.years;
+  if (y < 1) return "Bienvenue dans l'aventure ! Vos premiers pas comptent déjà pour toute l'équipe. 🌱";
+  if (y < 3) return `${y} an${y>1?'s':''} déjà : votre engagement prend racine. Merci pour votre implication ! 🌿`;
+  if (y < 5) return `${y} ans de fidélité : votre expérience est précieuse pour le collectif. Merci de votre constance. 🌳`;
+  if (y < 10) return `${y} ans parmi nous : un pilier de la maison. Votre dévouement force le respect. Merci infiniment. 🏅`;
+  return `${y} ans de loyauté : une véritable mémoire vivante de l'entreprise. Du fond du cœur, merci pour tout. 🎖️`;
+}
 // Nombre de retards (RET validés) d'un utilisateur depuis N jours.
 function retardCountSince(requests, sinceDays) {
   const limit = iso(addDays(new Date(), -sinceDays));
@@ -350,12 +361,12 @@ function navSections() {
     { title: '', items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
     { title: 'Planning', items: [
       { id: 'calendar', icon: '📅', label: 'Mon Planning' },
-      { id: 'team', icon: '👥', label: 'Mon équipe' },
       { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
     ] },
     { title: 'Mon espace', items: [
       { id: 'mydata', icon: '👤', label: 'Mon Profil' },
       { id: 'requests', icon: '📝', label: 'Mes événements' },
+      { id: 'team', icon: '👥', label: 'Mon équipe' },
       ...(isStaff() ? [{ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' }] : []),
     ] },
   ];
@@ -368,8 +379,55 @@ function navSections() {
 
 let adminBadgeCount = 0;
 
+// Page de garde / conditions d'utilisation, affichée au tout premier accès.
+function renderCGU() {
+  const u = State.user;
+  $app.innerHTML = `
+  <div class="cgu-wrap">
+    <div class="cgu-card">
+      <div class="cgu-head"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" class="cgu-logo" alt=""><h1>Bienvenue ${esc(u.firstName)}</h1></div>
+      <p class="cgu-lead">Avant d'accéder au portail, merci de lire et d'accepter les conditions d'utilisation ci-dessous.</p>
+      <div class="cgu-body">
+        <h3>1. Objet du site</h3>
+        <p>Ce portail est un <strong>outil d'organisation interne</strong> destiné à faciliter le suivi des congés payés, des absences, des heures de récupération (RCC, heures supplémentaires) et du planning des équipes d'INTER COLIS SERVICES. Il a une finalité <strong>purement organisationnelle et informative</strong>.</p>
+        <h3>2. Congés payés et absences</h3>
+        <p>Conformément aux articles <strong>L3141-15 et L3141-16 du Code du travail</strong>, <strong>l'employeur fixe l'ordre et les dates des départs en congé</strong> en fonction des nécessités du service, de l'organisation et de l'activité de l'entreprise.</p>
+        <p>Le dépôt ou la demande d'une date de congé via ce site <strong>ne vaut en aucun cas attribution ou acceptation automatique</strong>. Toute demande doit faire l'objet d'une <strong>validation expresse de la direction</strong> pour être effective. L'enregistrement d'une demande dans l'outil ne crée aucun droit acquis sur la période sollicitée.</p>
+        <p>L'employeur se réserve le droit, pour des raisons de service, de modifier ou refuser une demande, et de fermer certaines périodes à la prise de congé.</p>
+        <h3>3. Exactitude des informations</h3>
+        <p>Les soldes et compteurs affichés sont fournis à titre indicatif. En cas de divergence, les éléments contractuels et les bulletins de paie font foi.</p>
+        <h3>4. Protection des données personnelles (RGPD)</h3>
+        <p>Dans le cadre du fonctionnement du site, INTER COLIS SERVICES traite des données strictement nécessaires : <strong>nom, prénom, nom de compte, mot de passe (chiffré), email, numéro de téléphone, groupe de travail, date d'entrée, soldes de congés et historique des absences</strong>.</p>
+        <ul>
+          <li><strong>Finalité :</strong> gestion et organisation des congés et absences.</li>
+          <li><strong>Base légale :</strong> intérêt légitime de l'employeur et obligations liées à la gestion du personnel.</li>
+          <li><strong>Destinataires :</strong> la direction et l'encadrement habilité de l'entreprise uniquement.</li>
+          <li><strong>Conservation :</strong> pendant la durée du contrat de travail et les délais légaux applicables.</li>
+          <li><strong>Vos droits :</strong> accès, rectification, effacement et limitation de vos données, en vous adressant à la direction (responsable de traitement), conformément au RGPD et à la loi « Informatique et Libertés ».</li>
+        </ul>
+        <p>Les données ne sont ni revendues ni transmises à des tiers à des fins commerciales.</p>
+      </div>
+      <label class="cgu-check"><input type="checkbox" id="cgu-ok"> J'ai lu et j'accepte les conditions d'utilisation et la politique de confidentialité ci-dessus.</label>
+      <div class="cgu-actions">
+        <button class="btn ghost" id="cgu-logout">Se déconnecter</button>
+        <button class="btn accent" id="cgu-accept" disabled>Accéder au portail</button>
+      </div>
+    </div>
+  </div>`;
+  const chk = document.getElementById('cgu-ok');
+  const acc = document.getElementById('cgu-accept');
+  chk.onchange = () => { acc.disabled = !chk.checked; };
+  document.getElementById('cgu-logout').onclick = () => logout();
+  acc.onclick = async () => {
+    try { const r = await api('POST', '/me/accept-cgu'); State.user = r.user; toast('Bienvenue ! Bonne utilisation.', 'ok'); renderApp(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+}
+
 function renderApp() {
   const u = State.user;
+  // Page de garde (conditions d'utilisation) au premier accès.
+  if (!u.cguAccepted) { renderCGU(); return; }
   const sections = navSections();
   $app.innerHTML = `
   <div class="layout">
@@ -487,7 +545,7 @@ async function renderDashboard(main) {
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
     const colleaguesPanel = colleaguesUpcomingHTML(team, events);
 
-    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
+    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(State.user.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
@@ -792,6 +850,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         <select name="userId" required>${team.map((m) => `<option value="${m.id}" ${m.id===prefillUserId?'selected':''}>${esc(m.lastName)} ${esc(m.firstName)}</option>`).join('')}</select>
         <label>Motif</label>
         <select name="category" required>${cats.map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(c.label)}</option>`).join('')}</select>
+        <div id="assign-solde" class="assign-solde"></div>
         <div id="pool-wrap" style="display:none"><label>Imputer sur le solde</label><select name="pool"></select></div>
         <div id="frac-wrap2" style="display:none"><label>Prise du congé (maternité/paternité)</label>
           <select name="fractionnement"><option value="complet">Complète</option><option value="fractionne">Fractionnée</option></select></div>
@@ -818,7 +877,22 @@ async function adminAssignModal(prefillDate, prefillUserId) {
       const retWrap = overlay.querySelector('#ret-wrap');
       const endCol = overlay.querySelector('#end-col');
       const preview = overlay.querySelector('#assign-preview');
+      const soldeDiv = overlay.querySelector('#assign-solde');
       const todayStr = iso(new Date());
+      // Affiche le décompte disponible du salarié sélectionné pour ce motif.
+      const refreshSolde = () => {
+        const m = team.find((x) => x.id === f.userId.value);
+        const cat = f.category.value;
+        const bal = m && m.balances;
+        if (!bal) { soldeDiv.innerHTML = ''; soldeDiv.style.display = 'none'; return; }
+        let txt = '';
+        if (cat === 'CP') txt = `Solde du salarié — Congés N : <strong>${bal.congesN} j</strong> · Congés N-1 : <strong>${bal.congesN1} j</strong>`;
+        else if (cat === 'RCP') txt = `Solde de récupération (heures sup.) : <strong>${bal.heuresSupp} h</strong> ${hToDays(bal.heuresSupp)}`;
+        else if (cat === 'RCC') txt = `Solde RCC : <strong>${bal.rcc} h</strong> ${hToDays(bal.rcc)}`;
+        else { soldeDiv.style.display = 'none'; soldeDiv.innerHTML = ''; return; }
+        soldeDiv.style.display = '';
+        soldeDiv.innerHTML = `📊 ${txt}<div class="help" style="margin-top:.2rem">N'attribuez que ce qui figure dans son décompte.</div>`;
+      };
       const refreshPool = () => {
         const cat = f.category.value;
         const opts = State.pools[cat];
@@ -829,7 +903,9 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         retWrap.style.display = isRet ? '' : 'none';
         endCol.style.display = isRet ? 'none' : '';       // retard = une seule date
         f.startDate.max = isRet ? todayStr : '';          // pas de retard futur
+        refreshSolde();
       };
+      f.userId.onchange = refreshSolde;
       const update = () => {
         const cat = f.category.value;
         if (cat === 'RET') { preview.textContent = f.startDate.value ? `→ Retard du ${fmtDate(f.startDate.value)}.` : ''; return; }
@@ -864,9 +940,14 @@ async function adminAssignModal(prefillDate, prefillUserId) {
 
 // Modal admin : gérer les journées fermées à la prise de congé.
 function closedPeriodsModal(main) {
+  // Chaque fermeture est modifiable (intitulé + dates), même déjà verrouillée.
   const list = () => (State.closedPeriods || []).slice().sort((a, b) => a.start.localeCompare(b.start)).map((p) => `
-    <tr><td>${esc(p.label)}</td><td>${fmtDate(p.start)} → ${fmtDate(p.end)}</td>
-    <td><button class="btn danger sm" data-del-closed="${p.id}">Suppr.</button></td></tr>`).join('');
+    <tr>
+      <td><input id="cl-label-${p.id}" value="${esc(p.label)}" style="min-width:140px"></td>
+      <td><input type="date" id="cl-start-${p.id}" value="${p.start}"></td>
+      <td><input type="date" id="cl-end-${p.id}" value="${p.end}"></td>
+      <td style="white-space:nowrap"><button class="btn ok sm" data-edit-closed="${p.id}">💾</button> <button class="btn danger sm" data-del-closed="${p.id}">Suppr.</button></td>
+    </tr>`).join('');
   modal({
     title: 'Fermer des journées à la prise de congé',
     bodyHTML: `
@@ -880,16 +961,24 @@ function closedPeriodsModal(main) {
         </div>
         <button class="btn accent full" type="submit">Ajouter la fermeture</button>
       </form>
-      <h4 style="margin:1.2rem 0 .4rem">Fermetures actuelles</h4>
-      <div class="table-wrap"><table><tbody id="closed-list">${list() || '<tr><td colspan="3" class="help">Aucune fermeture.</td></tr>'}</tbody></table></div>`,
+      <h4 style="margin:1.2rem 0 .4rem">Fermetures actuelles (modifiables)</h4>
+      <div class="table-wrap"><table><thead><tr><th>Intitulé</th><th>Du</th><th>Au</th><th></th></tr></thead><tbody id="closed-list">${list() || '<tr><td colspan="4" class="help">Aucune fermeture.</td></tr>'}</tbody></table></div>`,
     footHTML: `<button class="btn" data-close>Fermer</button>`,
     onMount: (overlay) => {
-      const refresh = () => { overlay.querySelector('#closed-list').innerHTML = list() || '<tr><td colspan="3" class="help">Aucune fermeture.</td></tr>'; bindDel(); if (State.view==='calendar') drawCalendar(); };
-      const bindDel = () => overlay.querySelectorAll('[data-del-closed]').forEach((b) => b.onclick = async () => {
-        try { const r = await api('DELETE', '/admin/closed-periods/' + b.dataset.delClosed); State.closedPeriods = r.closedPeriods; toast('Fermeture supprimée.', 'ok'); refresh(); }
-        catch (e) { toast(e.message, 'err'); }
-      });
-      bindDel();
+      const refresh = () => { overlay.querySelector('#closed-list').innerHTML = list() || '<tr><td colspan="4" class="help">Aucune fermeture.</td></tr>'; bindRows(); if (State.view==='calendar') drawCalendar(); };
+      const bindRows = () => {
+        overlay.querySelectorAll('[data-del-closed]').forEach((b) => b.onclick = async () => {
+          try { const r = await api('DELETE', '/admin/closed-periods/' + b.dataset.delClosed); State.closedPeriods = r.closedPeriods; toast('Fermeture supprimée.', 'ok'); refresh(); }
+          catch (e) { toast(e.message, 'err'); }
+        });
+        overlay.querySelectorAll('[data-edit-closed]').forEach((b) => b.onclick = async () => {
+          const id = b.dataset.editClosed;
+          const payload = { label: overlay.querySelector('#cl-label-'+id).value, start: overlay.querySelector('#cl-start-'+id).value, end: overlay.querySelector('#cl-end-'+id).value };
+          try { const r = await api('PUT', '/admin/closed-periods/' + id, payload); State.closedPeriods = r.closedPeriods; toast('Fermeture mise à jour.', 'ok'); refresh(); }
+          catch (e) { toast(e.message, 'err'); }
+        });
+      };
+      bindRows();
       overlay.querySelector('#form-closed').onsubmit = async (e) => {
         e.preventDefault(); const f = e.target;
         try { const r = await api('POST', '/admin/closed-periods', { label: f.label.value, start: f.start.value, end: f.end.value }); State.closedPeriods = r.closedPeriods; toast('Fermeture ajoutée.', 'ok'); f.reset(); refresh(); }
@@ -1102,8 +1191,12 @@ function viewYear(cursor) {
       const d = addDays(gridStart, i);
       if (d.getMonth() !== m) { html += `<span class="dim">${d.getDate()}</span>`; continue; }
       const ds = iso(d);
+      const closed = closedPeriodFor(ds);
       const evs = eventsOnDay(ds);
-      if (evs.length) {
+      if (closed) {
+        // Jour fermé à la réservation : en rouge.
+        html += `<span class="mini-closed" title="Fermé à la réservation : ${esc(closed.label)}">${d.getDate()}</span>`;
+      } else if (evs.length) {
         const color = evColor(evs[0]);
         html += `<span class="has-ev" style="background:${color}" title="${evs.length} absence(s) le ${fmtDate(ds)} : ${esc(evs.map((e)=>e.userName.split(' ')[0]+' '+e.code).join(', '))}">${d.getDate()}</span>`;
       } else {
@@ -1238,8 +1331,8 @@ async function renderRequests(main) {
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
       <div class="card">
-        <h3>Disponibilité de l'année (52 semaines)</h3>
-        <p class="help" style="margin-top:-.6rem">Vert = libre, rouge = du monde absent dans votre groupe, 🔒 = période fermée à la réservation.</p>
+        <h3>${events.filter((ev) => ev.category!=='RET' && ev.groupId===user.groupId && ev.endDate>=iso(startOfWeekMonday(new Date())) && ev.startDate<=iso(addDays(startOfWeekMonday(new Date()),83))).length} absence(s) à prévoir dans les 12 prochaines semaines — Disponibilité de l'année</h3>
+        <p class="help" style="margin-top:-.6rem">Vert = libre · rouge = absence prévue dans votre groupe (avec le nombre) · bleu = vous · 🔒 = fermé. Les retards n'affectent pas la disponibilité.</p>
         ${yearAvailabilityHTML(user, events)}
       </div>
       <div class="card">
@@ -1263,19 +1356,20 @@ async function renderRequests(main) {
 
 // Disponibilité sur 52 semaines pour le groupe de l'utilisateur.
 function yearAvailabilityHTML(user, events) {
+  // Les retards (RET) n'affectent pas la disponibilité à la réservation.
   let ws = startOfWeekMonday(new Date());
   let html = '<div class="team-weeks">';
   for (let i = 0; i < 52; i++) {
     const we = addDays(ws, 5);
     const wsS = iso(ws), weS = iso(we);
     const closed = (State.closedPeriods || []).some((p) => p.start <= weS && p.end >= wsS);
-    const groupBusy = events.filter((ev) => ev.groupId === user.groupId && ev.userId !== user.id && ev.startDate <= weS && ev.endDate >= wsS);
-    const mine = events.filter((ev) => ev.userId === user.id && ev.startDate <= weS && ev.endDate >= wsS);
+    const groupBusy = events.filter((ev) => ev.category !== 'RET' && ev.groupId === user.groupId && ev.userId !== user.id && ev.startDate <= weS && ev.endDate >= wsS);
+    const mine = events.filter((ev) => ev.category !== 'RET' && ev.userId === user.id && ev.startDate <= weS && ev.endDate >= wsS);
     let cls = 'free', state = '✓';
     if (closed) { cls = 'closed'; state = '🔒'; }
     else if (mine.length) { cls = 'mine'; state = 'moi'; }
-    else if (groupBusy.length) { cls = 'busy'; state = groupBusy.length + '👤'; }
-    const title = closed ? 'Fermé à la réservation' : (mine.length ? 'Vous êtes absent' : (groupBusy.length ? groupBusy.length + ' absent(s) dans le groupe' : 'Libre'));
+    else if (groupBusy.length) { cls = 'busy'; state = String(groupBusy.length); }
+    const title = closed ? 'Fermé à la réservation' : (mine.length ? 'Vous êtes absent' : (groupBusy.length ? groupBusy.length + ' absence(s) prévue(s) dans le groupe' : 'Libre'));
     html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)} — ${title}"><div class="tw-date">S${weekNum(ws)} ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div><div class="tw-state">${state}</div></div>`;
     ws = addDays(ws, 7);
   }
@@ -1439,62 +1533,88 @@ function dateStatus(startDate, endDate) {
   return 'current';
 }
 
-// Pastilles de dates d'absence d'un membre, triées et colorées par statut.
+// Pastilles d'absences PRÉVUES d'un membre (hors retards), colorées par statut.
 function memberAbsenceChips(memberId, events) {
-  const evs = events.filter((e) => e.userId === memberId).sort((a, b) => a.startDate.localeCompare(b.startDate));
-  if (!evs.length) return '<span class="help">Aucune absence enregistrée.</span>';
+  const evs = events.filter((e) => e.userId === memberId && e.category !== 'RET').sort((a, b) => a.startDate.localeCompare(b.startDate));
+  if (!evs.length) return '<span class="help">Aucune absence prévue.</span>';
   return evs.map((e) => {
     const st = dateStatus(e.startDate, e.endDate);
     const range = e.startDate === e.endDate ? fmtDate(e.startDate) : `${fmtDate(e.startDate)} → ${fmtDate(e.endDate)}`;
-    return `<span class="date-chip ${st} ${e.status==='pending'?'is-pending':''}" title="${esc(e.categoryLabel)}${e.status==='pending'?' (en attente)':''}">${esc(e.code)} ${range}</span>`;
+    return `<span class="date-chip ${st} ${e.status==='pending'?'is-pending':''}" title="${esc(calTooltip(e))}">${esc(e.code)} ${range}</span>`;
   }).join(' ');
+}
+// Pastilles de retards d'un membre (en jaune).
+function memberRetardChips(memberId, events) {
+  const rs = events.filter((e) => e.userId === memberId && e.category === 'RET').sort((a, b) => b.startDate.localeCompare(a.startDate));
+  if (!rs.length) return '';
+  return rs.map((e) => `<span class="date-chip retard">⏱️ Retard ${fmtDate(e.startDate)}${e.retardMinutes?` (${e.retardMinutes} min)`:''}</span>`).join(' ');
+}
+
+// Mini-calendrier de disponibilité (12 semaines). Les retards n'affectent PAS
+// la disponibilité ; seules les absences prévues (hors retard) bloquent la semaine.
+function teamWeeksMini(members, events) {
+  const ids = new Set(members.map((m) => m.id));
+  let ws = startOfWeekMonday(new Date());
+  let html = '<div class="team-weeks">';
+  for (let i = 0; i < 12; i++) {
+    const we = addDays(ws, 5);
+    const wsS = iso(ws), weS = iso(we);
+    const planned = events.filter((ev) => ids.has(ev.userId) && ev.category !== 'RET' && ev.startDate <= weS && ev.endDate >= wsS);
+    const closedWeek = (State.closedPeriods || []).some((p) => p.start <= weS && p.end >= wsS);
+    const names = [...new Set(planned.map((t) => t.userName.split(' ')[0]))];
+    let cls = 'free', state = '✓';
+    if (closedWeek) { cls = 'closed'; state = '🔒'; }
+    else if (planned.length) { cls = 'busy'; state = String(planned.length); }
+    html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}${closedWeek?' — fermée':(planned.length?' — '+esc(names.join(', ')):' — libre')}"><div class="tw-date">S${weekNum(ws)} ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div><div class="tw-state">${state}</div></div>`;
+    ws = addDays(ws, 7);
+  }
+  return html + '</div>';
+}
+// Nombre d'absences prévues (hors retard) sur les 12 prochaines semaines.
+function plannedCount12w(members, events) {
+  const ids = new Set(members.map((m) => m.id));
+  const start = iso(startOfWeekMonday(new Date()));
+  const end = iso(addDays(startOfWeekMonday(new Date()), 12 * 7 - 1));
+  return events.filter((ev) => ids.has(ev.userId) && ev.category !== 'RET' && ev.startDate <= end && ev.endDate >= start).length;
 }
 
 async function renderTeam(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>Mon équipe</h1><p>Salariés, groupes et dates de congés / absences.</p></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Mon équipe</h1><p>Disponibilité des équipes, congés prévus et retards.</p></div></div>
     <div class="legend" style="margin-bottom:1rem">
-      <div class="item"><span class="date-chip past">passées</span></div>
-      <div class="item"><span class="date-chip current">en cours</span></div>
-      <div class="item"><span class="date-chip future">à venir</span></div>
+      <div class="item"><span class="team-week free" style="width:auto;padding:.1rem .5rem">vert</span> semaine libre</div>
+      <div class="item"><span class="team-week busy" style="width:auto;padding:.1rem .5rem">rouge</span> absence prévue (avec le nombre)</div>
+      <div class="item"><span class="date-chip retard">jaune</span> retard (n'affecte pas les congés)</div>
+      <div class="item"><span class="team-week closed" style="width:auto;padding:.1rem .5rem">🔒</span> fermé</div>
     </div>
     <div id="team" class="empty">Chargement…</div>`;
   try {
     const { team } = await api('GET', '/team');
     const { events } = await api('GET', '/calendar');
+    // Les responsables d'une équipe sont rattachés au tableau de leur équipe.
+    const RESP_TO_TEAM = { grp_resp_gls: 'grp_gls', grp_resp_ciblex: 'grp_ciblex', grp_resp_fedex: 'grp_fedex' };
+    const teamGroupOf = (m) => RESP_TO_TEAM[m.groupId] || m.groupId;
     const byGroup = {};
-    team.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
+    team.forEach((m) => { const k = teamGroupOf(m) || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
     const el = document.getElementById('team'); el.className = '';
-    // Mini-calendrier : 12 prochaines semaines, indique les semaines réservées.
-    const teamWeeksMini = (members) => {
-      const memberIds = new Set(members.map((m) => m.id));
-      let ws = startOfWeekMonday(new Date());
-      let html = '<div class="team-weeks">';
-      for (let i = 0; i < 12; i++) {
-        const we = addDays(ws, 5);
-        const taken = events.filter((ev) => memberIds.has(ev.userId) && ev.startDate <= iso(we) && ev.endDate >= iso(ws));
-        const names = [...new Set(taken.map((t) => t.userName.split(' ')[0]))];
-        const cls = taken.length ? 'busy' : 'free';
-        html += `<div class="team-week ${cls}" title="Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)}${taken.length?' — '+esc(names.join(', ')):' — libre'}">
-          <div class="tw-date">${pad(ws.getDate())}/${pad(ws.getMonth()+1)}</div>
-          <div class="tw-state">${taken.length ? names.length + '👤' : '✓ libre'}</div>
-        </div>`;
-        ws = addDays(ws, 7);
-      }
-      return html + '</div>';
-    };
-    const groupCard = (g, members) => `<div class="card">
-      <h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} &nbsp;${members.length} membre(s)</h3>
-      ${members.length?`<p class="help" style="margin-top:-.4rem">Disponibilité des 12 prochaines semaines (vert = libre) :</p>${teamWeeksMini(members)}`:''}
-      ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => `
-        <div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
+    const groupCard = (g, members) => {
+      members = members.slice().sort((a, b) => (a.role === 'responsable' ? 0 : 1) - (b.role === 'responsable' ? 0 : 1) || (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+      const n12 = plannedCount12w(members, events);
+      return `<div class="card">
+      <h3>${n12} absence(s) à prévoir dans les 12 prochaines semaines — ${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${members.length} membre(s)</span></h3>
+      ${members.length?`<p class="help" style="margin-top:-.4rem">Disponibilité des 12 prochaines semaines :</p>${teamWeeksMini(members, events)}`:''}
+      ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => {
+        const ret = memberRetardChips(m.id, events);
+        return `<div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap">
             <strong>${g?`<span class="dot" style="background:${g.color}"></span> `:''}${esc(m.firstName)} ${esc(m.lastName)}</strong>
-            <span class="help">${roleLabel(m.role)}</span>
+            <span class="help">${roleLabel(m.role)}${m.role==='responsable'?' (planning inclus)':''}</span>
           </div>
+          ${ret?`<div style="margin-top:.35rem;display:flex;flex-wrap:wrap;gap:.3rem">${ret}</div>`:''}
           <div style="margin-top:.45rem;display:flex;flex-wrap:wrap;gap:.35rem">${memberAbsenceChips(m.id, events)}</div>
-        </div>`).join('')}
-    </div>`;
-    el.innerHTML = State.groups.map((g) => groupCard(g, byGroup[g.id] || [])).join('')
+        </div>`; }).join('')}
+    </div>`; };
+    const shown = new Set(Object.keys(RESP_TO_TEAM));
+    el.innerHTML = State.groups.filter((g) => !shown.has(g.id)).map((g) => groupCard(g, byGroup[g.id] || [])).join('')
       + (byGroup['none'] ? groupCard(null, byGroup['none']) : '');
   } catch (e) { document.getElementById('team').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
@@ -1793,7 +1913,7 @@ function adminReqRow(r, rank) {
     <td>${esc(r.userName)}${parentTag(r)}</td>
     <td>${groupChip(r)}</td>
     <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
-    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}</td>
+    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}${r.replacedByName?`<div class="help" style="color:var(--brand-2)">Remplacé par : <strong>${esc(r.replacedByName)}</strong></div>`:''}</td>
     <td>${orderBadge(rank)}</td>
     <td>${r.days} j${reqHours(r)}</td>
     <td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td>
