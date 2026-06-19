@@ -424,10 +424,42 @@ function renderCGU() {
   };
 }
 
+// Déclaration d'acceptation du règlement intérieur (texte officiel).
+function reglementDeclaration(u) {
+  return `Je soussigné(e), <strong>${esc(u.firstName)} ${esc(u.lastName)}</strong>, salarié(e) de la société INTER COLIS SERVICES, en qualité de <strong>${esc(roleLabel(u.role))}</strong>, déclare avoir reçu ce jour un exemplaire du Règlement Intérieur de la Société INTER COLIS SERVICES, en avoir pris connaissance et m'engager à le respecter dans son intégralité. Fait à Éterville, le ${fmtDate(iso(new Date()))}.`;
+}
+
+// Page de garde : lecture obligatoire du règlement intérieur au 1er accès.
+function renderReglementGate() {
+  const u = State.user;
+  $app.innerHTML = `
+  <div class="cgu-wrap">
+    <div class="cgu-card" style="max-width:900px">
+      <div class="cgu-head"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" class="cgu-logo" alt=""><h1>Règlement intérieur</h1></div>
+      <p class="cgu-lead">Avant d'accéder au portail, vous devez prendre connaissance du règlement intérieur de l'entreprise et l'accepter. Faites défiler jusqu'en bas pour valider.</p>
+      <div class="cgu-body reglement-scroll">${window.REGLEMENT_INTERIEUR_HTML || '<p>Règlement indisponible.</p>'}</div>
+      <label class="cgu-check"><input type="checkbox" id="ri-ok"> ${reglementDeclaration(u)}</label>
+      <div class="cgu-actions">
+        <button class="btn ghost" id="ri-logout">Se déconnecter</button>
+        <button class="btn accent" id="ri-accept" disabled>Accepter et accéder au portail</button>
+      </div>
+    </div>
+  </div>`;
+  const chk = document.getElementById('ri-ok');
+  const acc = document.getElementById('ri-accept');
+  chk.onchange = () => { acc.disabled = !chk.checked; };
+  document.getElementById('ri-logout').onclick = () => logout();
+  acc.onclick = async () => {
+    try { const r = await api('POST', '/me/accept-reglement'); State.user = r.user; toast('Règlement intérieur accepté. Bonne utilisation !', 'ok'); renderApp(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+}
+
 function renderApp() {
   const u = State.user;
-  // Page de garde (conditions d'utilisation) au premier accès.
+  // Pages de garde au premier accès : CGU puis règlement intérieur.
   if (!u.cguAccepted) { renderCGU(); return; }
+  if (!u.reglementAccepted) { renderReglementGate(); return; }
   const sections = navSections();
   $app.innerHTML = `
   <div class="layout">
@@ -1831,16 +1863,35 @@ async function renderOrganigramme(main) {
    DROITS & DEVOIRS
    ========================================================================= */
 async function renderInfo(main) {
+  const u = State.user;
+  const accepted = u.reglementAccepted;
   main.innerHTML = `<div class="page-head"><div><h1>Vos droits & devoirs</h1><p>Informations utiles sur la plateforme.</p></div>
-    ${State.user.role==='admin'?`<button class="btn ghost" id="edit-info">Modifier</button>`:''}</div>
-    <div class="card"><div class="info-content" id="info-content">Chargement…</div></div>`;
+    ${u.role==='admin'?`<button class="btn ghost" id="edit-info">Modifier</button>`:''}</div>
+    <div class="card"><div class="info-content" id="info-content">Chargement…</div></div>
+    <div class="card">
+      <h3>📋 Règlement intérieur de l'entreprise</h3>
+      <p class="help" style="margin-top:-.6rem">${accepted?`✅ Vous avez lu et approuvé le règlement intérieur le <strong>${fmtDateTime(u.reglementAcceptedAt)}</strong>.`:'Veuillez prendre connaissance du règlement intérieur ci-dessous.'}</p>
+      <div class="cgu-body reglement-scroll" style="max-height:55vh">${window.REGLEMENT_INTERIEUR_HTML || ''}</div>
+      ${accepted ? '' : `
+      <label class="cgu-check" style="margin-top:1rem"><input type="checkbox" id="ri-ok2"> ${reglementDeclaration(u)}</label>
+      <div style="margin-top:1rem"><button class="btn accent" id="ri-accept2" disabled>J'accepte le règlement intérieur</button></div>`}
+    </div>`;
   try {
     const { content } = await api('GET', '/info-panel');
     document.getElementById('info-content').textContent = content;
-    if (State.user.role === 'admin') {
+    if (u.role === 'admin') {
       document.getElementById('edit-info').onclick = () => editInfoModal(content);
     }
   } catch (e) { document.getElementById('info-content').textContent = e.message; }
+  if (!accepted) {
+    const chk = document.getElementById('ri-ok2');
+    const acc = document.getElementById('ri-accept2');
+    chk.onchange = () => { acc.disabled = !chk.checked; };
+    acc.onclick = async () => {
+      try { const r = await api('POST', '/me/accept-reglement'); State.user = r.user; toast('Règlement intérieur accepté.', 'ok'); renderInfo(main); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  }
 }
 
 function editInfoModal(content) {
@@ -1875,6 +1926,7 @@ async function renderAdmin(main) {
       <button data-tab="reqs">En attente d'approbation${badge(nbReqs)}</button>
       <button data-tab="users">Paramétrages salariés</button>
       <button data-tab="export">Exporter des données</button>
+      <button data-tab="reglement">Règlement intérieur</button>
       <button data-tab="groups">Groupes</button>
       <button data-tab="categories">Catégories</button>
     </div>
@@ -1898,6 +1950,7 @@ async function adminTab(tab) {
     if (tab === 'users') return adminUsers(body);
     if (tab === 'export') return adminExport(body);
     if (tab === 'groups') return adminGroups(body);
+    if (tab === 'reglement') return adminReglement(body);
     if (tab === 'categories') return adminCategories(body);
   } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
@@ -2330,6 +2383,73 @@ function userModal(u, body) {
           else { await api('PUT', `/admin/users/${u.id}`, payload); toast('Salarié mis à jour.', 'ok'); }
           closeModal(); adminUsers(body); refreshAdminBadge();
         } catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
+}
+
+// Suivi des acceptations du règlement intérieur + génération d'attestations PDF.
+async function adminReglement(body) {
+  const { users } = await api('GET', '/admin/reglement-status');
+  users.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+  const nbOk = users.filter((u) => u.reglementAccepted).length;
+  body.innerHTML = `<div class="card">
+    <h3>Règlement intérieur — suivi des acceptations</h3>
+    <p class="help" style="margin-top:-.6rem">${nbOk}/${users.length} salarié(s) ont lu et approuvé le règlement intérieur. Générez une attestation PDF pour vos dossiers.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Salarié</th><th>Groupe</th><th>Statut</th><th>Date & heure d'acceptation</th><th>Attestation</th></tr></thead>
+      <tbody>${users.map((u) => { const g = groupById(u.groupId); return `<tr>
+        <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${roleLabel(u.role)}</div></td>
+        <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'—'}</td>
+        <td>${u.reglementAccepted?`<span class="tag approved">Lu et approuvé</span>`:`<span class="tag pending">En attente</span>`}</td>
+        <td class="help">${u.reglementAcceptedAt?fmtDateTime(u.reglementAcceptedAt):'—'}</td>
+        <td>${u.reglementAccepted?`<button class="btn ghost sm" data-attest="${u.id}">📄 Attestation PDF</button>`:'<span class="help">—</span>'}</td>
+      </tr>`; }).join('')}</tbody>
+    </table></div>
+  </div>`;
+  body.querySelectorAll('[data-attest]').forEach((btn) => btn.onclick = () => attestationModal(users.find((u) => u.id === btn.dataset.attest)));
+}
+
+// Attestation de remise du règlement intérieur (imprimable / PDF).
+function attestationModal(u) {
+  if (!u) return;
+  const d = u.reglementAcceptedAt ? fmtDate(u.reglementAcceptedAt.slice(0, 10)) : fmtDate(iso(new Date()));
+  const today = fmtDate(iso(new Date()));
+  const role = roleLabel(u.role);
+  modal({
+    title: 'Attestation de remise du règlement intérieur',
+    bodyHTML: `
+      <div id="attest-print" class="attestation">
+        <div class="att-head">
+          <img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" class="att-logo" alt="">
+          <div>
+            <strong>INTER COLIS SERVICES</strong><br>
+            SASU au capital de 12 700 € – SIRET : 820 323 350 00042<br>
+            Zone de l'Intendance – 14930 Éterville
+          </div>
+        </div>
+        <h2 style="text-align:center;margin:1.4rem 0">ACCUSÉ DE RÉCEPTION ET ATTESTATION DE REMISE</h2>
+        <p>Je soussigné(e), <strong>${esc(u.firstName)} ${esc(u.lastName)}</strong>, salarié(e) de la société INTER COLIS SERVICES, en qualité de <strong>${esc(role)}</strong>,</p>
+        <p>Déclare avoir reçu ce jour un exemplaire du Règlement Intérieur de la Société INTER COLIS SERVICES, en avoir pris connaissance et m'engager à le respecter dans son intégralité.</p>
+        <p>Fait à Éterville, le ${d}.</p>
+        <p style="margin-top:1.6rem">Signature du salarié précédée de la mention manuscrite « Lu et approuvé » :</p>
+        <p style="margin-top:.6rem">${esc(u.firstName)} ${esc(u.lastName)} — « Lu et approuvé » le ${d}.</p>
+        <div style="height:1.2rem"></div>
+        <p style="margin-top:1.6rem">Pour la Direction d'ICS – Quentin Routel, Directeur :</p>
+        <p style="margin-top:.6rem">Quentin Routel, Directeur — « Lu et approuvé » le ${today}.</p>
+      </div>`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button><button class="btn accent" id="att-print-btn">🖨️ Imprimer / PDF</button>`,
+    onMount: (ov) => {
+      ov.querySelector('#att-print-btn').onclick = () => {
+        // Impression ciblée de l'attestation via une fenêtre dédiée.
+        const w = window.open('', '_blank');
+        w.document.write(`<html><head><title>Attestation - ${esc(u.firstName)} ${esc(u.lastName)}</title>
+          <style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:2.5rem;line-height:1.6}
+          .att-head{display:flex;gap:1rem;align-items:center;border-bottom:2px solid #14427e;padding-bottom:1rem}
+          .att-logo{width:64px;height:64px;object-fit:contain}
+          h2{color:#14427e}</style></head><body>${ov.querySelector('#attest-print').innerHTML}</body></html>`);
+        w.document.close();
+        setTimeout(() => { w.focus(); w.print(); }, 300);
       };
     },
   });

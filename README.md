@@ -31,6 +31,12 @@ npm start
 Le site est disponible sur http://localhost:3000 (port configurable via la
 variable d'environnement `PORT`).
 
+## Déploiement
+
+- **Serveur OVH (VPS / dédié)** : voir **[DEPLOIEMENT-OVH.md](DEPLOIEMENT-OVH.md)**
+  (script d'installation automatique, systemd, nginx + HTTPS).
+- **Render / Vercel / Docker** : voir **[DEPLOIEMENT.md](DEPLOIEMENT.md)**.
+
 ## Premier compte = administrateur
 
 ⚠️ **Le tout premier compte créé via le formulaire d'inscription devient
