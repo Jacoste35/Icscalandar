@@ -220,6 +220,7 @@ app.post('/api/register', async (req, res) => {
     cguAccepted: false,
     reglementAccepted: false,
     reglementAcceptedAt: null,
+    reglementAcceptedVersion: 0,
     unavail: [],
     hireDate: validDate(hireDate) ? hireDate : null,
     // Le tout premier compte créé devient administrateur et est actif.
@@ -282,27 +283,58 @@ app.post('/api/me/accept-cgu', authRequired, async (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-// Acceptation du règlement intérieur (lecture obligatoire à l'ouverture).
+// Règlement intérieur en vigueur (version, date, contenu, historique).
+app.get('/api/reglement', authRequired, (req, res) => {
+  const r = getData().settings.reglement || {};
+  res.json({ version: r.version, label: r.label, updatedAt: r.updatedAt, content: r.content, history: r.history || [] });
+});
+
+// Acceptation du règlement intérieur (version en vigueur) par le salarié.
 app.post('/api/me/accept-reglement', authRequired, async (req, res) => {
-  if (!req.user.reglementAccepted) {
-    req.user.reglementAccepted = true;
-    req.user.reglementAcceptedAt = new Date().toISOString();
-    await save();
-  }
+  const cur = getData().settings.reglement || { version: 1 };
+  req.user.reglementAccepted = true;
+  req.user.reglementAcceptedVersion = cur.version || 1;
+  req.user.reglementAcceptedAt = new Date().toISOString();
+  await save();
   res.json({ user: publicUser(req.user) });
+});
+
+// Modifier le règlement intérieur (admin) : nouvelle version → ré-acceptation
+// requise par tous les salariés à leur prochaine connexion.
+app.put('/api/admin/reglement', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { content, label } = req.body || {};
+  if (!content || !String(content).trim()) return res.status(400).json({ error: 'Contenu du règlement requis' });
+  const cur = db.settings.reglement || {};
+  const newVersion = (cur.version || 0) + 1;
+  const now = new Date().toISOString();
+  const newLabel = String(label || `Version ${newVersion}.0`).trim();
+  cur.history = Array.isArray(cur.history) ? cur.history : [];
+  cur.history.push({ version: newVersion, label: newLabel, updatedAt: now });
+  db.settings.reglement = {
+    version: newVersion,
+    label: newLabel,
+    updatedAt: now,
+    content: String(content),
+    history: cur.history,
+  };
+  await save();
+  res.json({ reglement: db.settings.reglement });
 });
 
 // Liste des acceptations du règlement intérieur (administrateur).
 app.get('/api/admin/reglement-status', authRequired, adminRequired, (req, res) => {
+  const r = getData().settings.reglement || { version: 1 };
   const list = getData().users
     .filter((u) => u.status === 'active')
     .map((u) => ({
       id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role,
       groupId: u.groupId, email: u.email || null,
-      reglementAccepted: Boolean(u.reglementAccepted),
+      reglementAcceptedVersion: u.reglementAcceptedVersion || 0,
+      upToDate: (u.reglementAcceptedVersion || 0) >= r.version,
       reglementAcceptedAt: u.reglementAcceptedAt || null,
     }));
-  res.json({ users: list });
+  res.json({ users: list, current: { version: r.version, label: r.label, updatedAt: r.updatedAt }, history: r.history || [] });
 });
 
 // --- Indisponibilités personnelles (« Verrouiller mon planning ») -----------
@@ -656,6 +688,7 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     cguAccepted: false,
     reglementAccepted: false,
     reglementAcceptedAt: null,
+    reglementAcceptedVersion: 0,
     unavail: [],
     rccAnchor: new Date().toISOString().slice(0, 10),
     passwordHash: await bcrypt.hash(String(password), 10),
