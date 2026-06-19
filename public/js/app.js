@@ -14,6 +14,7 @@ const State = {
   holidays: {},
   schoolHolidays: [],
   closedPeriods: [],
+  reglement: null,
   view: 'dashboard',
   // état du calendrier (colorBy : 'category' ou 'group')
   cal: { mode: 'month', cursor: new Date(), colorBy: 'category' },
@@ -32,6 +33,7 @@ function iso(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.ge
 function parseISO(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
 function fmtDate(s) { const d = parseISO(s); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`; }
 function fmtDateTime(s) { const d = new Date(s); return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtDateTimeS(s) { const d = new Date(s); return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} à ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 function startOfWeekMonday(d) { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0,0,0,0); return x; }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
@@ -192,11 +194,12 @@ async function boot() {
 }
 
 async function loadRefs() {
-  const [{ groups }, cats, { holidays }, settings] = await Promise.all([
+  const [{ groups }, cats, { holidays }, settings, reglement] = await Promise.all([
     api('GET', '/groups'),
     api('GET', '/categories'),
     api('GET', '/holidays?year=' + new Date().getFullYear()),
     api('GET', '/settings'),
+    api('GET', '/reglement').catch(() => null),
   ]);
   State.groups = groups;
   State.categories = cats.categories;
@@ -205,8 +208,12 @@ async function loadRefs() {
   State.holidays = holidays;
   State.schoolHolidays = settings.schoolHolidays || [];
   State.closedPeriods = settings.closedPeriods || [];
+  State.reglement = reglement;
   State._holidayYear = new Date().getFullYear();
 }
+// Contenu du règlement (serveur si disponible, sinon repli local).
+function reglementContent() { return (State.reglement && State.reglement.content) || window.REGLEMENT_INTERIEUR_HTML || ''; }
+function reglementVersion() { return (State.reglement && State.reglement.version) || 1; }
 
 // Indique si une date (AAAA-MM-JJ) tombe en vacances scolaires (Zone B).
 function schoolHolidayFor(ds) {
@@ -424,20 +431,25 @@ function renderCGU() {
   };
 }
 
-// Déclaration d'acceptation du règlement intérieur (texte officiel).
+// Déclaration d'acceptation du règlement intérieur. Tout le monde est « salarié ».
 function reglementDeclaration(u) {
-  return `Je soussigné(e), <strong>${esc(u.firstName)} ${esc(u.lastName)}</strong>, salarié(e) de la société INTER COLIS SERVICES, en qualité de <strong>${esc(roleLabel(u.role))}</strong>, déclare avoir reçu ce jour un exemplaire du Règlement Intérieur de la Société INTER COLIS SERVICES, en avoir pris connaissance et m'engager à le respecter dans son intégralité. Fait à Éterville, le ${fmtDate(iso(new Date()))}.`;
+  const v = State.reglement ? ` (${esc(State.reglement.label || ('Version ' + reglementVersion()))})` : '';
+  return `Je soussigné(e), <strong>${esc(u.firstName)} ${esc(u.lastName)}</strong>, salarié(e) de la société INTER COLIS SERVICES, en qualité de <strong>salarié</strong>, déclare avoir reçu ce jour un exemplaire du Règlement Intérieur de la Société INTER COLIS SERVICES${v}, en avoir pris connaissance et m'engager à le respecter dans son intégralité. Fait à Éterville, le ${fmtDate(iso(new Date()))}.`;
 }
+// L'utilisateur a-t-il accepté la version EN VIGUEUR du règlement ?
+function reglementUpToDate(u) { return (u.reglementAcceptedVersion || 0) >= reglementVersion(); }
 
-// Page de garde : lecture obligatoire du règlement intérieur au 1er accès.
+// Page de garde : lecture obligatoire du règlement intérieur au 1er accès
+// (et à chaque nouvelle version mise en ligne par l'administrateur).
 function renderReglementGate() {
   const u = State.user;
+  const isUpdate = (u.reglementAcceptedVersion || 0) > 0;
   $app.innerHTML = `
   <div class="cgu-wrap">
     <div class="cgu-card" style="max-width:900px">
       <div class="cgu-head"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" class="cgu-logo" alt=""><h1>Règlement intérieur</h1></div>
-      <p class="cgu-lead">Avant d'accéder au portail, vous devez prendre connaissance du règlement intérieur de l'entreprise et l'accepter. Faites défiler jusqu'en bas pour valider.</p>
-      <div class="cgu-body reglement-scroll">${window.REGLEMENT_INTERIEUR_HTML || '<p>Règlement indisponible.</p>'}</div>
+      <p class="cgu-lead">${isUpdate ? 'Le règlement intérieur a été <strong>mis à jour</strong>. Merci de prendre connaissance de la nouvelle version et de l\'accepter.' : 'Avant d\'accéder au portail, vous devez prendre connaissance du règlement intérieur de l\'entreprise et l\'accepter.'} ${State.reglement ? `<br><span class="help">${esc(State.reglement.label || '')} — en vigueur depuis le ${fmtDate((State.reglement.updatedAt||'').slice(0,10))}</span>` : ''}</p>
+      <div class="cgu-body reglement-scroll">${reglementContent() || '<p>Règlement indisponible.</p>'}</div>
       <label class="cgu-check"><input type="checkbox" id="ri-ok"> ${reglementDeclaration(u)}</label>
       <div class="cgu-actions">
         <button class="btn ghost" id="ri-logout">Se déconnecter</button>
@@ -457,9 +469,9 @@ function renderReglementGate() {
 
 function renderApp() {
   const u = State.user;
-  // Pages de garde au premier accès : CGU puis règlement intérieur.
+  // Pages de garde au premier accès : CGU puis règlement intérieur (version en vigueur).
   if (!u.cguAccepted) { renderCGU(); return; }
-  if (!u.reglementAccepted) { renderReglementGate(); return; }
+  if (!reglementUpToDate(u)) { renderReglementGate(); return; }
   const sections = navSections();
   $app.innerHTML = `
   <div class="layout">
@@ -1864,14 +1876,19 @@ async function renderOrganigramme(main) {
    ========================================================================= */
 async function renderInfo(main) {
   const u = State.user;
-  const accepted = u.reglementAccepted;
+  const accepted = reglementUpToDate(u);
+  const ri = State.reglement || {};
+  const isAdmin = u.role === 'admin';
   main.innerHTML = `<div class="page-head"><div><h1>Vos droits & devoirs</h1><p>Informations utiles sur la plateforme.</p></div>
-    ${u.role==='admin'?`<button class="btn ghost" id="edit-info">Modifier</button>`:''}</div>
+    ${isAdmin?`<button class="btn ghost" id="edit-info">Modifier le panneau</button>`:''}</div>
     <div class="card"><div class="info-content" id="info-content">Chargement…</div></div>
     <div class="card">
-      <h3>📋 Règlement intérieur de l'entreprise</h3>
-      <p class="help" style="margin-top:-.6rem">${accepted?`✅ Vous avez lu et approuvé le règlement intérieur le <strong>${fmtDateTime(u.reglementAcceptedAt)}</strong>.`:'Veuillez prendre connaissance du règlement intérieur ci-dessous.'}</p>
-      <div class="cgu-body reglement-scroll" style="max-height:55vh">${window.REGLEMENT_INTERIEUR_HTML || ''}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <h3 style="margin:0">📋 Règlement intérieur de l'entreprise</h3>
+        ${isAdmin?`<button class="btn accent" id="edit-reglement">✏️ Modifier le règlement</button>`:''}
+      </div>
+      <p class="help" style="margin-top:.4rem">${ri.label?`<strong>${esc(ri.label)}</strong> — en vigueur depuis le ${fmtDate((ri.updatedAt||'').slice(0,10))}. `:''}${accepted?`✅ Vous avez lu et approuvé cette version le <strong>${fmtDateTimeS(u.reglementAcceptedAt)}</strong>.`:'Veuillez prendre connaissance du règlement intérieur ci-dessous et l\'accepter.'}</p>
+      <div class="cgu-body reglement-scroll" style="max-height:55vh">${reglementContent()}</div>
       ${accepted ? '' : `
       <label class="cgu-check" style="margin-top:1rem"><input type="checkbox" id="ri-ok2"> ${reglementDeclaration(u)}</label>
       <div style="margin-top:1rem"><button class="btn accent" id="ri-accept2" disabled>J'accepte le règlement intérieur</button></div>`}
@@ -1879,8 +1896,9 @@ async function renderInfo(main) {
   try {
     const { content } = await api('GET', '/info-panel');
     document.getElementById('info-content').textContent = content;
-    if (u.role === 'admin') {
+    if (isAdmin) {
       document.getElementById('edit-info').onclick = () => editInfoModal(content);
+      document.getElementById('edit-reglement').onclick = () => editReglementModal(main);
     }
   } catch (e) { document.getElementById('info-content').textContent = e.message; }
   if (!accepted) {
@@ -1903,6 +1921,40 @@ function editInfoModal(content) {
       overlay.querySelector('#save-info').onclick = async () => {
         try { await api('PUT', '/info-panel', { content: overlay.querySelector('#info-edit').value }); closeModal(); toast('Mis à jour.', 'ok'); renderInfo(document.getElementById('main')); }
         catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
+}
+
+// Édition du règlement intérieur (admin) : publier crée une nouvelle version et
+// oblige tous les salariés à ré-accepter à leur prochaine connexion.
+function editReglementModal(main) {
+  const ri = State.reglement || {};
+  const nextV = (ri.version || 0) + 1;
+  modal({
+    title: 'Modifier le règlement intérieur',
+    bodyHTML: `
+      <div class="alert warn">⚠️ Publier une nouvelle version <strong>réinitialise les acceptations</strong> : tous les salariés devront ré-accepter le règlement à leur prochaine connexion.</div>
+      <label>Intitulé de la version</label>
+      <input id="ri-label" value="Version ${nextV}.0">
+      <label>Contenu du règlement (HTML accepté)</label>
+      <textarea id="ri-content" style="min-height:340px;font-family:monospace;font-size:.82rem">${esc(ri.content || reglementContent())}</textarea>
+      <p class="help">Astuce : conservez les balises &lt;h3&gt; (titres), &lt;h4&gt; (articles), &lt;p&gt; et &lt;ul&gt;&lt;li&gt; pour une mise en forme cohérente.</p>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ri-pub">Publier la nouvelle version</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#ri-pub').onclick = async () => {
+        const content = overlay.querySelector('#ri-content').value;
+        const label = overlay.querySelector('#ri-label').value;
+        if (!content.trim()) { toast('Le contenu ne peut pas être vide.', 'err'); return; }
+        if (!confirm('Publier cette nouvelle version ? Tous les salariés devront la ré-accepter.')) return;
+        try {
+          const r = await api('PUT', '/admin/reglement', { content, label });
+          State.reglement = r.reglement;
+          // L'admin lui-même devra ré-accepter : on remet son statut à jour.
+          State.user.reglementAcceptedVersion = (State.user.reglementAcceptedVersion || 0);
+          closeModal(); toast('Nouvelle version publiée.', 'ok');
+          renderApp();
+        } catch (e) { toast(e.message, 'err'); }
       };
     },
   });
@@ -2390,20 +2442,35 @@ function userModal(u, body) {
 
 // Suivi des acceptations du règlement intérieur + génération d'attestations PDF.
 async function adminReglement(body) {
-  const { users } = await api('GET', '/admin/reglement-status');
+  const { users, current, history } = await api('GET', '/admin/reglement-status');
   users.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  const nbOk = users.filter((u) => u.reglementAccepted).length;
+  const nbOk = users.filter((u) => u.upToDate).length;
+  const curV = current.version;
+  const hist = (history || []).slice().sort((a, b) => b.version - a.version);
   body.innerHTML = `<div class="card">
-    <h3>Règlement intérieur — suivi des acceptations</h3>
-    <p class="help" style="margin-top:-.6rem">${nbOk}/${users.length} salarié(s) ont lu et approuvé le règlement intérieur. Générez une attestation PDF pour vos dossiers.</p>
+    <h3>Règlement intérieur — version en vigueur</h3>
+    <p style="margin:-.4rem 0 .6rem"><strong>${esc(current.label || ('Version ' + curV))}</strong> — mise en ligne le <strong>${fmtDateTimeS(current.updatedAt)}</strong>.</p>
+    <h4 style="margin:.4rem 0">Historique des versions</h4>
     <div class="table-wrap"><table>
-      <thead><tr><th>Salarié</th><th>Groupe</th><th>Statut</th><th>Date & heure d'acceptation</th><th>Attestation</th></tr></thead>
-      <tbody>${users.map((u) => { const g = groupById(u.groupId); return `<tr>
-        <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">${roleLabel(u.role)}</div></td>
+      <thead><tr><th>Version</th><th>Intitulé</th><th>Date de mise en ligne</th><th>Salariés à jour</th></tr></thead>
+      <tbody>${hist.map((h) => {
+        const okN = users.filter((u) => (u.reglementAcceptedVersion || 0) >= h.version).length;
+        return `<tr${h.version===curV?' style="background:#f0fdf4"':''}><td><strong>v${h.version}</strong>${h.version===curV?' <span class="tag approved">en vigueur</span>':''}</td><td>${esc(h.label||'')}</td><td class="help">${fmtDateTimeS(h.updatedAt)}</td><td>${okN}/${users.length}</td></tr>`;
+      }).join('')}</tbody>
+    </table></div>
+  </div>
+  <div class="card">
+    <h3>Suivi des acceptations — ${nbOk}/${users.length} à jour</h3>
+    <p class="help" style="margin-top:-.6rem">« À jour » = a accepté la version en vigueur (v${curV}). Générez une attestation PDF pour vos dossiers.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Salarié</th><th>Groupe</th><th>Statut</th><th>Version acceptée</th><th>Date & heure d'acceptation</th><th>Attestation</th></tr></thead>
+      <tbody>${users.map((u) => { const g = groupById(u.groupId); const av = u.reglementAcceptedVersion || 0; return `<tr>
+        <td>${esc(u.firstName)} ${esc(u.lastName)}<div class="help">salarié</div></td>
         <td>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'—'}</td>
-        <td>${u.reglementAccepted?`<span class="tag approved">Lu et approuvé</span>`:`<span class="tag pending">En attente</span>`}</td>
-        <td class="help">${u.reglementAcceptedAt?fmtDateTime(u.reglementAcceptedAt):'—'}</td>
-        <td>${u.reglementAccepted?`<button class="btn ghost sm" data-attest="${u.id}">📄 Attestation PDF</button>`:'<span class="help">—</span>'}</td>
+        <td>${u.upToDate?`<span class="tag approved">Lu et approuvé (à jour)</span>`:(av>0?`<span class="tag pending">Doit ré-accepter (v${av})</span>`:`<span class="tag rejected">Jamais accepté</span>`)}</td>
+        <td>${av>0?`v${av}`:'—'}</td>
+        <td class="help">${u.reglementAcceptedAt?fmtDateTimeS(u.reglementAcceptedAt):'—'}</td>
+        <td>${av>0?`<button class="btn ghost sm" data-attest="${u.id}">📄 Attestation PDF</button>`:'<span class="help">—</span>'}</td>
       </tr>`; }).join('')}</tbody>
     </table></div>
   </div>`;
@@ -2413,9 +2480,10 @@ async function adminReglement(body) {
 // Attestation de remise du règlement intérieur (imprimable / PDF).
 function attestationModal(u) {
   if (!u) return;
-  const d = u.reglementAcceptedAt ? fmtDate(u.reglementAcceptedAt.slice(0, 10)) : fmtDate(iso(new Date()));
-  const today = fmtDate(iso(new Date()));
-  const role = roleLabel(u.role);
+  const dt = u.reglementAcceptedAt ? fmtDateTimeS(u.reglementAcceptedAt) : fmtDateTimeS(new Date().toISOString());
+  const today = fmtDateTimeS(new Date().toISOString());
+  const ri = State.reglement || {};
+  const ver = u.reglementAcceptedVersion ? ` (version v${u.reglementAcceptedVersion}${ri.label?` — ${esc(ri.label)}`:''})` : '';
   modal({
     title: 'Attestation de remise du règlement intérieur',
     bodyHTML: `
@@ -2429,11 +2497,11 @@ function attestationModal(u) {
           </div>
         </div>
         <h2 style="text-align:center;margin:1.4rem 0">ACCUSÉ DE RÉCEPTION ET ATTESTATION DE REMISE</h2>
-        <p>Je soussigné(e), <strong>${esc(u.firstName)} ${esc(u.lastName)}</strong>, salarié(e) de la société INTER COLIS SERVICES, en qualité de <strong>${esc(role)}</strong>,</p>
-        <p>Déclare avoir reçu ce jour un exemplaire du Règlement Intérieur de la Société INTER COLIS SERVICES, en avoir pris connaissance et m'engager à le respecter dans son intégralité.</p>
-        <p>Fait à Éterville, le ${d}.</p>
+        <p>Je soussigné(e), <strong>${esc(u.firstName)} ${esc(u.lastName)}</strong>, salarié(e) de la société INTER COLIS SERVICES, en qualité de <strong>salarié</strong>,</p>
+        <p>Déclare avoir reçu ce jour un exemplaire du Règlement Intérieur de la Société INTER COLIS SERVICES${ver}, en avoir pris connaissance et m'engager à le respecter dans son intégralité.</p>
+        <p>Fait à Éterville, le ${dt}.</p>
         <p style="margin-top:1.6rem">Signature du salarié précédée de la mention manuscrite « Lu et approuvé » :</p>
-        <p style="margin-top:.6rem">${esc(u.firstName)} ${esc(u.lastName)} — « Lu et approuvé » le ${d}.</p>
+        <p style="margin-top:.6rem">${esc(u.firstName)} ${esc(u.lastName)} — « Lu et approuvé » le ${dt}.</p>
         <div style="height:1.2rem"></div>
         <p style="margin-top:1.6rem">Pour la Direction d'ICS – Quentin Routel, Directeur :</p>
         <p style="margin-top:.6rem">Quentin Routel, Directeur — « Lu et approuvé » le ${today}.</p>
