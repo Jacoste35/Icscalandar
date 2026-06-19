@@ -218,6 +218,8 @@ app.post('/api/register', async (req, res) => {
     isParent: false,
     suspended: false,
     cguAccepted: false,
+    reglementAccepted: false,
+    reglementAcceptedAt: null,
     unavail: [],
     hireDate: validDate(hireDate) ? hireDate : null,
     // Le tout premier compte créé devient administrateur et est actif.
@@ -278,6 +280,29 @@ app.post('/api/me/accept-cgu', authRequired, async (req, res) => {
   req.user.cguAcceptedAt = new Date().toISOString();
   await save();
   res.json({ user: publicUser(req.user) });
+});
+
+// Acceptation du règlement intérieur (lecture obligatoire à l'ouverture).
+app.post('/api/me/accept-reglement', authRequired, async (req, res) => {
+  if (!req.user.reglementAccepted) {
+    req.user.reglementAccepted = true;
+    req.user.reglementAcceptedAt = new Date().toISOString();
+    await save();
+  }
+  res.json({ user: publicUser(req.user) });
+});
+
+// Liste des acceptations du règlement intérieur (administrateur).
+app.get('/api/admin/reglement-status', authRequired, adminRequired, (req, res) => {
+  const list = getData().users
+    .filter((u) => u.status === 'active')
+    .map((u) => ({
+      id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role,
+      groupId: u.groupId, email: u.email || null,
+      reglementAccepted: Boolean(u.reglementAccepted),
+      reglementAcceptedAt: u.reglementAcceptedAt || null,
+    }));
+  res.json({ users: list });
 });
 
 // --- Indisponibilités personnelles (« Verrouiller mon planning ») -----------
@@ -629,6 +654,8 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     hireDate: validDate(hireDate) ? hireDate : null,
     suspended: false,
     cguAccepted: false,
+    reglementAccepted: false,
+    reglementAcceptedAt: null,
     unavail: [],
     rccAnchor: new Date().toISOString().slice(0, 10),
     passwordHash: await bcrypt.hash(String(password), 10),

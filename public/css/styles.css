@@ -367,3 +367,19 @@ tr:last-child td { border-bottom: 0; }
 .cgu-actions { display: flex; justify-content: space-between; gap: .8rem; margin-top: 1.2rem; flex-wrap: wrap; }
 
 @media (max-width: 520px) { .cgu-card { padding: 1.2rem; } .cgu-body { max-height: 50vh; } }
+
+/* ---------------- Règlement intérieur ---------------- */
+.reglement { font-size: .9rem; line-height: 1.6; }
+.reglement .ri-entete { text-align: center; border-bottom: 2px solid var(--brand); padding-bottom: 1rem; margin-bottom: 1rem; }
+.reglement .ri-entete h1 { color: var(--brand); margin: .6rem 0 .3rem; font-size: 1.5rem; }
+.reglement .ri-entete h2 { margin: 0; font-size: 1.1rem; }
+.reglement h3 { color: var(--brand); border-top: 1px solid var(--border); padding-top: .8rem; margin: 1.2rem 0 .5rem; font-size: 1.05rem; }
+.reglement h4 { margin: .9rem 0 .3rem; font-size: .95rem; color: #1e293b; }
+.reglement ul { margin: .3rem 0 .6rem 1.1rem; }
+.reglement p { margin: .4rem 0; }
+.reglement-scroll { max-height: 50vh; overflow-y: auto; }
+
+/* ---------------- Attestation PDF ---------------- */
+.attestation { font-size: .95rem; line-height: 1.6; }
+.attestation .att-head { display: flex; gap: 1rem; align-items: center; border-bottom: 2px solid var(--brand); padding-bottom: .8rem; }
+.attestation .att-logo { width: 56px; height: 56px; object-fit: contain; }
