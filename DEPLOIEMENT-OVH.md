@@ -17,8 +17,9 @@ Vous obtenez à la fin une adresse type **https://portail.votre-domaine.fr**.
 
 ## A. Méthode rapide (script automatique) — VPS Ubuntu/Debian
 
-1. **Commandez un VPS OVH** (Ubuntu 22.04 ou 24.04). OVH vous envoie l'IP et un
-   accès SSH (`ubuntu` ou `root`).
+1. **Commandez un VPS OVH** — **Ubuntu 24.04 LTS recommandé** (ou 26.04 LTS,
+   également compatible). OVH vous envoie l'IP et un accès SSH (`ubuntu` ou
+   `root`). Le script installe **Node.js 22 LTS**, compatible avec les deux.
 
 2. **Connectez-vous en SSH** depuis votre ordinateur :
    ```bash
@@ -54,8 +55,8 @@ Vous obtenez à la fin une adresse type **https://portail.votre-domaine.fr**.
 ## B. Méthode manuelle (étape par étape)
 
 ```bash
-# 1. Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+# 1. Node.js 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt install -y nodejs
 
 # 2. Récupérer le code

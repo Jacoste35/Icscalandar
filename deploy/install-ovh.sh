@@ -8,7 +8,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_USER="ics"
-NODE_MAJOR="20"
+NODE_MAJOR="22"
 
 echo "==> Dossier application : $APP_DIR"
 
