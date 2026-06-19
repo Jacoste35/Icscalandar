@@ -1,0 +1,25 @@
+# Service systemd pour INTER COLIS SERVICES
+# Copier dans : /etc/systemd/system/inter-colis.service
+# Puis :  sudo systemctl daemon-reload && sudo systemctl enable --now inter-colis
+
+[Unit]
+Description=Portail RH INTER COLIS SERVICES (Node.js)
+After=network.target
+
+[Service]
+Type=simple
+# Utilisateur dédié (à créer : sudo adduser --system --group ics)
+User=ics
+Group=ics
+WorkingDirectory=/home/ics/inter-colis
+# Charge les variables (PORT, JWT_SECRET, SMTP_*, DATA_DIR…)
+EnvironmentFile=/home/ics/inter-colis/.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+# Sécurité de base
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

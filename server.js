@@ -1,5 +1,9 @@
 'use strict';
 
+// Charge un éventuel fichier .env (présent sur un serveur OVH/VPS). Optionnel :
+// si le paquet dotenv n'est pas installé, on ignore sans erreur.
+try { require('dotenv').config(); } catch (e) { /* dotenv non installé : ignoré */ }
+
 const path = require('path');
 const express = require('express');
 const bcrypt = require('bcryptjs');
