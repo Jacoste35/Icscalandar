@@ -15,47 +15,105 @@ Vous obtenez à la fin une adresse type **https://portail.votre-domaine.fr**.
 
 ---
 
-## A. Méthode rapide (script automatique) — VPS Ubuntu/Debian
+## A. Méthode rapide (tout automatique) — VPS Ubuntu/Debian
 
-1. **Commandez un VPS OVH** (Ubuntu 22.04 ou 24.04). OVH vous envoie l'IP et un
-   accès SSH (`ubuntu` ou `root`).
+Le domaine **inter-colis-services.com** est déjà pré-configuré dans le script :
+une seule commande installe **tout** (Node.js, l'app, le service, nginx **et le
+HTTPS**).
+
+### Étape 0 — DNS (à faire AVANT, pour que le HTTPS s'installe tout seul)
+Dans l'espace OVH (« Domaines » → `inter-colis-services.com` → zone DNS), créez
+**2 enregistrements A** pointant vers l'IP de votre VPS :
+
+| Type | Sous-domaine | Cible |
+|------|--------------|-------|
+| A | `` (vide / `@`) | IP de votre VPS |
+| A | `www` | IP de votre VPS |
+
+(Comptez quelques minutes à 1 h de propagation DNS.)
+
+### Étapes 1 à 4
+
+1. **Commandez un VPS OVH** — **Ubuntu 24.04 LTS recommandé** (ou 26.04 LTS,
+   également compatible). OVH vous envoie l'IP et un accès SSH (`ubuntu` ou
+   `root`). Le script installe **Node.js 22 LTS**, compatible avec les deux.
 
 2. **Connectez-vous en SSH** depuis votre ordinateur :
    ```bash
    ssh ubuntu@VOTRE_IP        # ou root@VOTRE_IP
    ```
 
-3. **Récupérez l'application** (au choix) :
+3. **Récupérez l'application** depuis GitHub :
    ```bash
-   # Option 1 — depuis GitHub (le plus simple)
    sudo apt update && sudo apt install -y git
    sudo mkdir -p /home/ics && cd /home/ics
    sudo git clone https://github.com/Jacoste35/Icscalandar.git inter-colis
    cd inter-colis
-
-   # Option 2 — depuis l'archive .zip que je vous ai fournie
-   #   (téléversez-la avec scp puis dézippez)
-   #   scp inter-colis-services.zip ubuntu@VOTRE_IP:/home/ics/
-   #   sudo apt install -y unzip && cd /home/ics && sudo unzip inter-colis-services.zip -d inter-colis && cd inter-colis
    ```
 
-4. **Lancez l'installation automatique** :
+4. **Lancez l'installation tout-en-un** :
    ```bash
    sudo bash deploy/install-ovh.sh
    ```
    Le script installe Node.js, les dépendances, crée le fichier `.env` (avec un
-   `JWT_SECRET` généré), crée un utilisateur système `ics`, et démarre le
-   service. L'app tourne alors sur `http://127.0.0.1:3000`.
+   `JWT_SECRET` généré), crée l'utilisateur système `ics`, démarre le service,
+   **configure nginx pour `inter-colis-services.com`** et **obtient le
+   certificat HTTPS** automatiquement.
 
-5. **Mettez le site sur Internet avec nginx + HTTPS** (voir section C).
+   ✅ À la fin, le site est en ligne sur **https://inter-colis-services.com**.
+
+   > Si le DNS ne pointe pas encore au moment de l'installation, le HTTPS
+   > échoue (sans bloquer le reste). Une fois le DNS propagé, relancez juste :
+   > ```bash
+   > sudo certbot --nginx -d inter-colis-services.com -d www.inter-colis-services.com --redirect
+   > ```
+
+> ⚠️ **Premier réflexe** : ouvrez le site et créez votre compte via le
+> formulaire d'inscription. Le **tout premier compte créé devient
+> automatiquement l'administrateur**.
+
+### Mettre à jour le site plus tard
+```bash
+cd /home/ics/inter-colis && sudo bash deploy/update.sh
+```
+(Récupère la dernière version GitHub et redémarre — vos données sont conservées.)
+
+---
+
+## A bis. Déploiement 100 % automatique à chaque push (GitHub Actions)
+
+Pour que le site se mette à jour **tout seul** à chaque `git push` sur `main`
+(plus besoin de lancer `update.sh` à la main) :
+
+1. **Sur le VPS**, lancez une seule fois :
+   ```bash
+   cd /home/ics/inter-colis
+   sudo bash deploy/setup-autodeploy.sh
+   ```
+   Le script autorise la mise à jour sans mot de passe, génère une clé SSH de
+   déploiement et **affiche les 3 secrets** à copier.
+
+2. **Sur GitHub** (dépôt → *Settings* → *Secrets and variables* → *Actions* →
+   *New repository secret*), créez :
+
+   | Secret | Valeur |
+   |--------|--------|
+   | `OVH_SSH_HOST` | IP de votre VPS |
+   | `OVH_SSH_USER` | `ubuntu` (l'utilisateur SSH) |
+   | `OVH_SSH_KEY` | la **clé privée** affichée par le script (en entier) |
+   | `OVH_SSH_PORT` | *(facultatif)* si SSH ≠ port 22 |
+
+3. C'est tout. Le workflow `.github/workflows/deploy.yml` se déclenche à chaque
+   push sur `main` et déploie automatiquement. Vous pouvez aussi le lancer à la
+   main depuis l'onglet **Actions** (« Run workflow »).
 
 ---
 
 ## B. Méthode manuelle (étape par étape)
 
 ```bash
-# 1. Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+# 1. Node.js 22
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt install -y nodejs
 
 # 2. Récupérer le code

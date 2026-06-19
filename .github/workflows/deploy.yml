@@ -1,0 +1,26 @@
+name: Déploiement automatique sur OVH
+
+# Se déclenche à chaque push sur main (et peut être lancé manuellement).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Empêche deux déploiements simultanés.
+concurrency:
+  group: deploy-ovh
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mise à jour du serveur OVH via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.OVH_SSH_HOST }}
+          username: ${{ secrets.OVH_SSH_USER }}
+          key: ${{ secrets.OVH_SSH_KEY }}
+          port: ${{ secrets.OVH_SSH_PORT || 22 }}
+          script: |
+            sudo bash /home/ics/inter-colis/deploy/update.sh
