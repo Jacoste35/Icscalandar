@@ -15,7 +15,24 @@ Vous obtenez à la fin une adresse type **https://portail.votre-domaine.fr**.
 
 ---
 
-## A. Méthode rapide (script automatique) — VPS Ubuntu/Debian
+## A. Méthode rapide (tout automatique) — VPS Ubuntu/Debian
+
+Le domaine **inter-colis-services.com** est déjà pré-configuré dans le script :
+une seule commande installe **tout** (Node.js, l'app, le service, nginx **et le
+HTTPS**).
+
+### Étape 0 — DNS (à faire AVANT, pour que le HTTPS s'installe tout seul)
+Dans l'espace OVH (« Domaines » → `inter-colis-services.com` → zone DNS), créez
+**2 enregistrements A** pointant vers l'IP de votre VPS :
+
+| Type | Sous-domaine | Cible |
+|------|--------------|-------|
+| A | `` (vide / `@`) | IP de votre VPS |
+| A | `www` | IP de votre VPS |
+
+(Comptez quelques minutes à 1 h de propagation DNS.)
+
+### Étapes 1 à 4
 
 1. **Commandez un VPS OVH** — **Ubuntu 24.04 LTS recommandé** (ou 26.04 LTS,
    également compatible). OVH vous envoie l'IP et un accès SSH (`ubuntu` ou
@@ -26,29 +43,40 @@ Vous obtenez à la fin une adresse type **https://portail.votre-domaine.fr**.
    ssh ubuntu@VOTRE_IP        # ou root@VOTRE_IP
    ```
 
-3. **Récupérez l'application** (au choix) :
+3. **Récupérez l'application** depuis GitHub :
    ```bash
-   # Option 1 — depuis GitHub (le plus simple)
    sudo apt update && sudo apt install -y git
    sudo mkdir -p /home/ics && cd /home/ics
    sudo git clone https://github.com/Jacoste35/Icscalandar.git inter-colis
    cd inter-colis
-
-   # Option 2 — depuis l'archive .zip que je vous ai fournie
-   #   (téléversez-la avec scp puis dézippez)
-   #   scp inter-colis-services.zip ubuntu@VOTRE_IP:/home/ics/
-   #   sudo apt install -y unzip && cd /home/ics && sudo unzip inter-colis-services.zip -d inter-colis && cd inter-colis
    ```
 
-4. **Lancez l'installation automatique** :
+4. **Lancez l'installation tout-en-un** :
    ```bash
    sudo bash deploy/install-ovh.sh
    ```
    Le script installe Node.js, les dépendances, crée le fichier `.env` (avec un
-   `JWT_SECRET` généré), crée un utilisateur système `ics`, et démarre le
-   service. L'app tourne alors sur `http://127.0.0.1:3000`.
+   `JWT_SECRET` généré), crée l'utilisateur système `ics`, démarre le service,
+   **configure nginx pour `inter-colis-services.com`** et **obtient le
+   certificat HTTPS** automatiquement.
 
-5. **Mettez le site sur Internet avec nginx + HTTPS** (voir section C).
+   ✅ À la fin, le site est en ligne sur **https://inter-colis-services.com**.
+
+   > Si le DNS ne pointe pas encore au moment de l'installation, le HTTPS
+   > échoue (sans bloquer le reste). Une fois le DNS propagé, relancez juste :
+   > ```bash
+   > sudo certbot --nginx -d inter-colis-services.com -d www.inter-colis-services.com --redirect
+   > ```
+
+> ⚠️ **Premier réflexe** : ouvrez le site et créez votre compte via le
+> formulaire d'inscription. Le **tout premier compte créé devient
+> automatiquement l'administrateur**.
+
+### Mettre à jour le site plus tard
+```bash
+cd /home/ics/inter-colis && sudo bash deploy/update.sh
+```
+(Récupère la dernière version GitHub et redémarre — vos données sont conservées.)
 
 ---
 
