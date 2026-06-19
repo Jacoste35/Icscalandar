@@ -12,8 +12,11 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_USER="ics"
 
 cd "$APP_DIR"
+# Évite l'erreur git "dubious ownership" (dossier appartenant à 'ics' mais
+# script lancé en root par le déploiement automatique).
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 echo "==> Récupération de la dernière version (git pull)..."
-git pull --ff-only
+git pull --ff-only origin main
 
 echo "==> Mise à jour des dépendances..."
 npm install --omit=dev

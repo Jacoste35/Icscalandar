@@ -80,6 +80,35 @@ cd /home/ics/inter-colis && sudo bash deploy/update.sh
 
 ---
 
+## A bis. Déploiement 100 % automatique à chaque push (GitHub Actions)
+
+Pour que le site se mette à jour **tout seul** à chaque `git push` sur `main`
+(plus besoin de lancer `update.sh` à la main) :
+
+1. **Sur le VPS**, lancez une seule fois :
+   ```bash
+   cd /home/ics/inter-colis
+   sudo bash deploy/setup-autodeploy.sh
+   ```
+   Le script autorise la mise à jour sans mot de passe, génère une clé SSH de
+   déploiement et **affiche les 3 secrets** à copier.
+
+2. **Sur GitHub** (dépôt → *Settings* → *Secrets and variables* → *Actions* →
+   *New repository secret*), créez :
+
+   | Secret | Valeur |
+   |--------|--------|
+   | `OVH_SSH_HOST` | IP de votre VPS |
+   | `OVH_SSH_USER` | `ubuntu` (l'utilisateur SSH) |
+   | `OVH_SSH_KEY` | la **clé privée** affichée par le script (en entier) |
+   | `OVH_SSH_PORT` | *(facultatif)* si SSH ≠ port 22 |
+
+3. C'est tout. Le workflow `.github/workflows/deploy.yml` se déclenche à chaque
+   push sur `main` et déploie automatiquement. Vous pouvez aussi le lancer à la
+   main depuis l'onglet **Actions** (« Run workflow »).
+
+---
+
 ## B. Méthode manuelle (étape par étape)
 
 ```bash
