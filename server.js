@@ -905,6 +905,10 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
 
   // Remplaçant éventuel.
   const replacer = replacedById ? db.users.find((u) => u.id === replacedById) : null;
+  if (replacer) {
+    const na = replacerNotAllowed(db, req.user, replacer.id);
+    if (na) return res.status(400).json({ error: na });
+  }
 
   // L'administrateur peut choisir d'attribuer directement (validé) ou plus tard
   // (en attente). Le responsable propose toujours (en attente).
@@ -968,6 +972,8 @@ app.put('/api/admin/requests/:id/replacement', authRequired, adminRequired, asyn
   if (!replacedById) { r.replacedById = null; r.replacedByName = null; await save(); return res.json({ request: r }); }
   const replacer = db.users.find((u) => u.id === replacedById);
   if (!replacer) return res.status(404).json({ error: 'Remplaçant introuvable' });
+  const na = replacerNotAllowed(db, req.user, replacer.id);
+  if (na) return res.status(400).json({ error: na });
   const conflict = replacerConflict(db, replacedById, r.startDate, r.endDate, r.id);
   if (conflict) return res.status(409).json({ error: `${replacer.firstName} ${replacer.lastName} n'est pas disponible (${conflict}) sur cette période — il ne peut pas être à deux endroits en même temps.` });
   r.replacedById = replacer.id;
@@ -1207,6 +1213,22 @@ function fleetWarnings(db) {
   return warnings;
 }
 
+// Modèles de véhicules proposés (liste déroulante à l'ajout).
+const VEHICLE_MODELS = ['Mercedes Sprinter 12m³', 'Mercedes Sprinter 14m³', 'Citan 6m³'];
+
+// Norme constructeur d'un consommable selon l'usage du véhicule.
+function normFor(c, usage) {
+  return usage === 'ville' ? (c.normVille || c.interval) : (c.normRoute || c.interval);
+}
+
+// Met une plaque au format AA-123-BB si l'utilisateur a oublié les tirets.
+function formatPlate(s) {
+  const raw = String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const m = raw.match(/^([A-Z]{2})(\d{3})([A-Z]{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return String(s || '').trim().toUpperCase();
+}
+
 // Kilométrage "effectif" d'un véhicule : le plus élevé connu entre la valeur
 // saisie, les signalements, les remplacements et les tours de véhicule.
 function effectiveKm(db, v) {
@@ -1219,52 +1241,162 @@ function effectiveKm(db, v) {
   return km;
 }
 
+// Convertit un indice d'usure (norme / intervalle réel) en note de conduite.
+//   ratio > 1 : pièces usées plus vite que la norme -> conduite brutale.
+function drivingFromRatio(ratio) {
+  if (ratio == null) return { score: null, grade: '—', label: 'Données insuffisantes' };
+  // score sur 20 : 20 = très souple (use lentement), baisse si usure rapide.
+  let score = Math.round(Math.max(0, Math.min(20, 14 - (ratio - 1) * 20)));
+  let grade, label;
+  if (ratio <= 0.9) { grade = 'A'; label = 'Conduite souple (consommables ménagés)'; }
+  else if (ratio <= 1.1) { grade = 'B'; label = 'Conduite normale'; }
+  else if (ratio <= 1.3) { grade = 'C'; label = 'Usure un peu rapide'; }
+  else if (ratio <= 1.6) { grade = 'D'; label = 'Conduite appuyée (usure rapide)'; }
+  else { grade = 'E'; label = 'Usure anormale (conduite brutale)'; }
+  return { score, grade, label };
+}
+
 // Analyse de durabilité des consommables et prévision des prochains entretiens.
+// L'intervalle réel est calculé véhicule par véhicule : il repart de chaque
+// remplacement enregistré (le 1er cycle, depuis le km d'origine, peut être plus
+// court car le véhicule roulait déjà). À défaut de données, on prend la norme.
 function fleetAnalysis(db) {
   const consumables = db.settings.vehicleConsumables || [];
-  // Intervalle moyen par consommable : moyenne des écarts (km) entre deux
-  // remplacements successifs sur toute la flotte ; à défaut, valeur indicative.
-  const avgByPart = {};
-  for (const c of consumables) {
-    const gaps = [];
-    for (const v of db.vehicles) {
-      const recs = db.vehicleMaint
-        .filter((m) => m.vehicleId === v.id && m.part === c.code)
-        .map((m) => Number(m.km)).filter((k) => Number.isFinite(k)).sort((a, b) => a - b);
-      for (let i = 1; i < recs.length; i++) gaps.push(recs[i] - recs[i - 1]);
-    }
-    avgByPart[c.code] = gaps.length
-      ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)
-      : c.interval;
-  }
+  const driverAgg = {}; // userId -> { name, ratios:[] }
   const vehicles = db.vehicles.map((v) => {
+    const usage = v.usage === 'ville' ? 'ville' : 'mixte';
     const curKm = effectiveKm(db, v);
+    const base = Number(v.baseKm) || 0;
+    const vRatios = [];
     const items = consumables.map((c) => {
       const recs = db.vehicleMaint
         .filter((m) => m.vehicleId === v.id && m.part === c.code)
         .map((m) => Number(m.km)).filter((k) => Number.isFinite(k)).sort((a, b) => a - b);
+      const norm = normFor(c, usage);
+      // Écarts entre remplacements successifs (cycles complets) ; le segment
+      // base -> 1er remplacement est ignoré (cycle partiel, véhicule déjà roulé).
+      const gaps = [];
+      for (let i = 1; i < recs.length; i++) gaps.push(recs[i] - recs[i - 1]);
+      const realInterval = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null;
+      const interval = realInterval != null ? realInterval : norm;
       const lastKm = recs.length ? recs[recs.length - 1] : null;
-      const interval = avgByPart[c.code];
-      const baseKm = lastKm != null ? lastKm : (Number(v.baseKm) || 0);
-      const dueKm = baseKm + interval;
+      const startKm = lastKm != null ? lastKm : base;
+      const dueKm = startKm + interval;
       const remaining = dueKm - curKm;
       let level = 'ok';
       if (remaining <= 0) level = 'overdue';
       else if (remaining <= VEHICLE_ALERT_KM) level = 'soon';
-      return { code: c.code, label: c.label, interval, lastKm, dueKm, remaining, level, count: recs.length };
+      // Indice d'usure vs norme (uniquement si un cycle complet est mesuré).
+      const wearRatio = realInterval != null && realInterval > 0 ? Math.round((norm / realInterval) * 100) / 100 : null;
+      if (wearRatio != null) vRatios.push(wearRatio);
+      return { code: c.code, label: c.label, interval, realInterval, norm, lastKm, startKm, dueKm, remaining, level, count: recs.length, wearRatio };
     });
-    return { id: v.id, name: v.name, plate: v.plate, model: v.model, active: v.active !== false, km: Number(v.km) || 0, curKm, items };
+    const vRatio = vRatios.length ? Math.round((vRatios.reduce((a, b) => a + b, 0) / vRatios.length) * 100) / 100 : null;
+    const driving = drivingFromRatio(vRatio);
+    if (v.assignedUserId && vRatio != null) {
+      const agg = driverAgg[v.assignedUserId] = driverAgg[v.assignedUserId] || { userId: v.assignedUserId, name: v.assignedUserName || '—', ratios: [] };
+      agg.ratios.push(vRatio);
+    }
+    return {
+      id: v.id, name: v.name, plate: v.plate, model: v.model, active: v.active !== false,
+      usage, relais: !!v.relais, groupId: v.groupId || null, tournee: v.tournee || null,
+      assignedUserId: v.assignedUserId || null, assignedUserName: v.assignedUserName || null,
+      km: Number(v.km) || 0, baseKm: base, curKm, items, wearRatio: vRatio, driving,
+    };
   });
-  return { vehicles, avgByPart, consumables, alertKm: VEHICLE_ALERT_KM };
+  // Notes de conduite par chauffeur (moyenne des véhicules qui lui sont attribués).
+  const drivers = Object.values(driverAgg).map((a) => {
+    const r = a.ratios.reduce((x, y) => x + y, 0) / a.ratios.length;
+    const ratio = Math.round(r * 100) / 100;
+    return { userId: a.userId, name: a.name, ratio, ...drivingFromRatio(ratio) };
+  }).sort((a, b) => b.ratio - a.ratio);
+  return { vehicles, consumables, alertKm: VEHICLE_ALERT_KM, drivers, models: VEHICLE_MODELS };
 }
 
-function vehicleName(db, id) { const v = db.vehicles.find((x) => x.id === id); return v ? v.name : 'Véhicule'; }
+// Motifs d'absence ouvrant droit, selon le règlement intérieur, à un rappel,
+// un avertissement ou une sanction. Affiché à l'encadrement sur l'accueil.
+const SANCTIONABLE_ABSENCES = {
+  ABS: 'Absence injustifiée — manquement à l’obligation de présence et de justification (art. règlement intérieur). Susceptible d’un avertissement, voire d’une sanction.',
+  ANRN: 'Absence non autorisée et non rémunérée — absence sans autorisation préalable. Susceptible d’une sanction disciplinaire.',
+  PNE: 'Préavis non effectué — manquement aux obligations contractuelles.',
+  MAP: 'Mise à pied conservatoire en cours.',
+};
+const RETARD_THRESHOLD = 3; // nb de retards sur 90 j déclenchant un rappel
+
+// Bilan disciplinaire (lié au règlement intérieur) sur les 12 derniers mois.
+function disciplineList(db) {
+  const usersById = Object.fromEntries(db.users.map((u) => [u.id, u]));
+  const groupsById = Object.fromEntries(db.groups.map((g) => [g.id, g]));
+  const yearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+  const d90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  const byUser = {};
+  const ensure = (u) => (byUser[u.id] = byUser[u.id] || {
+    userId: u.id, name: `${u.firstName} ${u.lastName}`,
+    groupName: u.groupId && groupsById[u.groupId] ? groupsById[u.groupId].name : '—',
+    items: [],
+  });
+  // Comptage des motifs fautifs + retards.
+  const counts = {}; // userId -> { code -> n }
+  for (const r of db.requests) {
+    if (r.status === 'rejected') continue;
+    if (r.startDate < yearAgo) continue;
+    const u = usersById[r.userId]; if (!u) continue;
+    if (SANCTIONABLE_ABSENCES[r.category]) {
+      counts[u.id] = counts[u.id] || {}; counts[u.id][r.category] = (counts[u.id][r.category] || 0) + 1;
+    }
+    if (r.category === 'RET' && r.status === 'approved' && r.startDate >= d90) {
+      counts[u.id] = counts[u.id] || {}; counts[u.id].RET = (counts[u.id].RET || 0) + 1;
+    }
+  }
+  for (const uid of Object.keys(counts)) {
+    const u = usersById[uid]; if (!u) continue;
+    const c = counts[uid];
+    for (const code of Object.keys(SANCTIONABLE_ABSENCES)) {
+      if (c[code]) ensure(u).items.push({ category: code, label: categoryLabel(code), count: c[code], reproach: SANCTIONABLE_ABSENCES[code] });
+    }
+    if (c.RET && c.RET >= RETARD_THRESHOLD) {
+      ensure(u).items.push({ category: 'RET', label: 'Retards répétés', count: c.RET, reproach: `${c.RET} retards sur les 90 derniers jours — manquement à la ponctualité (règlement intérieur). Un rappel à l’ordre, voire un avertissement, peut être envisagé.` });
+    }
+  }
+  return Object.values(byUser).filter((x) => x.items.length);
+}
+
+// Un administrateur ne peut pas être remplaçant (sauf se désigner lui-même).
+function replacerNotAllowed(db, reqUser, replacerId) {
+  const u = db.users.find((x) => x.id === replacerId);
+  if (!u) return null;
+  if (u.role === 'admin' && !(reqUser.role === 'admin' && reqUser.id === replacerId)) {
+    return 'Un administrateur ne peut pas être désigné comme remplaçant. Seul un administrateur peut se désigner lui-même.';
+  }
+  return null;
+}
+
+app.get('/api/staff/discipline', authRequired, staffRequired, (req, res) => {
+  res.json({ items: disciplineList(getData()) });
+});
+
+// Données véhicule pour la page d'accueil de l'encadrement : signalements en
+// attente + entretiens à anticiper.
+app.get('/api/staff/vehicle-dashboard', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  const analysis = fleetAnalysis(db);
+  const alerts = [];
+  analysis.vehicles.forEach((v) => v.items.forEach((it) => {
+    if (it.level === 'overdue' || it.level === 'soon') {
+      alerts.push({ vehicleName: v.name, plate: v.plate, label: it.label, level: it.level, remaining: it.remaining, dueKm: it.dueKm, curKm: v.curKm });
+    }
+  }));
+  alerts.sort((a, b) => a.remaining - b.remaining);
+  const pendingReports = db.vehicleReports.filter((r) => r.status === 'pending')
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  res.json({ pendingReports, alerts });
+});
 
 // --- Côté salarié : liste de la flotte + signalement d'usure -----------------
 app.get('/api/vehicles', authRequired, (req, res) => {
   const list = getData().vehicles
     .filter((v) => v.active !== false)
-    .map((v) => ({ id: v.id, name: v.name, plate: v.plate, model: v.model, km: Number(v.km) || 0 }));
+    .map((v) => ({ id: v.id, name: v.name, plate: v.plate, model: v.model, km: Number(v.km) || 0, groupId: v.groupId || null, tournee: v.tournee || null, relais: !!v.relais }));
   res.json({ vehicles: list });
 });
 
@@ -1273,10 +1405,14 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
   const { vehicleId, plate, km, issues, note } = req.body || {};
   const v = db.vehicles.find((x) => x.id === vehicleId);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable — sélectionnez votre véhicule dans la liste.' });
-  const plateClean = String(plate || '').trim().toUpperCase();
+  const plateClean = formatPlate(plate);
   if (!plateClean) return res.status(400).json({ error: 'La plaque d’immatriculation est obligatoire.' });
   const kmNum = intStr(km);
   if (kmNum == null || kmNum < 0) return res.status(400).json({ error: 'Le kilométrage est obligatoire (nombre).' });
+  // Le kilométrage ne peut pas diminuer (sauf 1re saisie).
+  if (kmNum < (Number(v.km) || 0)) {
+    return res.status(400).json({ error: `Le kilométrage (${kmNum}) ne peut pas être inférieur au dernier relevé (${v.km} km).` });
+  }
   const issueList = Array.isArray(issues) ? issues.map((s) => String(s).trim()).filter(Boolean).slice(0, 40) : [];
   if (!issueList.length && !String(note || '').trim()) {
     return res.status(400).json({ error: 'Indiquez au moins une usure constatée ou une précision.' });
@@ -1296,6 +1432,8 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
     decidedAt: null,
     decidedBy: null,
     adminNote: '',
+    resolution: null,     // 'done' | 'notdone'
+    resolutions: [],      // [{ issue, done }]
   };
   // Le kilométrage le plus récent fait progresser le compteur du véhicule.
   if (kmNum > (Number(v.km) || 0)) v.km = kmNum;
@@ -1327,7 +1465,9 @@ app.get('/api/staff/vehicles', authRequired, staffRequired, (req, res) => {
     inspections: db.vehicleInspections.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     consumables: db.settings.vehicleConsumables || [],
     checksDef: VEHICLE_CHECKS,
+    models: VEHICLE_MODELS,
     team,
+    groups: db.groups,
     warnings: fleetWarnings(db),
   });
 });
@@ -1337,18 +1477,39 @@ app.get('/api/staff/vehicle-warnings', authRequired, staffRequired, (req, res) =
   res.json({ warnings: fleetWarnings(getData()) });
 });
 
+// Construit le nom d'affichage d'un véhicule à partir de tournée / groupe / chauffeur.
+function buildVehicleName(db, { name, tournee, groupId, assignedUserName }) {
+  if (name && String(name).trim()) return String(name).trim();
+  const g = groupId ? db.groups.find((x) => x.id === groupId) : null;
+  const parts = [];
+  if (tournee && String(tournee).trim()) parts.push(String(tournee).trim());
+  else if (g) parts.push(g.name);
+  if (assignedUserName) parts.push(assignedUserName);
+  return parts.join(' — ') || 'Véhicule';
+}
+
 // Flotte : ajout / modification / suppression (administrateur).
 app.post('/api/admin/vehicles', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { name, plate, model, km, baseKm } = req.body || {};
-  if (!String(name || '').trim()) return res.status(400).json({ error: 'Nom du véhicule obligatoire' });
+  const { name, plate, model, km, baseKm, groupId, tournee, assignedUserId, relais, usage } = req.body || {};
+  const assigned = assignedUserId ? db.users.find((u) => u.id === assignedUserId) : null;
+  const assignedUserName = assigned ? `${assigned.firstName} ${assigned.lastName}` : null;
+  const dispName = buildVehicleName(db, { name, tournee, groupId, assignedUserName });
+  const kmInit = intStr(km) || 0;
   const vehicle = {
     id: nextId('vehicle'),
-    name: String(name).trim(),
-    plate: String(plate || '').trim().toUpperCase() || null,
-    model: String(model || '').trim() || null,
-    km: intStr(km) || 0,
-    baseKm: intStr(baseKm) != null ? intStr(baseKm) : (intStr(km) || 0),
+    name: dispName,
+    plate: plate ? formatPlate(plate) : null,
+    model: VEHICLE_MODELS.includes(model) ? model : (String(model || '').trim() || null),
+    km: kmInit,
+    baseKm: intStr(baseKm) != null ? intStr(baseKm) : kmInit,
+    usage: usage === 'ville' ? 'ville' : 'mixte',
+    relais: Boolean(relais),
+    groupId: groupId && db.groups.some((g) => g.id === groupId) ? groupId : null,
+    tournee: String(tournee || '').trim() || null,
+    assignedUserId: assigned ? assigned.id : null,
+    assignedUserName,
+    documents: {},
     active: true,
     createdAt: new Date().toISOString(),
   };
@@ -1361,15 +1522,34 @@ app.put('/api/admin/vehicles/:id', authRequired, adminRequired, async (req, res)
   const db = getData();
   const v = db.vehicles.find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
-  const { name, plate, model, km, baseKm, active } = req.body || {};
+  const { name, plate, model, km, baseKm, active, groupId, tournee, assignedUserId, relais, usage } = req.body || {};
+  if (plate !== undefined) v.plate = plate ? formatPlate(plate) : null;
+  if (model !== undefined) v.model = VEHICLE_MODELS.includes(model) ? model : (String(model || '').trim() || null);
+  if (groupId !== undefined) v.groupId = groupId && db.groups.some((g) => g.id === groupId) ? groupId : null;
+  if (tournee !== undefined) v.tournee = String(tournee || '').trim() || null;
+  if (assignedUserId !== undefined) {
+    const assigned = assignedUserId ? db.users.find((u) => u.id === assignedUserId) : null;
+    v.assignedUserId = assigned ? assigned.id : null;
+    v.assignedUserName = assigned ? `${assigned.firstName} ${assigned.lastName}` : null;
+  }
+  if (relais !== undefined) v.relais = Boolean(relais);
+  if (usage !== undefined) v.usage = usage === 'ville' ? 'ville' : 'mixte';
+  // Le nom suit la tournée/groupe/chauffeur sauf nom explicite fourni.
   if (name !== undefined && String(name).trim()) v.name = String(name).trim();
-  if (plate !== undefined) v.plate = String(plate || '').trim().toUpperCase() || null;
-  if (model !== undefined) v.model = String(model || '').trim() || null;
-  if (km !== undefined && intStr(km) != null) v.km = intStr(km);
+  else if (name !== undefined || groupId !== undefined || tournee !== undefined || assignedUserId !== undefined) {
+    v.name = buildVehicleName(db, { name: '', tournee: v.tournee, groupId: v.groupId, assignedUserName: v.assignedUserName });
+  }
+  // Le km d'origine (baseKm) est librement corrigeable (point de départ des calculs).
   if (baseKm !== undefined && intStr(baseKm) != null) v.baseKm = intStr(baseKm);
+  // Le kilométrage courant ne peut qu'augmenter (jamais diminuer).
+  if (km !== undefined && intStr(km) != null) {
+    const next = intStr(km);
+    if (next < (Number(v.km) || 0)) return res.status(400).json({ error: `Le kilométrage ne peut pas diminuer (actuel : ${v.km} km).` });
+    v.km = next;
+  }
   if (active !== undefined) v.active = Boolean(active);
   await save();
-  res.json({ vehicle: v });
+  res.json({ vehicle: v, analysis: fleetAnalysis(db) });
 });
 
 app.delete('/api/admin/vehicles/:id', authRequired, adminRequired, async (req, res) => {
@@ -1409,6 +1589,19 @@ app.post('/api/admin/vehicles/:id/maint', authRequired, adminRequired, async (re
   res.json({ maint: rec, analysis: fleetAnalysis(db) });
 });
 
+// Corriger le kilométrage / la date d'un remplacement (en cas d'erreur de saisie).
+app.put('/api/admin/vehicles/maint/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const m = db.vehicleMaint.find((x) => x.id === req.params.id);
+  if (!m) return res.status(404).json({ error: 'Remplacement introuvable' });
+  const { km, date, note } = req.body || {};
+  if (km !== undefined) { const k = intStr(km); if (k == null || k < 0) return res.status(400).json({ error: 'Kilométrage invalide' }); m.km = k; }
+  if (date !== undefined && validDate(date)) m.date = date;
+  if (note !== undefined) m.note = String(note || '').trim();
+  await save();
+  res.json({ maint: m, analysis: fleetAnalysis(db) });
+});
+
 app.delete('/api/admin/vehicles/maint/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   db.vehicleMaint = db.vehicleMaint.filter((m) => m.id !== req.params.id);
@@ -1417,14 +1610,27 @@ app.delete('/api/admin/vehicles/maint/:id', authRequired, adminRequired, async (
 });
 
 // Décision sur un signalement véhicule (examiné / clôturé) — administrateur.
+// À la clôture : indique au chauffeur si les travaux ont été réalisés (avec
+// le détail par usure) et, sinon, le motif de non-réalisation.
 app.post('/api/admin/vehicle-reports/:id/decide', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const r = db.vehicleReports.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Signalement introuvable' });
-  const { decision, adminNote } = req.body || {};
+  const { decision, adminNote, resolutions } = req.body || {};
   if (!['reviewed', 'closed', 'pending'].includes(decision)) return res.status(400).json({ error: 'Décision invalide' });
   r.status = decision;
   r.adminNote = String(adminNote || '').trim();
+  if (Array.isArray(resolutions)) {
+    r.resolutions = resolutions.map((x) => ({ issue: String(x.issue || '').slice(0, 200), done: !!x.done }));
+  }
+  if (decision === 'closed') {
+    const total = r.resolutions.length || (r.issues ? r.issues.length : 0);
+    const done = r.resolutions.filter((x) => x.done).length;
+    r.resolution = total > 0 && done === 0 ? 'notdone' : (done < total ? 'partial' : 'done');
+    if (r.resolution !== 'done' && !r.adminNote) {
+      return res.status(400).json({ error: 'Précisez le motif lorsque les travaux ne sont pas (entièrement) réalisés.' });
+    }
+  }
   r.decidedAt = new Date().toISOString();
   r.decidedBy = req.user.id;
   await save();

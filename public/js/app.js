@@ -589,11 +589,12 @@ async function renderDashboard(main) {
     const classement = staff ? retardRankingHTML(events, team) : '';
     const philo = philoMessageHTML(retardCountSince(myRetards, 365));
 
-    // Conformité des véhicules (encadrement) : mises en demeure avant avertissement
-    let vehicleWarnPanel = '';
+    // Panneaux véhicules + discipline (encadrement).
+    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '';
     if (staff) {
-      try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); }
-      catch (e) {}
+      try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
+      try { const { pendingReports, alerts } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts); } catch (e) {}
+      try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
     }
 
     // Alerte conflits de dates dans mon groupe
@@ -615,6 +616,9 @@ async function renderDashboard(main) {
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
       ${philo}
+      ${disciplinePanel}
+      ${vehPendingPanel}
+      ${entretiensPanel}
       ${vehicleWarnPanel}
       ${retardCards}
       ${conflictPanel}
@@ -926,6 +930,10 @@ function teamOptgroups(team, selectedId, annotate) {
     }).join('')}</optgroup>`;
   }).join('');
 }
+// Un administrateur n'est pas proposé comme remplaçant (sauf se désigner lui-même).
+function replacerAllowedClient(m) {
+  return !(m.role === 'admin' && !(State.user.role === 'admin' && m.id === State.user.id));
+}
 // Conflit de remplacement côté client (pour annoter la liste des remplaçants).
 const REPLACER_BLOCKING_CODES = ['CP', 'RCC', 'RCP'];
 function replacerUnavailableClient(member, events, start, end, exceptUserId) {
@@ -1021,7 +1029,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         const exceptId = f.userId.value;
         const current = f.replacedById.value;
         const annotate = (m) => { const c = replacerUnavailableClient(m, allEvents, s, e, exceptId); return c ? ` (pas disponible — ${c})` : ''; };
-        f.replacedById.innerHTML = `<option value="">— Personne —</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId), current, annotate);
+        f.replacedById.innerHTML = `<option value="">— Personne —</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId && replacerAllowedClient(m)), current, annotate);
         if (![...f.replacedById.options].some((o) => o.value === current)) f.replacedById.value = '';
         replNote.style.display = (s && e) ? '' : 'none';
         replNote.textContent = (s && e) ? 'Seuls les salariés disponibles sur la période peuvent être choisis comme remplaçants.' : '';
@@ -1879,8 +1887,58 @@ function vehicleWarningsHTML(warnings) {
   </div>`;
 }
 
+// Accueil : signalements d'entretien des chauffeurs en attente.
+function dashVehiclePendingHTML(reports) {
+  if (!reports || !reports.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--warn)">
+    <h3 style="margin:0 0 .5rem">🔧 Demandes d'entretien des chauffeurs en attente (${reports.length})</h3>
+    <ul class="veh-alert-list">${reports.map((r) => `<li>
+      <strong>${esc(r.vehicleName)}</strong> (${esc(r.plate)}) · ${kmFmt(r.km)} — ${esc(r.userName)}
+      ${r.issues && r.issues.length ? `<div class="help">${r.issues.map(esc).join(' · ')}</div>` : ''}${r.note ? `<div class="help">${esc(r.note)}</div>` : ''}
+    </li>`).join('')}</ul>
+    <button class="btn ghost sm" onclick="State.view='vehmgmt';renderApp()">Traiter dans Gestion des véhicules</button>
+  </div>`;
+}
+// Accueil : entretiens à anticiper (commander les pièces).
+function dashEntretiensHTML(alerts) {
+  if (!alerts || !alerts.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--accent)">
+    <h3 style="margin:0 0 .5rem">🔔 Entretiens à anticiper (commander les pièces)</h3>
+    <ul class="veh-alert-list">${alerts.map((a) => `<li>
+      <span class="pill ${a.level === 'overdue' ? 'danger' : 'warn'}">${a.level === 'overdue' ? 'DÉPASSÉ' : 'BIENTÔT'}</span>
+      <strong>${esc(a.vehicleName)}</strong> (${esc(a.plate || '—')}) — ${esc(a.label)} :
+      ${a.level === 'overdue' ? `dépassé de ${kmFmt(-a.remaining)}` : `dans ${kmFmt(a.remaining)}`}
+      <span class="help">(échéance ~${kmFmt(a.dueKm)})</span>
+    </li>`).join('')}</ul>
+  </div>`;
+}
+// Accueil : situations disciplinaires liées au règlement intérieur.
+function disciplineHTML(items) {
+  if (!items || !items.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--danger)">
+    <h3 style="margin:0 0 .5rem">⚖️ Absences pouvant donner lieu à avertissement / sanction (règlement intérieur)</h3>
+    <p class="help" style="margin:0 0 .6rem">Sur les 12 derniers mois. À apprécier selon le contexte avant toute mesure.</p>
+    <ul class="veh-alert-list veh-warn-list">${items.map((u) => `<li>
+      <strong>${esc(u.name)}</strong> <span class="help">(${esc(u.groupName)})</span>
+      ${u.items.map((it) => `<div class="help">• ${esc(it.label)} ×${it.count} — ${esc(it.reproach)}</div>`).join('')}
+    </li>`).join('')}</ul>
+  </div>`;
+}
+
 function vehLabel(v) { return `${v.name}${v.plate ? ' — ' + v.plate : ''}`; }
 function kmFmt(n) { return (Number(n) || 0).toLocaleString('fr-FR') + ' km'; }
+
+// Options « Votre véhicule » classées par groupe (optgroups) pour s'y retrouver.
+function vehicleOptionsByGroup(vehicles) {
+  const order = State.groups.map((g) => g.id).concat([null]);
+  const byG = {}; vehicles.forEach((v) => { const k = v.groupId || 'none'; (byG[k] = byG[k] || []).push(v); });
+  const opt = (v) => `<option value="${v.id}" data-plate="${esc(v.plate || '')}" data-km="${v.km || 0}">${esc(vehLabel(v))}${v.relais ? ' (relais)' : ''}${v.tournee ? ' · ' + esc(v.tournee) : ''}</option>`;
+  return order.map((gid) => {
+    const list = byG[gid || 'none']; if (!list || !list.length) return '';
+    const g = groupById(gid);
+    return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">${list.map(opt).join('')}</optgroup>`;
+  }).join('');
+}
 function vReportStatusLabel(s) { return s === 'reviewed' ? 'Pris en compte' : s === 'closed' ? 'Clôturé' : 'En attente'; }
 function vReportStatusClass(s) { return s === 'reviewed' ? 'ok' : s === 'closed' ? 'muted' : 'warn'; }
 
@@ -1906,7 +1964,7 @@ async function renderMyVehicle(main) {
         <label>Votre véhicule</label>
         <select id="mv-vehicle">
           <option value="">— Choisissez votre véhicule —</option>
-          ${vehicles.map((v) => `<option value="${v.id}" data-plate="${esc(v.plate || '')}" data-km="${v.km || 0}">${esc(vehLabel(v))}</option>`).join('')}
+          ${vehicleOptionsByGroup(vehicles)}
         </select>
         <div class="grid2" style="margin-top:.8rem">
           <div><label>Plaque d'immatriculation *</label><input id="mv-plate" placeholder="AA-123-BB" autocomplete="off"></div>
@@ -1942,16 +2000,35 @@ async function renderMyVehicle(main) {
   }
 }
 
+function resolutionBadge(r) {
+  if (r.status !== 'closed') return '';
+  if (r.resolution === 'done') return `<span class="pill ok">Travaux réalisés ✔</span>`;
+  if (r.resolution === 'partial') return `<span class="pill warn">Partiellement réalisé</span>`;
+  if (r.resolution === 'notdone') return `<span class="pill danger">Non réalisé</span>`;
+  return '';
+}
+// Détail des usures avec leur statut réalisé / non réalisé (après clôture).
+function issuesWithResolution(r) {
+  if (!r.issues || !r.issues.length) return '';
+  const byIssue = {}; (r.resolutions || []).forEach((x) => { byIssue[x.issue] = x.done; });
+  const closed = r.status === 'closed' && (r.resolutions || []).length;
+  return `<ul class="vr-issues">${r.issues.map((i) => {
+    if (!closed) return `<li>${esc(i)}</li>`;
+    const done = byIssue[i];
+    return `<li>${esc(i)} ${done ? '<span class="pill ok">réalisé</span>' : '<span class="pill danger">non réalisé</span>'}</li>`;
+  }).join('')}</ul>`;
+}
+
 function renderMyVehReports(el, reports) {
   if (!reports.length) { el.innerHTML = `<p class="help">Aucun signalement pour le moment.</p>`; return; }
   el.innerHTML = reports.map((r) => `
     <div class="veh-report">
       <div class="vr-head">
         <strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
-        <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span>
+        <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span> ${resolutionBadge(r)}
       </div>
       <div class="help">${fmtDateTime(r.createdAt)}</div>
-      ${r.issues.length ? `<ul class="vr-issues">${r.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+      ${issuesWithResolution(r)}
       ${r.note ? `<p style="margin:.3rem 0 0">${esc(r.note)}</p>` : ''}
       ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ Réponse direction : ${esc(r.adminNote)}</p>` : ''}
     </div>`).join('');
@@ -2001,9 +2078,23 @@ function vehTab(tab) {
   if (tab === 'fleet') return vehTabFleet(body);
 }
 
+// Pastilles d'usure et de conduite (comparaison à la norme constructeur).
+function wearPill(ratio) {
+  if (ratio == null) return '<span class="help">—</span>';
+  if (ratio <= 0.9) return '<span class="pill ok">use lentement</span>';
+  if (ratio <= 1.1) return '<span class="pill">conforme</span>';
+  if (ratio <= 1.3) return '<span class="pill warn">use vite</span>';
+  return '<span class="pill danger">usure anormale</span>';
+}
+function gradeColor(g) { return ({ A: 'ok', B: '', C: 'warn', D: 'warn', E: 'danger' })[g] || ''; }
+function drivingBadge(d) { return (!d || d.grade === '—') ? '<span class="help">conduite : données insuffisantes</span>' : `<span class="pill ${gradeColor(d.grade)}">Conduite ${esc(d.grade)} · ${d.score}/20</span>`; }
+function worstLevel(v) { return v.items.some((i) => i.level === 'overdue') ? 'overdue' : v.items.some((i) => i.level === 'soon') ? 'soon' : 'ok'; }
+
+let _vehOpen = {}; // état déplié/replié par véhicule (minimise l'affichage)
+
 // Onglet « Suivi & alertes » : par véhicule, état des consommables + alertes.
 function vehTabSuivi(body) {
-  const { vehicles, consumables, alertKm } = _veh.analysis;
+  const { vehicles, consumables, alertKm, drivers } = _veh.analysis;
   if (!vehicles.length) { body.innerHTML = `<div class="alert info">Aucun véhicule. Ajoutez-en dans l'onglet « Flotte ».</div>`; return; }
   const isAdmin = State.user.role === 'admin';
   // Bandeau d'alertes globales (entretiens à anticiper).
@@ -2022,32 +2113,54 @@ function vehTabSuivi(body) {
       <span class="help">(échéance ~${kmFmt(a.it.dueKm)}, actuel ${kmFmt(a.v.curKm)})</span>
     </li>`).join('')}</ul></div>` : `<div class="alert ok">✅ Aucun entretien imminent (seuil d'alerte : ${kmFmt(alertKm)}).</div>`;
 
+  // Notes de conduite des chauffeurs (usure vs norme constructeur).
+  const driversCard = (drivers && drivers.length) ? `<div class="card">
+    <h3 style="margin:0 0 .6rem">🏎️ Notes de conduite des chauffeurs</h3>
+    <p class="help" style="margin:0 0 .6rem">Comparaison de l'usure réelle des consommables à la norme constructeur (selon l'usage du véhicule). Plus la note est basse, plus la conduite use les pièces.</p>
+    <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Note</th><th>Indice d'usure</th><th>Appréciation</th></tr></thead>
+    <tbody>${drivers.map((d) => `<tr><td>${esc(d.name)}</td><td><span class="pill ${gradeColor(d.grade)}">${esc(d.grade)} · ${d.score}/20</span></td><td>${d.ratio}×</td><td>${esc(d.label)}</td></tr>`).join('')}</tbody></table></div>
+  </div>` : '';
+
   const cards = vehicles.map((v) => {
+    const open = !!_vehOpen[v.id];
+    const wl = worstLevel(v);
+    const wlPill = wl === 'overdue' ? '<span class="pill danger">entretien dépassé</span>' : wl === 'soon' ? '<span class="pill warn">entretien proche</span>' : '<span class="pill ok">à jour</span>';
+    const usagePill = `<span class="pill">${v.usage === 'ville' ? '🏙️ Ville' : '🛣️ Route + ville'}</span>`;
     const rows = v.items.map((it) => `<tr class="lvl-${it.level}">
       <td>${esc(it.label)}</td>
       <td>${it.lastKm != null ? kmFmt(it.lastKm) : '<span class="help">—</span>'}</td>
-      <td>${kmFmt(it.interval)}${it.count >= 2 ? ' <span class="help">(moy.)</span>' : ''}</td>
+      <td>${it.realInterval != null ? `${kmFmt(it.realInterval)} <span class="help">(réel)</span>` : `${kmFmt(it.norm)} <span class="help">(norme)</span>`}<div class="help">norme ${kmFmt(it.norm)} · ${wearPill(it.wearRatio)}</div></td>
       <td>${kmFmt(it.dueKm)}</td>
       <td>${it.level === 'overdue' ? `<span class="pill danger">dépassé ${kmFmt(-it.remaining)}</span>` : it.level === 'soon' ? `<span class="pill warn">dans ${kmFmt(it.remaining)}</span>` : `<span class="pill ok">${kmFmt(it.remaining)}</span>`}</td>
       ${isAdmin ? `<td><button class="btn ghost sm" data-maint="${v.id}" data-part="${it.code}" data-plabel="${esc(it.label)}">Remplacement</button></td>` : ''}
     </tr>`).join('');
-    return `<div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
-        <h3 style="margin:0">🚐 ${esc(v.name)} <span class="help">${esc(v.plate || '')}${v.model ? ' · ' + esc(v.model) : ''}</span></h3>
-        <span class="pill">${kmFmt(v.curKm)}</span>
+    return `<div class="card veh-card">
+      <div class="veh-card-head" data-toggle="${v.id}">
+        <span class="veh-caret">${open ? '▾' : '▸'}</span>
+        <strong>🚐 ${esc(v.name)}</strong> <span class="help">${esc(v.plate || '')}${v.model ? ' · ' + esc(v.model) : ''}</span>
+        <span style="margin-left:auto;display:flex;gap:.35rem;flex-wrap:wrap;align-items:center">${usagePill} <span class="pill">${kmFmt(v.curKm)}</span> ${wlPill} ${drivingBadge(v.driving)}</span>
       </div>
-      <div class="table-wrap"><table class="veh-table">
-        <thead><tr><th>Consommable</th><th>Dernier rempl.</th><th>Intervalle</th><th>Prochaine échéance</th><th>Restant</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
-        <tbody>${rows}</tbody>
-      </table></div>
-      ${isAdmin ? `<div style="margin-top:.6rem"><button class="btn ghost sm" data-history="${v.id}">Historique des remplacements</button></div>` : ''}
+      ${open ? `<div class="veh-card-body">
+        ${isAdmin ? `<div class="veh-usage-row">Usage : <button class="btn ghost sm" data-usage="${v.id}" data-to="${v.usage === 'ville' ? 'mixte' : 'ville'}">Basculer en ${v.usage === 'ville' ? 'Route + ville 🛣️' : 'Ville 🏙️'}</button> <span class="help">influe sur les normes d'usure</span></div>` : ''}
+        <div class="table-wrap"><table class="veh-table">
+          <thead><tr><th>Consommable</th><th>Dernier rempl.</th><th>Intervalle / norme</th><th>Prochaine échéance</th><th>Restant</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+        ${isAdmin ? `<div style="margin-top:.6rem;display:flex;gap:.4rem;flex-wrap:wrap"><button class="btn ghost sm" data-history="${v.id}">Carnet d'entretien</button></div>` : ''}
+      </div>` : ''}
     </div>`;
   }).join('');
 
-  body.innerHTML = alertBanner + cards;
+  body.innerHTML = alertBanner + driversCard + cards;
+  body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; vehTabSuivi(body); });
   if (isAdmin) {
-    body.querySelectorAll('[data-maint]').forEach((b) => b.onclick = () => maintModal(b.dataset.maint, b.dataset.part, b.dataset.plabel));
-    body.querySelectorAll('[data-history]').forEach((b) => b.onclick = () => maintHistoryModal(b.dataset.history));
+    body.querySelectorAll('[data-maint]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); maintModal(b.dataset.maint, b.dataset.part, b.dataset.plabel); });
+    body.querySelectorAll('[data-history]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); maintHistoryModal(b.dataset.history); });
+    body.querySelectorAll('[data-usage]').forEach((b) => b.onclick = async (e) => {
+      e.stopPropagation();
+      try { const r = await api('PUT', '/admin/vehicles/' + b.dataset.usage, { usage: b.dataset.to }); _veh.analysis = r.analysis; await loadFleet(); vehTabSuivi(body); toast('Usage mis à jour.', 'ok'); }
+      catch (err) { toast(err.message, 'err'); }
+    });
   }
 }
 
@@ -2080,25 +2193,96 @@ function maintModal(vehicleId, part, partLabel) {
   });
 }
 
+// Norme d'un consommable pour un véhicule selon son usage.
+function consNorm(c, usage) { return usage === 'ville' ? (c.normVille || c.interval) : (c.normRoute || c.interval); }
+
+// Construit les lignes du carnet d'entretien (par pièce, avec écart vs précédent).
+function maintLogRows(vehicleId) {
+  const v = _veh.vehicles.find((x) => x.id === vehicleId) || {};
+  const usage = v.usage === 'ville' ? 'ville' : 'mixte';
+  const consById = Object.fromEntries(_veh.consumables.map((c) => [c.code, c]));
+  const out = [];
+  _veh.consumables.forEach((c) => {
+    const recs = _veh.maint.filter((m) => m.vehicleId === vehicleId && m.part === c.code).sort((a, b) => a.km - b.km);
+    const norm = consNorm(c, usage);
+    recs.forEach((m, i) => {
+      const gap = i > 0 ? m.km - recs[i - 1].km : null;
+      let cls = '';
+      if (gap != null) cls = gap < norm * 0.8 ? 'lvl-overdue' : gap > norm * 1.15 ? 'lvl-ok' : '';
+      out.push({ m, label: consById[c.code].label, gap, norm, cls });
+    });
+  });
+  out.sort((a, b) => b.m.km - a.m.km);
+  return out;
+}
+
 function maintHistoryModal(vehicleId) {
   const v = _veh.vehicles.find((x) => x.id === vehicleId);
-  const labelByCode = Object.fromEntries(_veh.consumables.map((c) => [c.code, c.label]));
-  const recs = _veh.maint.filter((m) => m.vehicleId === vehicleId).sort((a, b) => b.km - a.km);
+  const rows = maintLogRows(vehicleId);
   modal({
-    title: 'Historique des remplacements',
-    bodyHTML: `<p class="help">${esc(v ? vehLabel(v) : '')}</p>
-      ${recs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Pièce</th><th>Km</th><th>Date</th><th>Note</th><th></th></tr></thead>
-        <tbody>${recs.map((m) => `<tr><td>${esc(labelByCode[m.part] || m.part)}</td><td>${kmFmt(m.km)}</td><td>${fmtDate(m.date)}</td><td>${esc(m.note || '')}</td><td><button class="btn ghost sm" data-delm="${m.id}">✕</button></td></tr>`).join('')}</tbody></table></div>`
+    title: "Carnet d'entretien",
+    bodyHTML: `<p class="help">${esc(v ? vehLabel(v) : '')} — usage ${v && v.usage === 'ville' ? 'Ville' : 'Route + ville'}.</p>
+      <p class="help">Écart = km parcourus depuis le remplacement précédent de la même pièce. <span class="pill ok">vert</span> = dure plus que la norme, <span class="pill danger">rouge</span> = usure rapide.</p>
+      ${rows.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Pièce</th><th>Km</th><th>Écart / norme</th><th>Date</th><th>Note</th><th></th></tr></thead>
+        <tbody>${rows.map((r) => `<tr class="${r.cls}">
+          <td>${esc(r.label)}</td><td>${kmFmt(r.m.km)}</td>
+          <td>${r.gap != null ? `${kmFmt(r.gap)} <span class="help">/ ${kmFmt(r.norm)}</span>` : '<span class="help">1er relevé</span>'}</td>
+          <td>${fmtDate(r.m.date)}</td><td>${esc(r.m.note || '')}</td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-editm="${r.m.id}">✎</button> <button class="btn ghost sm" data-delm="${r.m.id}">✕</button></td>
+        </tr>`).join('')}</tbody></table></div>`
       : `<p class="help">Aucun remplacement enregistré.</p>`}`,
-    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button><button class="btn" id="mh-pdf">📄 Générer le PDF</button>`,
     onMount: (overlay) => {
+      overlay.querySelector('#mh-pdf').onclick = () => vehicleMaintPDF(vehicleId);
       overlay.querySelectorAll('[data-delm]').forEach((b) => b.onclick = async () => {
         if (!confirm('Supprimer ce remplacement ?')) return;
         try { const r = await api('DELETE', '/admin/vehicles/maint/' + b.dataset.delm); _veh.analysis = r.analysis; closeModal(); await loadFleet(); vehTab('suivi'); toast('Supprimé.', 'ok'); }
         catch (e) { toast(e.message, 'err'); }
       });
+      overlay.querySelectorAll('[data-editm]').forEach((b) => b.onclick = () => editMaintModal(b.dataset.editm, vehicleId));
     },
   });
+}
+
+function editMaintModal(maintId, vehicleId) {
+  const m = _veh.maint.find((x) => x.id === maintId); if (!m) return;
+  modal({
+    title: 'Corriger le remplacement',
+    bodyHTML: `<div class="grid2">
+        <div><label>Kilométrage</label><input id="em-km" type="number" min="0" value="${m.km}"></div>
+        <div><label>Date</label><input id="em-date" type="date" value="${esc(m.date)}"></div>
+      </div>
+      <label style="margin-top:.6rem">Note</label><input id="em-note" value="${esc(m.note || '')}">`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="em-save">Enregistrer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#em-save').onclick = async () => {
+        try {
+          const r = await api('PUT', '/admin/vehicles/maint/' + maintId, { km: overlay.querySelector('#em-km').value, date: overlay.querySelector('#em-date').value, note: overlay.querySelector('#em-note').value });
+          _veh.analysis = r.analysis; closeModal(); await loadFleet(); maintHistoryModal(vehicleId); toast('Corrigé.', 'ok');
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
+}
+
+// PDF du carnet d'entretien d'un véhicule (impression navigateur).
+function vehicleMaintPDF(vehicleId) {
+  const v = _veh.vehicles.find((x) => x.id === vehicleId) || {};
+  const rows = maintLogRows(vehicleId).slice().sort((a, b) => a.label.localeCompare(b.label) || a.m.km - b.m.km);
+  const w = window.open('', '_blank');
+  if (!w) { toast('Autorisez les fenêtres pop-up pour générer le PDF.', 'err'); return; }
+  const tr = rows.map((r) => `<tr><td>${esc(r.label)}</td><td>${kmFmt(r.m.km)}</td><td>${r.gap != null ? kmFmt(r.gap) : '—'}</td><td>${fmtDate(r.m.date)}</td><td>${esc(r.m.note || '')}</td></tr>`).join('');
+  w.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Carnet d'entretien — ${esc(v.name || '')}</title>
+    <style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:24px}h1{color:#14427e;margin:0 0 .2rem}table{width:100%;border-collapse:collapse;margin-top:1rem}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;font-size:13px}th{background:#eef2f7}.sub{color:#475569}</style></head>
+    <body>
+      <h1>Carnet d'entretien</h1>
+      <div class="sub">INTER COLIS SERVICES — Véhicule : <strong>${esc(v.name || '')}</strong>${v.plate ? ' (' + esc(v.plate) + ')' : ''}${v.model ? ' · ' + esc(v.model) : ''}</div>
+      <div class="sub">Kilométrage actuel : ${kmFmt(v.curKm || v.km)} · Usage : ${v.usage === 'ville' ? 'Ville' : 'Route + ville'} · Édité le ${fmtDate(iso(new Date()))}</div>
+      <table><thead><tr><th>Pièce</th><th>Kilométrage</th><th>Écart depuis précédent</th><th>Date</th><th>Note</th></tr></thead>
+      <tbody>${tr || '<tr><td colspan="5">Aucun entretien enregistré.</td></tr>'}</tbody></table>
+    </body></html>`);
+  w.document.close();
+  setTimeout(() => { w.focus(); w.print(); }, 300);
 }
 
 // Onglet « Demandes concernant les véhicules en attente ».
@@ -2107,21 +2291,28 @@ function vehTabPending(body) {
   const reports = _veh.reports;
   const pending = reports.filter((r) => r.status === 'pending');
   const others = reports.filter((r) => r.status !== 'pending').slice(0, 30);
-  const card = (r) => `<div class="card veh-report">
-    <div class="vr-head">
-      <strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
-      <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span>
-    </div>
-    <div class="help">Signalé par ${esc(r.userName)} le ${fmtDateTime(r.createdAt)}</div>
-    ${r.issues.length ? `<ul class="vr-issues">${r.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
-    ${r.note ? `<p style="margin:.3rem 0 0">${esc(r.note)}</p>` : ''}
-    ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ ${esc(r.adminNote)}</p>` : ''}
-    ${isAdmin ? `<div class="vr-actions">
-      <input class="vr-note" data-note="${r.id}" placeholder="Note / suite donnée (facultatif)" value="${esc(r.adminNote || '')}">
-      <button class="btn sm" data-decide="${r.id}" data-d="reviewed">Pris en compte</button>
-      <button class="btn ghost sm" data-decide="${r.id}" data-d="closed">Clôturer</button>
-    </div>` : ''}
-  </div>`;
+  const card = (r) => {
+    const editable = isAdmin && r.status === 'pending';
+    const issuesHTML = r.issues.length ? (editable
+      ? `<div class="vr-reslist">${r.issues.map((i, idx) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}"> Réalisé : ${esc(i)}</label>`).join('')}</div>`
+      : issuesWithResolution(r)) : '';
+    return `<div class="card veh-report">
+      <div class="vr-head">
+        <strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
+        <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span> ${resolutionBadge(r)}
+      </div>
+      <div class="help">Signalé par ${esc(r.userName)} le ${fmtDateTime(r.createdAt)}</div>
+      ${issuesHTML}
+      ${r.note ? `<p style="margin:.3rem 0 0">${esc(r.note)}</p>` : ''}
+      ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ ${esc(r.adminNote)}</p>` : ''}
+      ${editable ? `<div class="vr-actions">
+        <input class="vr-note" data-note="${r.id}" placeholder="Note / motif si non réalisé" value="${esc(r.adminNote || '')}">
+        <button class="btn sm" data-decide="${r.id}" data-d="reviewed">Pris en compte</button>
+        <button class="btn ok sm" data-decide="${r.id}" data-d="closed">Clôturer (travaux statués)</button>
+      </div>
+      <p class="help">Cochez les usures « réalisées ». En clôturant, les usures non cochées seront marquées non réalisées (motif requis).</p>` : ''}
+    </div>`;
+  };
   body.innerHTML = `
     <h3>En attente (${pending.length})</h3>
     ${pending.length ? pending.map(card).join('') : '<div class="alert ok">Aucun signalement en attente. 👍</div>'}
@@ -2129,18 +2320,22 @@ function vehTabPending(body) {
   if (isAdmin) {
     body.querySelectorAll('[data-decide]').forEach((b) => b.onclick = async () => {
       const id = b.dataset.decide;
+      const rep = pending.find((x) => x.id === id);
       const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
-      try { await api('POST', '/admin/vehicle-reports/' + id + '/decide', { decision: b.dataset.d, adminNote: note }); await loadFleet(); vehTab('pending'); toast('Mis à jour.', 'ok'); }
+      const resolutions = rep ? rep.issues.map((i) => ({ issue: i, done: !!body.querySelector(`.vr-res[data-rep="${id}"][data-issue="${cssEsc(i)}"]`)?.checked })) : [];
+      try { await api('POST', '/admin/vehicle-reports/' + id + '/decide', { decision: b.dataset.d, adminNote: note, resolutions }); await loadFleet(); vehTab('pending'); toast('Mis à jour. Le chauffeur est informé.', 'ok'); }
       catch (e) { toast(e.message, 'err'); }
     });
   }
 }
+// Échappe une valeur pour un sélecteur d'attribut CSS.
+function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
 
 // Onglet « Tour du véhicule » : documents/équipements + propreté + chocs.
 let _tour = { vehicleId: '', driverId: '', km: '', note: '', checks: {}, impacts: [] };
 
-// État d'une case : conforme par défaut (true) tant qu'on ne la décoche pas.
-function trCheckOk(code) { const c = _tour.checks[code]; return !c || c.ok !== false; }
+// État d'une case : DÉCOCHÉE par défaut — on coche ce qui est présent/conforme.
+function trCheckOk(code) { const c = _tour.checks[code]; return c ? c.ok === true : false; }
 function trCheckId(code, vehicle) {
   const c = _tour.checks[code];
   if (c && c.id !== undefined) return c.id;
@@ -2293,42 +2488,68 @@ function renderTourHistory(el) {
   });
 }
 
-// Schéma SVG d'un fourgon (vue de dessus) avec zones cliquables. Les "impacts"
-// déjà relevés sont matérialisés par une pastille sur la zone concernée.
+// Schéma SVG d'un fourgon (vue de dessus) avec zones cliquables. Chaque zone
+// porte le nom de la partie (au centre si la place suffit, sinon à côté). Les
+// "impacts" déjà relevés sont matérialisés par une pastille sur la zone.
+//   kind : 'center' (texte horizontal) | 'vertical' (panneaux latéraux longs)
+//          | 'side-left' / 'side-right' (petites zones : texte écrit à côté)
 const VAN_ZONES = [
-  { zone: 'pare_chocs_av', label: 'Pare-chocs avant', x: 66, y: 26, w: 208, h: 24 },
-  { zone: 'capot', label: 'Capot / calandre', x: 66, y: 52, w: 208, h: 44 },
-  { zone: 'retro_g', label: 'Rétroviseur gauche', x: 40, y: 104, w: 18, h: 26 },
-  { zone: 'retro_d', label: 'Rétroviseur droit', x: 282, y: 104, w: 18, h: 26 },
-  { zone: 'pare_brise', label: 'Pare-brise', x: 110, y: 100, w: 120, h: 42 },
-  { zone: 'cote_av_g', label: 'Côté avant gauche (porte conducteur)', x: 66, y: 100, w: 40, h: 150 },
-  { zone: 'cote_av_d', label: 'Côté avant droit (porte passager)', x: 234, y: 100, w: 40, h: 150 },
-  { zone: 'toit', label: 'Toit', x: 110, y: 146, w: 120, h: 320 },
-  { zone: 'cote_ar_g', label: 'Côté arrière gauche', x: 66, y: 254, w: 40, h: 270 },
-  { zone: 'cote_ar_d', label: 'Côté arrière droit', x: 234, y: 254, w: 40, h: 270 },
-  { zone: 'portes_ar', label: 'Portes arrière', x: 110, y: 470, w: 120, h: 96 },
-  { zone: 'pare_chocs_ar', label: 'Pare-chocs arrière', x: 66, y: 570, w: 208, h: 44 },
-  { zone: 'roue_av_g', label: 'Roue avant gauche', x: 34, y: 140, w: 22, h: 64 },
-  { zone: 'roue_av_d', label: 'Roue avant droite', x: 284, y: 140, w: 22, h: 64 },
-  { zone: 'roue_ar_g', label: 'Roue arrière gauche', x: 34, y: 430, w: 22, h: 64 },
-  { zone: 'roue_ar_d', label: 'Roue arrière droite', x: 284, y: 430, w: 22, h: 64 },
+  { zone: 'pare_chocs_av', label: 'Pare-chocs avant', short: 'Pare-chocs AV', x: 66, y: 26, w: 208, h: 24, kind: 'center' },
+  { zone: 'capot', label: 'Capot / calandre', short: 'Capot', x: 66, y: 52, w: 208, h: 44, kind: 'center' },
+  { zone: 'pare_brise', label: 'Pare-brise', short: 'Pare-brise', x: 110, y: 100, w: 120, h: 42, kind: 'center' },
+  { zone: 'retro_g', label: 'Rétroviseur gauche', short: 'Rétro G', x: 40, y: 104, w: 18, h: 26, kind: 'side-left' },
+  { zone: 'retro_d', label: 'Rétroviseur droit', short: 'Rétro D', x: 282, y: 104, w: 18, h: 26, kind: 'side-right' },
+  { zone: 'cote_av_g', label: 'Côté avant gauche (porte conducteur)', short: 'Porte cond. (G)', x: 66, y: 100, w: 40, h: 150, kind: 'vertical' },
+  { zone: 'cote_av_d', label: 'Côté avant droit (porte passager)', short: 'Porte pass. (D)', x: 234, y: 100, w: 40, h: 150, kind: 'vertical' },
+  { zone: 'toit', label: 'Toit', short: 'Toit', x: 110, y: 146, w: 120, h: 320, kind: 'center' },
+  { zone: 'cote_ar_g', label: 'Côté arrière gauche', short: 'Flanc AR G', x: 66, y: 254, w: 40, h: 270, kind: 'vertical' },
+  { zone: 'cote_ar_d', label: 'Côté arrière droit', short: 'Flanc AR D', x: 234, y: 254, w: 40, h: 270, kind: 'vertical' },
+  { zone: 'portes_ar', label: 'Portes arrière', short: 'Portes AR', x: 110, y: 470, w: 120, h: 96, kind: 'center' },
+  { zone: 'pare_chocs_ar', label: 'Pare-chocs arrière', short: 'Pare-chocs AR', x: 66, y: 570, w: 208, h: 44, kind: 'center' },
+  { zone: 'roue_av_g', label: 'Roue avant gauche', short: 'Roue AvG', x: 34, y: 140, w: 22, h: 64, kind: 'side-left' },
+  { zone: 'roue_av_d', label: 'Roue avant droite', short: 'Roue AvD', x: 284, y: 140, w: 22, h: 64, kind: 'side-right' },
+  { zone: 'roue_ar_g', label: 'Roue arrière gauche', short: 'Roue ArG', x: 34, y: 430, w: 22, h: 64, kind: 'side-left' },
+  { zone: 'roue_ar_d', label: 'Roue arrière droite', short: 'Roue ArD', x: 284, y: 430, w: 22, h: 64, kind: 'side-right' },
 ];
+
+function vanZoneLabelSVG(z) {
+  const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+  const t = esc(z.short || z.label);
+  if (z.kind === 'vertical') return `<text class="van-label" x="${cx}" y="${cy}" text-anchor="middle" transform="rotate(-90 ${cx} ${cy})">${t}</text>`;
+  if (z.kind === 'side-left') return `<text class="van-side-label" x="${z.x - 6}" y="${cy + 3}" text-anchor="end">${t}</text>`;
+  if (z.kind === 'side-right') return `<text class="van-side-label" x="${z.x + z.w + 6}" y="${cy + 3}" text-anchor="start">${t}</text>`;
+  return `<text class="van-label" x="${cx}" y="${cy + 3}" text-anchor="middle">${t}</text>`;
+}
 
 function vanDiagramSVG(impacts) {
   const counts = {};
   (impacts || []).forEach((i) => { counts[i.zone] = (counts[i.zone] || 0) + 1; });
   const zones = VAN_ZONES.map((z) => {
     const n = counts[z.zone] || 0;
-    const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
-    const mark = n ? `<g class="van-mark"><circle cx="${cx}" cy="${cy}" r="11" /><text x="${cx}" y="${cy + 4}" text-anchor="middle">${n}</text></g>` : '';
-    return `<rect class="van-zone${n ? ' has-mark' : ''}" data-zone="${z.zone}" data-label="${esc(z.label)}" x="${z.x}" y="${z.y}" width="${z.w}" height="${z.h}" rx="7"><title>${esc(z.label)}</title></rect>${mark}`;
+    const cx = z.x + z.w / 2;
+    // La pastille de comptage se place en haut de la zone pour ne pas masquer le nom.
+    const my = z.kind === 'center' || z.kind === 'vertical' ? z.y + 13 : z.y + z.h / 2;
+    const mark = n ? `<g class="van-mark"><circle cx="${cx}" cy="${my}" r="10" /><text x="${cx}" y="${my + 4}" text-anchor="middle">${n}</text></g>` : '';
+    return `<rect class="van-zone${n ? ' has-mark' : ''}" data-zone="${z.zone}" data-label="${esc(z.label)}" x="${z.x}" y="${z.y}" width="${z.w}" height="${z.h}" rx="7"><title>${esc(z.label)}</title></rect>${vanZoneLabelSVG(z)}${mark}`;
   }).join('');
-  return `<svg viewBox="0 0 340 640" class="van-svg" role="img" aria-label="Schéma du véhicule">
+  return `<svg viewBox="-82 0 504 648" class="van-svg" role="img" aria-label="Schéma du véhicule">
     <rect x="60" y="22" width="220" height="596" rx="30" class="van-body" />
     <text x="170" y="14" text-anchor="middle" class="van-cap">AVANT</text>
-    <text x="170" y="634" text-anchor="middle" class="van-cap">ARRIÈRE</text>
+    <text x="170" y="636" text-anchor="middle" class="van-cap">ARRIÈRE</text>
     ${zones}
   </svg>`;
+}
+
+// Options de chauffeur (liste des utilisateurs de la base) et de groupe.
+function driverOptions(selectedId) {
+  const team = (_veh.team || []).slice().sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+  return `<option value="">— Aucun —</option>` + team.map((m) => `<option value="${m.id}" ${m.id === selectedId ? 'selected' : ''}>${esc(m.lastName)} ${esc(m.firstName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('');
+}
+function groupOptions(selectedId) {
+  return `<option value="">— Aucun —</option>` + (_veh.groups || State.groups).map((g) => `<option value="${g.id}" ${g.id === selectedId ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+}
+function modelOptions(selected) {
+  return `<option value="">— Choisir —</option>` + (_veh.models || []).map((m) => `<option ${m === selected ? 'selected' : ''}>${esc(m)}</option>`).join('');
 }
 
 // Onglet « Flotte » : ajout / modification / suppression des véhicules (admin).
@@ -2338,28 +2559,50 @@ function vehTabFleet(body) {
     <div class="card">
       <h3>Ajouter un véhicule</h3>
       <div class="grid2">
-        <div><label>Nom / identifiant *</label><input id="fl-name" placeholder="ex. Fourgon 1, Sprinter GLS…"></div>
-        <div><label>Plaque</label><input id="fl-plate" placeholder="AA-123-BB"></div>
-        <div><label>Modèle</label><input id="fl-model" placeholder="Mercedes Sprinter"></div>
-        <div><label>Kilométrage actuel</label><input id="fl-km" type="number" min="0" placeholder="0"></div>
+        <div><label>Nom (chauffeur attribué)</label><select id="fl-user">${driverOptions('')}</select></div>
+        <div><label>Groupe</label><select id="fl-group">${groupOptions('')}</select></div>
+        <div><label>Tournée</label><input id="fl-tournee" placeholder="ex. Tournée Caen Nord"></div>
+        <div><label>Modèle</label><select id="fl-model">${modelOptions('')}</select></div>
+        <div><label>Plaque</label><input id="fl-plate" placeholder="AA123BB (tirets ajoutés auto.)"></div>
+        <div><label>Kilométrage d'origine</label><input id="fl-km" type="number" min="0" placeholder="0"></div>
+        <div><label>Usage</label><select id="fl-usage"><option value="mixte">Route + ville</option><option value="ville">Ville uniquement</option></select></div>
       </div>
-      <div style="margin-top:.8rem"><button class="btn accent" id="fl-add">Ajouter à la flotte</button></div>
+      <label class="veh-check" style="margin-top:.6rem"><input type="checkbox" id="fl-relais"> Véhicule relais</label>
+      <div style="margin-top:.6rem"><button class="btn accent" id="fl-add">Ajouter à la flotte</button></div>
+      <p class="help" style="margin-top:.4rem">Le « Nom » et le « Groupe » sont proposés à partir des salariés et groupes du site. Le kilométrage d'origine est le point de départ des calculs d'entretien.</p>
     </div>
     <div class="card"><h3>Flotte (${vehicles.length})</h3>
-      ${vehicles.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Nom</th><th>Plaque</th><th>Modèle</th><th>Km</th><th>État</th><th></th></tr></thead>
+      ${vehicles.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Nom</th><th>Groupe</th><th>Tournée</th><th>Modèle</th><th>Plaque</th><th>Km</th><th>Actif</th><th></th></tr></thead>
         <tbody>${vehicles.map((v) => `<tr>
-          <td>${esc(v.name)}</td><td>${esc(v.plate || '—')}</td><td>${esc(v.model || '—')}</td><td>${kmFmt(v.km)}</td>
-          <td>${v.active !== false ? '<span class="pill ok">Actif</span>' : '<span class="pill muted">Inactif</span>'}</td>
-          <td style="white-space:nowrap"><button class="btn ghost sm" data-editv="${v.id}">Modifier</button> <button class="btn ghost sm" data-delv="${v.id}">Supprimer</button></td>
+          <td>${esc(v.name)}${v.relais ? ' <span class="pill">relais</span>' : ''}</td>
+          <td>${esc((groupById(v.groupId) || {}).name || '—')}</td>
+          <td>${esc(v.tournee || '—')}</td>
+          <td>${esc(v.model || '—')}</td><td>${esc(v.plate || '—')}</td><td>${kmFmt(v.km)}</td>
+          <td><button class="toggle ${v.active !== false ? 'on' : 'off'}" data-toggleactive="${v.id}" data-active="${v.active !== false ? '1' : '0'}" title="Actif / inactif">${v.active !== false ? 'ON' : 'OFF'}</button></td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-carnet="${v.id}">Carnet</button> <button class="btn ghost sm" data-editv="${v.id}">Modifier</button> <button class="btn ghost sm" data-delv="${v.id}">✕</button></td>
         </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
     </div>`;
   document.getElementById('fl-add').onclick = async () => {
-    const payload = { name: document.getElementById('fl-name').value, plate: document.getElementById('fl-plate').value, model: document.getElementById('fl-model').value, km: document.getElementById('fl-km').value };
-    if (!payload.name.trim()) { toast('Nom du véhicule obligatoire.', 'err'); return; }
+    const payload = {
+      assignedUserId: document.getElementById('fl-user').value || null,
+      groupId: document.getElementById('fl-group').value || null,
+      tournee: document.getElementById('fl-tournee').value,
+      model: document.getElementById('fl-model').value,
+      plate: document.getElementById('fl-plate').value,
+      km: document.getElementById('fl-km').value,
+      usage: document.getElementById('fl-usage').value,
+      relais: document.getElementById('fl-relais').checked,
+    };
+    if (!payload.assignedUserId && !payload.groupId && !payload.tournee.trim()) { toast('Renseignez au moins un chauffeur, un groupe ou une tournée.', 'err'); return; }
     try { await api('POST', '/admin/vehicles', payload); toast('Véhicule ajouté.', 'ok'); await loadFleet(); vehTab('fleet'); }
     catch (e) { toast(e.message, 'err'); }
   };
+  body.querySelectorAll('[data-carnet]').forEach((b) => b.onclick = () => maintHistoryModal(b.dataset.carnet));
   body.querySelectorAll('[data-editv]').forEach((b) => b.onclick = () => fleetEditModal(b.dataset.editv));
+  body.querySelectorAll('[data-toggleactive]').forEach((b) => b.onclick = async () => {
+    try { await api('PUT', '/admin/vehicles/' + b.dataset.toggleactive, { active: b.dataset.active !== '1' }); await loadFleet(); vehTab('fleet'); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   body.querySelectorAll('[data-delv]').forEach((b) => b.onclick = async () => {
     if (!confirm('Supprimer ce véhicule et tout son historique (signalements, remplacements, tours) ?')) return;
     try { await api('DELETE', '/admin/vehicles/' + b.dataset.delv); toast('Véhicule supprimé.', 'ok'); await loadFleet(); vehTab('fleet'); }
@@ -2372,17 +2615,35 @@ function fleetEditModal(id) {
   modal({
     title: 'Modifier le véhicule',
     bodyHTML: `<div class="grid2">
-      <div><label>Nom *</label><input id="ev-name" value="${esc(v.name)}"></div>
+      <div><label>Nom (chauffeur attribué)</label><select id="ev-user">${driverOptions(v.assignedUserId)}</select></div>
+      <div><label>Groupe</label><select id="ev-group">${groupOptions(v.groupId)}</select></div>
+      <div><label>Tournée</label><input id="ev-tournee" value="${esc(v.tournee || '')}"></div>
+      <div><label>Nom affiché (laisser vide = auto)</label><input id="ev-name" value="${esc(v.name || '')}"></div>
+      <div><label>Modèle</label><select id="ev-model">${modelOptions(v.model)}</select></div>
       <div><label>Plaque</label><input id="ev-plate" value="${esc(v.plate || '')}"></div>
-      <div><label>Modèle</label><input id="ev-model" value="${esc(v.model || '')}"></div>
-      <div><label>Kilométrage</label><input id="ev-km" type="number" min="0" value="${v.km || 0}"></div>
+      <div><label>Kilométrage d'origine</label><input id="ev-base" type="number" min="0" value="${v.baseKm || 0}"></div>
+      <div><label>Kilométrage actuel (ne peut qu'augmenter)</label><input id="ev-km" type="number" min="0" value="${v.km || 0}"></div>
+      <div><label>Usage</label><select id="ev-usage"><option value="mixte" ${v.usage !== 'ville' ? 'selected' : ''}>Route + ville</option><option value="ville" ${v.usage === 'ville' ? 'selected' : ''}>Ville uniquement</option></select></div>
     </div>
-    <label class="veh-check" style="margin-top:.6rem"><input type="checkbox" id="ev-active" ${v.active !== false ? 'checked' : ''}> Véhicule actif (proposé aux chauffeurs)</label>`,
+    <label class="veh-check" style="margin-top:.6rem"><input type="checkbox" id="ev-relais" ${v.relais ? 'checked' : ''}> Véhicule relais</label>
+    <label class="veh-check"><input type="checkbox" id="ev-active" ${v.active !== false ? 'checked' : ''}> Véhicule actif (proposé aux chauffeurs)</label>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ev-save">Enregistrer</button>`,
     onMount: (overlay) => {
       overlay.querySelector('#ev-save').onclick = async () => {
-        const payload = { name: overlay.querySelector('#ev-name').value, plate: overlay.querySelector('#ev-plate').value, model: overlay.querySelector('#ev-model').value, km: overlay.querySelector('#ev-km').value, active: overlay.querySelector('#ev-active').checked };
-        try { await api('PUT', '/admin/vehicles/' + id, payload); closeModal(); toast('Véhicule mis à jour.', 'ok'); await loadFleet(); vehTab('fleet'); }
+        const payload = {
+          name: overlay.querySelector('#ev-name').value,
+          assignedUserId: overlay.querySelector('#ev-user').value || null,
+          groupId: overlay.querySelector('#ev-group').value || null,
+          tournee: overlay.querySelector('#ev-tournee').value,
+          model: overlay.querySelector('#ev-model').value,
+          plate: overlay.querySelector('#ev-plate').value,
+          baseKm: overlay.querySelector('#ev-base').value,
+          km: overlay.querySelector('#ev-km').value,
+          usage: overlay.querySelector('#ev-usage').value,
+          relais: overlay.querySelector('#ev-relais').checked,
+          active: overlay.querySelector('#ev-active').checked,
+        };
+        try { const r = await api('PUT', '/admin/vehicles/' + id, payload); _veh.analysis = r.analysis; closeModal(); toast('Véhicule mis à jour.', 'ok'); await loadFleet(); vehTab('fleet'); }
         catch (e) { toast(e.message, 'err'); }
       };
     },
@@ -2706,7 +2967,7 @@ async function replacementModal(req, body) {
     bodyHTML: `
       <p class="help">Période : ${fmtDate(req.startDate)} → ${fmtDate(req.endDate)}. Seuls les salariés disponibles sur cette période sont proposés.</p>
       <label>Remplaçant</label>
-      <select id="repl-sel"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById, annotate)}</select>`,
+      <select id="repl-sel"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId && replacerAllowedClient(m)), req.replacedById, annotate)}</select>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="repl-save">Enregistrer</button>`,
     onMount: (ov) => {
       ov.querySelector('#repl-save').onclick = async () => {
