@@ -650,6 +650,8 @@ app.get('/api/admin/pending', authRequired, adminRequired, (req, res) => {
 // Cumul des éléments DÉJÀ PRIS par un salarié (demandes validées).
 //   cpN / cpN1 : jours de congés payés ; rcp : heures de récup ; rcc : heures RCC.
 function takenByUser(db, userId) {
+  const u = db.users.find((x) => x.id === userId);
+  const base = (u && u.takenBaseline) || {};
   const t = { cpN: 0, cpN1: 0, cp: 0, rcp: 0, rcc: 0 };
   for (const r of db.requests) {
     if (r.userId !== userId || r.status !== 'approved') continue;
@@ -657,6 +659,9 @@ function takenByUser(db, userId) {
     else if (r.category === 'RCP') t.rcp += r.hours || 0;
     else if (r.category === 'RCC') t.rcc += r.hours || 0;
   }
+  // Ajoute le compteur de base saisi par l'administrateur (historique hors appli).
+  t.cpN += num(base.congesN); t.cpN1 += num(base.congesN1); t.cp += num(base.congesN) + num(base.congesN1);
+  t.rcp += num(base.heuresSupp); t.rcc += num(base.rcc);
   for (const k of Object.keys(t)) t[k] = Math.round(t[k] * 100) / 100;
   return t;
 }
@@ -768,7 +773,14 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate, takenBaseline } = req.body || {};
+  // Compteur « déjà pris » de base (historique hors application), éditable.
+  if (takenBaseline && typeof takenBaseline === 'object') {
+    user.takenBaseline = user.takenBaseline || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
+    for (const k of ['congesN', 'congesN1', 'rcc', 'heuresSupp']) {
+      if (takenBaseline[k] !== undefined) user.takenBaseline[k] = Number(takenBaseline[k]) || 0;
+    }
+  }
 
   // Identité et compte
   if (firstName !== undefined && String(firstName).trim()) user.firstName = capitalizeName(firstName);
@@ -1632,18 +1644,33 @@ app.post('/api/admin/vehicles/:id/maint', authRequired, adminRequired, async (re
   const db = getData();
   const v = db.vehicles.find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
-  const { part, km, date, note } = req.body || {};
+  const { part, km, date, note, partId, qty } = req.body || {};
   const consumables = db.settings.vehicleConsumables || [];
   if (!consumables.some((c) => c.code === part)) return res.status(400).json({ error: 'Pièce / consommable invalide' });
   const kmNum = intStr(km);
   if (kmNum == null || kmNum < 0) return res.status(400).json({ error: 'Kilométrage du remplacement obligatoire' });
+  const mdate = validDate(date) ? date : new Date().toISOString().slice(0, 10);
+  // Déstockage d'une pièce du stock + dépense d'entretien (coût réel).
+  let cost = null, stockPart = null;
+  if (partId) {
+    stockPart = db.parts.find((p) => p.id === partId);
+    if (stockPart) {
+      const q = num(qty) || 1;
+      cost = Math.round(stockPart.unitPrice * q * 100) / 100;
+      stockPart.qty = Math.max(0, stockPart.qty - q);
+      db.vehicleExpenses.push({ id: nextId('vexp'), vehicleId: v.id, date: mdate, category: 'entretien', label: `${stockPart.name} (${q} ${stockPart.unit})`, amount: cost, partId: stockPart.id, qty: q, km: kmNum });
+    }
+  }
   const rec = {
     id: nextId('vmaint'),
     vehicleId: v.id,
     part,
     km: kmNum,
-    date: validDate(date) ? date : new Date().toISOString().slice(0, 10),
+    date: mdate,
     note: String(note || '').trim(),
+    partId: stockPart ? stockPart.id : null,
+    partName: stockPart ? stockPart.name : null,
+    cost,
     createdBy: req.user.id,
     createdAt: new Date().toISOString(),
   };
@@ -1934,7 +1961,22 @@ function monthsBetween(fromIso, toDate) {
 }
 
 app.get('/api/admin/parts', authRequired, adminRequired, (req, res) => {
-  res.json({ parts: getData().parts.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))) });
+  const db = getData();
+  res.json({
+    parts: db.parts.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    categories: db.settings.partCategories || [],
+    units: db.settings.partUnits || [],
+  });
+});
+
+// Paramétrage des catégories et unités de pièces.
+app.put('/api/admin/part-categories', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { categories, units } = req.body || {};
+  if (Array.isArray(categories)) db.settings.partCategories = categories.map((c) => String(c).trim()).filter(Boolean);
+  if (Array.isArray(units)) db.settings.partUnits = units.map((u) => String(u).trim()).filter(Boolean);
+  await save();
+  res.json({ categories: db.settings.partCategories, units: db.settings.partUnits });
 });
 app.post('/api/admin/parts', authRequired, adminRequired, async (req, res) => {
   const db = getData();
@@ -2014,6 +2056,27 @@ app.get('/api/admin/vehicle-costs', authRequired, adminRequired, (req, res) => {
 // Financière (recettes / charges / TVA / clients) — administrateur
 // ---------------------------------------------------------------------------
 const FINANCE_CLIENTS = ['GLS', 'FedEx', 'Ciblex'];
+const FINANCE_MAIN_ACCOUNTS = ['Recettes', 'Charges fixes', 'Charges variables', 'Charges exceptionnelles'];
+function defaultMainAccount(e) {
+  if (e.kind === 'recette') return 'Recettes';
+  return e.fixed ? 'Charges fixes' : 'Charges variables';
+}
+
+// Arborescence de comptes : compte principal -> sous-comptes (postes).
+function financeTree(entries) {
+  const tree = {};
+  for (const e of entries) {
+    const main = FINANCE_MAIN_ACCOUNTS.includes(e.mainAccount) ? e.mainAccount : defaultMainAccount(e);
+    const sub = e.category || '(non classé)';
+    const t = tree[main] = tree[main] || { name: main, total: 0, subs: {} };
+    const s = t.subs[sub] = t.subs[sub] || { name: sub, total: 0, count: 0 };
+    t.total += num(e.amount); s.total += num(e.amount); s.count += 1;
+  }
+  return FINANCE_MAIN_ACCOUNTS.filter((m) => tree[m]).map((m) => ({
+    name: m, total: Math.round(tree[m].total * 100) / 100,
+    subs: Object.values(tree[m].subs).map((s) => ({ name: s.name, total: Math.round(s.total * 100) / 100, count: s.count })).sort((a, b) => b.total - a.total),
+  }));
+}
 
 function financeSummary(db) {
   const entries = db.finance.entries || [];
@@ -2047,7 +2110,12 @@ function financeSummary(db) {
   const now = new Date();
   const monthsLeftYear = 12 - (now.getMonth() + 1);
   const projection = { avgMonthlyResult: Math.round(avgResult * 100) / 100, monthsLeftYear, projectedYearEnd: Math.round((totals.result + avgResult * monthsLeftYear) * 100) / 100 };
-  return { months, totals, clients, projection, clientsList: FINANCE_CLIENTS };
+  // Arborescence globale + par mois (3 derniers mois affichés côté client).
+  const tree = financeTree(entries);
+  const treeByMonth = {};
+  const ymList = [...new Set(entries.map((e) => e.ym))].sort().reverse();
+  for (const ym of ymList) treeByMonth[ym] = financeTree(entries.filter((e) => e.ym === ym));
+  return { months, totals, clients, projection, clientsList: FINANCE_CLIENTS, tree, treeByMonth, mainAccounts: FINANCE_MAIN_ACCOUNTS };
 }
 
 app.get('/api/admin/finance', authRequired, adminRequired, (req, res) => {
@@ -2060,9 +2128,27 @@ app.post('/api/admin/finance', authRequired, adminRequired, async (req, res) => 
   if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) return res.status(400).json({ error: 'Mois invalide (AAAA-MM)' });
   if (!['recette', 'charge'].includes(kind)) return res.status(400).json({ error: 'Type invalide' });
   if (num(amount) <= 0) return res.status(400).json({ error: 'Montant invalide' });
-  const entry = { id: nextId('fin'), ym, kind, category: String(category || (kind === 'recette' ? 'Chiffre d\'affaires' : 'Charge')).trim(), client: FINANCE_CLIENTS.includes(client) ? client : null, amount: Math.round(num(amount) * 100) / 100, fixed: !!fixed, vatRate: num(vatRate), note: String(note || '').trim() };
+  const { mainAccount } = req.body || {};
+  const entry = { id: nextId('fin'), ym, kind, mainAccount: FINANCE_MAIN_ACCOUNTS.includes(mainAccount) ? mainAccount : null, category: String(category || (kind === 'recette' ? 'Chiffre d\'affaires' : 'Charge')).trim(), client: FINANCE_CLIENTS.includes(client) ? client : null, amount: Math.round(num(amount) * 100) / 100, fixed: !!fixed, vatRate: num(vatRate), note: String(note || '').trim() };
   db.finance.entries.push(entry); await save(); res.json({ entry, summary: financeSummary(db) });
 });
+app.put('/api/admin/finance/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const e = db.finance.entries.find((x) => x.id === req.params.id);
+  if (!e) return res.status(404).json({ error: 'Écriture introuvable' });
+  const { ym, kind, mainAccount, category, client, amount, fixed, vatRate, note } = req.body || {};
+  if (ym !== undefined && /^\d{4}-\d{2}$/.test(String(ym))) e.ym = ym;
+  if (kind !== undefined && ['recette', 'charge'].includes(kind)) e.kind = kind;
+  if (mainAccount !== undefined) e.mainAccount = FINANCE_MAIN_ACCOUNTS.includes(mainAccount) ? mainAccount : null;
+  if (category !== undefined) e.category = String(category).trim() || e.category;
+  if (client !== undefined) e.client = FINANCE_CLIENTS.includes(client) ? client : null;
+  if (amount !== undefined && num(amount) > 0) e.amount = Math.round(num(amount) * 100) / 100;
+  if (fixed !== undefined) e.fixed = !!fixed;
+  if (vatRate !== undefined) e.vatRate = num(vatRate);
+  if (note !== undefined) e.note = String(note || '').trim();
+  await save(); res.json({ entry: e, summary: financeSummary(db) });
+});
+
 app.delete('/api/admin/finance/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   db.finance.entries = db.finance.entries.filter((e) => e.id !== req.params.id);

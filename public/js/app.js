@@ -2326,9 +2326,14 @@ function vehTabSuivi(body) {
   }
 }
 
-function maintModal(vehicleId, part, partLabel) {
+async function maintModal(vehicleId, part, partLabel) {
   const v = _veh.vehicles.find((x) => x.id === vehicleId);
   const consumables = _veh.consumables;
+  let parts = [], categories = [];
+  try { const r = await api('GET', '/admin/parts'); parts = r.parts; categories = r.categories; } catch (e) {}
+  const catOpts = ['<option value="">— Toutes catégories —</option>'].concat(categories.map((c) => `<option>${esc(c)}</option>`)).join('');
+  const partOptsFor = (cat) => ['<option value="">— Aucune pièce (saisie manuelle) —</option>']
+    .concat(parts.filter((p) => !cat || p.category === cat).map((p) => `<option value="${p.id}" data-price="${p.unitPrice}">${esc(p.name)} — ${eur(p.unitPrice)} (stock ${p.qty} ${esc(p.unit)})</option>`)).join('');
   modal({
     title: 'Enregistrer un remplacement',
     bodyHTML: `
@@ -2336,6 +2341,9 @@ function maintModal(vehicleId, part, partLabel) {
       <label>Pièce / consommable remplacé</label>
       <select id="mt-part">${consumables.map((c) => `<option value="${c.code}" ${c.code === part ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select>
       <div class="grid2" style="margin-top:.6rem">
+        <div><label>Catégorie de pièce</label><select id="mt-cat">${catOpts}</select></div>
+        <div><label>Pièce du stock (déstocke & calcule le coût)</label><select id="mt-stock">${partOptsFor('')}</select></div>
+        <div><label>Quantité utilisée</label><input id="mt-qty" type="number" step="0.01" min="0" value="1"></div>
         <div><label>Kilométrage au remplacement *</label><input id="mt-km" type="number" min="0" value="${v ? (v.km || '') : ''}"></div>
         <div><label>Date</label><input id="mt-date" type="date" value="${iso(new Date())}"></div>
       </div>
@@ -2343,8 +2351,11 @@ function maintModal(vehicleId, part, partLabel) {
       <input id="mt-note" placeholder="Marque de pièce, atelier…">`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="mt-save">Enregistrer</button>`,
     onMount: (overlay) => {
+      const catSel = overlay.querySelector('#mt-cat');
+      const stockSel = overlay.querySelector('#mt-stock');
+      catSel.onchange = () => { stockSel.innerHTML = partOptsFor(catSel.value); };
       overlay.querySelector('#mt-save').onclick = async () => {
-        const payload = { part: overlay.querySelector('#mt-part').value, km: overlay.querySelector('#mt-km').value, date: overlay.querySelector('#mt-date').value, note: overlay.querySelector('#mt-note').value };
+        const payload = { part: overlay.querySelector('#mt-part').value, km: overlay.querySelector('#mt-km').value, date: overlay.querySelector('#mt-date').value, note: overlay.querySelector('#mt-note').value, partId: stockSel.value || null, qty: overlay.querySelector('#mt-qty').value };
         try {
           const r = await api('POST', '/admin/vehicles/' + vehicleId + '/maint', payload);
           _veh.analysis = r.analysis; closeModal(); toast('Remplacement enregistré.', 'ok');
@@ -2883,6 +2894,7 @@ async function renderStocks(main) {
     <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-stab="costs" class="active">Coûts par véhicule</button>
       <button data-stab="parts">Stock de pièces & consommables</button>
+      <button data-stab="categories">Catégories de pièces</button>
       <button data-stab="fleet">Flotte (création & gestion)</button>
     </div>
     <div id="stk-body" class="empty">Chargement…</div>`;
@@ -2900,24 +2912,50 @@ function stockTab(tab) {
   const body = document.getElementById('stk-body'); if (!body) return; body.className = '';
   if (tab === 'fleet') return vehTabFleet(body);
   if (tab === 'parts') return stockParts(body);
+  if (tab === 'categories') return stockCategories(body);
   if (tab === 'costs') return stockCosts(body);
 }
 
+async function stockCategories(body) {
+  try { const r = await api('GET', '/admin/parts'); stockCategoriesRender(body, { categories: r.categories, units: r.units }); }
+  catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+}
+// Édition locale (ajout/suppression) des catégories et unités, puis enregistrement.
+function stockCategoriesRender(body, data) {
+  const cats = data.categories, units = data.units;
+  const listEditor = (id, arr, label) => `<div class="card"><h3>${label}</h3>
+    <div id="${id}-list">${arr.map((x, i) => `<div class="impact-row"><input data-${id}="${i}" value="${esc(x)}"><button class="btn ghost sm" data-del${id}="${i}">✕</button></div>`).join('') || '<p class="help">Aucun élément.</p>'}</div>
+    <div style="display:flex;gap:.4rem;margin-top:.5rem"><input id="${id}-new" placeholder="Ajouter…"><button class="btn ghost sm" id="${id}-add">+ Ajouter</button></div></div>`;
+  body.innerHTML = `<div class="alert info">Paramétrez ici vos catégories et unités.</div>
+    ${listEditor('cat', cats, 'Catégories de pièces')}${listEditor('unit', units, 'Unités')}
+    <button class="btn accent" id="cu-save">Enregistrer</button>`;
+  const collect = (id) => Array.from(body.querySelectorAll(`[data-${id}]`)).map((i) => i.value.trim()).filter(Boolean);
+  body.querySelector('#cat-add').onclick = () => { const v = body.querySelector('#cat-new').value.trim(); if (v) stockCategoriesRender(body, { categories: collect('cat').concat(v), units: collect('unit') }); };
+  body.querySelector('#unit-add').onclick = () => { const v = body.querySelector('#unit-new').value.trim(); if (v) stockCategoriesRender(body, { categories: collect('cat'), units: collect('unit').concat(v) }); };
+  body.querySelectorAll('[data-delcat]').forEach((b) => b.onclick = () => stockCategoriesRender(body, { categories: collect('cat').filter((_, i) => i !== Number(b.dataset.delcat)), units: collect('unit') }));
+  body.querySelectorAll('[data-delunit]').forEach((b) => b.onclick = () => stockCategoriesRender(body, { categories: collect('cat'), units: collect('unit').filter((_, i) => i !== Number(b.dataset.delunit)) }));
+  body.querySelector('#cu-save').onclick = async () => { try { await api('PUT', '/admin/part-categories', { categories: collect('cat'), units: collect('unit') }); toast('Enregistré.', 'ok'); } catch (e) { toast(e.message, 'err'); } };
+}
+
 async function stockParts(body) {
-  let parts = [];
-  try { parts = (await api('GET', '/admin/parts')).parts; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  let parts = [], categories = [], units = [];
+  try { const r = await api('GET', '/admin/parts'); parts = r.parts; categories = r.categories; units = r.units; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
   const stockValue = parts.reduce((s, p) => s + p.unitPrice * p.qty, 0);
+  const catOptions = categories.map((c) => `<option>${esc(c)}</option>`).join('');
+  const unitOptions = units.map((u) => `<option>${esc(u)}</option>`).join('');
+  const qtyOptions = Array.from({ length: 51 }, (_, i) => `<option>${i}</option>`).join('');
   body.innerHTML = `
     <div class="card">
       <h3>Ajouter une pièce / un consommable</h3>
       <div class="grid2">
         <div><label>Désignation *</label><input id="pt-name" placeholder="ex. Plaquettes avant, Huile 5W30, Gasoil…"></div>
         <div><label>Référence</label><input id="pt-ref" placeholder="réf. fournisseur"></div>
-        <div><label>Catégorie</label><input id="pt-cat" placeholder="pièce / huile / carburant / pneu…" value="pièce"></div>
+        <div><label>Catégorie</label><select id="pt-cat">${catOptions}</select></div>
         <div><label>Prix unitaire (€)</label><input id="pt-price" type="number" step="0.01" min="0"></div>
-        <div><label>Quantité en stock</label><input id="pt-qty" type="number" step="0.01" min="0"></div>
-        <div><label>Unité</label><input id="pt-unit" placeholder="u / L / jeu" value="u"></div>
+        <div><label>Quantité en stock</label><select id="pt-qty">${qtyOptions}</select></div>
+        <div><label>Unité</label><select id="pt-unit">${unitOptions}</select></div>
       </div>
+      <p class="help" style="margin-top:.4rem">Gérez les catégories et unités dans l'onglet « Catégories de pièces ».</p>
       <div style="margin-top:.7rem"><button class="btn accent" id="pt-add">Ajouter au stock</button></div>
     </div>
     <div class="card"><h3>Stock (${parts.length}) — valeur totale ${eur(stockValue)}</h3>
@@ -3083,10 +3121,37 @@ function finResume(body) {
     <div class="card"><h3>Résultat par trimestre</h3>${barChart(aggregatePeriods(m, 3), 'result', 'key')}</div>
     <div class="card"><h3>Résultat par semestre</h3>${barChart(aggregatePeriods(m, 6), 'result', 'key')}</div>
     <div class="card"><h3>Résultat annuel</h3>${barChart(aggregatePeriods(m, 12), 'result', 'key')}</div>
+    <div class="card"><h3>Plan de comptes (cumul) — cliquez pour déplier</h3>
+      ${finChartHTML(s.tree)}
+    </div>
     <div class="card"><h3>Détail mensuel</h3>
       ${m.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Recettes</th><th>Charges fixes</th><th>Charges var.</th><th>Résultat</th></tr></thead>
       <tbody>${m.map((x) => `<tr><td>${esc(x.ym)}</td><td>${eur(x.revenue)}</td><td>${eur(x.chargesFixed)}</td><td>${eur(x.chargesVar)}</td><td class="${x.result >= 0 ? 'pos' : 'neg'}">${eur(x.result)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune donnée.</p>'}
     </div>`;
+  bindFinChart(body);
+}
+
+// Plan de comptes : comptes principaux dépliables avec leurs sous-comptes.
+function finChartHTML(tree) {
+  if (!tree || !tree.length) return '<p class="help">Aucune écriture. Renseignez vos recettes et charges dans l\'onglet « Saisie ».</p>';
+  return tree.map((main, i) => {
+    const isCharge = main.name.startsWith('Charges');
+    return `<div class="acct">
+      <div class="acct-head" data-acct="${i}"><span class="acct-caret">▸</span> <strong>${esc(main.name)}</strong>
+        <span class="acct-total ${isCharge ? 'neg' : 'pos'}">${eur(main.total)}</span></div>
+      <div class="acct-subs" id="acct-${i}" style="display:none">
+        ${main.subs.map((s) => `<div class="acct-sub"><span>${esc(s.name)} <span class="help">(${s.count})</span></span><span>${eur(s.total)}</span></div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+function bindFinChart(scope) {
+  scope.querySelectorAll('[data-acct]').forEach((h) => h.onclick = () => {
+    const el = scope.querySelector('#acct-' + h.dataset.acct);
+    const open = el.style.display !== 'none';
+    el.style.display = open ? 'none' : 'block';
+    h.querySelector('.acct-caret').textContent = open ? '▸' : '▾';
+  });
 }
 
 function finFlash(body) {
@@ -3145,7 +3210,8 @@ function finSaisie(body) {
       <div class="grid2">
         <div><label>Mois</label><input id="fn-ym" type="month" value="${iso(new Date()).slice(0, 7)}"></div>
         <div><label>Type</label><select id="fn-kind"><option value="recette">Recette</option><option value="charge">Charge</option></select></div>
-        <div><label>Poste / catégorie</label><input id="fn-cat" placeholder="ex. Prestation, Carburant, Salaires, Loyer…"></div>
+        <div><label>Compte principal</label><select id="fn-main">${(_fin.summary.mainAccounts || []).map((a) => `<option>${esc(a)}</option>`).join('')}</select></div>
+        <div><label>Sous-compte / poste</label><input id="fn-cat" placeholder="ex. Prestation, Carburant, Salaires, Loyer…"></div>
         <div><label>Client (optionnel)</label><select id="fn-client"><option value="">— Aucun —</option>${clients.map((c) => `<option>${esc(c)}</option>`).join('')}</select></div>
         <div><label>Montant HT (€)</label><input id="fn-amount" type="number" step="0.01" min="0"></div>
         <div><label>Taux TVA (%)</label><select id="fn-vat"><option value="20">20</option><option value="10">10</option><option value="5.5">5,5</option><option value="0">0</option></select></div>
@@ -3155,15 +3221,40 @@ function finSaisie(body) {
     </div>
     <div class="card"><h3>Écritures récentes</h3>
       ${_fin.entries.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Type</th><th>Poste</th><th>Client</th><th>Montant</th><th>TVA</th><th></th></tr></thead>
-      <tbody>${_fin.entries.slice(0, 60).map((e) => `<tr><td>${esc(e.ym)}</td><td>${e.kind === 'recette' ? '<span class="pill ok">Recette</span>' : `<span class="pill warn">Charge${e.fixed ? ' fixe' : ''}</span>`}</td><td>${esc(e.category)}</td><td>${esc(e.client || '—')}</td><td>${eur(e.amount)}</td><td>${e.vatRate}%</td><td><button class="btn ghost sm" data-delf="${e.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune écriture.</p>'}
+      <tbody>${_fin.entries.slice(0, 80).map((e) => `<tr><td>${esc(e.ym)}</td><td>${e.kind === 'recette' ? '<span class="pill ok">Recette</span>' : `<span class="pill warn">Charge${e.fixed ? ' fixe' : ''}</span>`}</td><td>${esc(e.category)}</td><td>${esc(e.client || '—')}</td><td>${eur(e.amount)}</td><td>${e.vatRate}%</td><td style="white-space:nowrap"><button class="btn ghost sm" data-editf="${e.id}">✎</button> <button class="btn ghost sm" data-delf="${e.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune écriture.</p>'}
     </div>`;
   document.getElementById('fn-add').onclick = async () => {
-    const payload = { ym: document.getElementById('fn-ym').value, kind: document.getElementById('fn-kind').value, category: document.getElementById('fn-cat').value, client: document.getElementById('fn-client').value, amount: document.getElementById('fn-amount').value, vatRate: document.getElementById('fn-vat').value, fixed: document.getElementById('fn-fixed').checked };
+    const payload = { ym: document.getElementById('fn-ym').value, kind: document.getElementById('fn-kind').value, mainAccount: document.getElementById('fn-main').value, category: document.getElementById('fn-cat').value, client: document.getElementById('fn-client').value, amount: document.getElementById('fn-amount').value, vatRate: document.getElementById('fn-vat').value, fixed: document.getElementById('fn-fixed').checked };
     if (!payload.ym) { toast('Indiquez le mois.', 'err'); return; }
-    try { const r = await api('POST', '/admin/finance', payload); _fin.summary = r.summary; _fin.entries.unshift(r.entry); toast('Écriture enregistrée.', 'ok'); await loadFinance(); finTab('saisie'); }
+    try { await api('POST', '/admin/finance', payload); toast('Écriture enregistrée.', 'ok'); await loadFinance(); finTab('saisie'); }
     catch (e) { toast(e.message, 'err'); }
   };
   body.querySelectorAll('[data-delf]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette écriture ?')) return; try { await api('DELETE', '/admin/finance/' + b.dataset.delf); await loadFinance(); finTab('saisie'); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-editf]').forEach((b) => b.onclick = () => editFinanceModal(_fin.entries.find((e) => e.id === b.dataset.editf)));
+}
+
+function editFinanceModal(e) {
+  if (!e) return;
+  const mains = _fin.summary.mainAccounts || [];
+  modal({
+    title: 'Modifier l\'écriture',
+    bodyHTML: `<div class="grid2">
+      <div><label>Mois</label><input id="fe-ym" type="month" value="${esc(e.ym)}"></div>
+      <div><label>Type</label><select id="fe-kind"><option value="recette" ${e.kind === 'recette' ? 'selected' : ''}>Recette</option><option value="charge" ${e.kind === 'charge' ? 'selected' : ''}>Charge</option></select></div>
+      <div><label>Compte principal</label><select id="fe-main">${mains.map((a) => `<option ${a === e.mainAccount ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></div>
+      <div><label>Sous-compte / poste</label><input id="fe-cat" value="${esc(e.category)}"></div>
+      <div><label>Client</label><select id="fe-client"><option value="">— Aucun —</option>${_fin.clients.map((c) => `<option ${c === e.client ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+      <div><label>Montant HT (€)</label><input id="fe-amount" type="number" step="0.01" value="${e.amount}"></div>
+      <div><label>TVA (%)</label><input id="fe-vat" type="number" step="0.1" value="${e.vatRate}"></div>
+    </div>
+    <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="fe-fixed" ${e.fixed ? 'checked' : ''}> Charge fixe</label>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="fe-save">Enregistrer</button>`,
+    onMount: (ov) => { ov.querySelector('#fe-save').onclick = async () => {
+      const payload = { ym: ov.querySelector('#fe-ym').value, kind: ov.querySelector('#fe-kind').value, mainAccount: ov.querySelector('#fe-main').value, category: ov.querySelector('#fe-cat').value, client: ov.querySelector('#fe-client').value, amount: ov.querySelector('#fe-amount').value, vatRate: ov.querySelector('#fe-vat').value, fixed: ov.querySelector('#fe-fixed').checked };
+      try { await api('PUT', '/admin/finance/' + e.id, payload); closeModal(); await loadFinance(); finTab('saisie'); toast('Modifié.', 'ok'); }
+      catch (err) { toast(err.message, 'err'); }
+    }; },
+  });
 }
 
 /* =========================================================================
@@ -3531,7 +3622,13 @@ async function adminUsers(body) {
       <td>${esc(u.firstName)} ${esc(u.lastName)}${u.suspended?' <span class="tag rejected">suspendu</span>':''}
         <div class="help">${roleLabel(u.role)}${u.isParent?' • <strong style="color:var(--text)">Parent</strong>':''}</div>
         <div class="help">Ancienneté : ${u.hireDate?ancienneteText(u.hireDate):'—'}</div>
-        ${u.taken?`<div class="help" style="color:var(--brand)">Déjà pris : CP ${u.taken.cp} j (N ${u.taken.cpN}/N-1 ${u.taken.cpN1}) · RCC ${u.taken.rcc} h · Récup ${u.taken.rcp} h</div>`:''}
+        ${u.taken?`<div class="help" style="color:var(--brand)">Total déjà pris : CP ${u.taken.cp} j · RCC ${u.taken.rcc} h · Récup ${u.taken.rcp} h</div>`:''}
+        <div class="taken-base"><span class="help">Déjà pris (saisi) :</span>
+          <label>CP N<input type="number" step="0.5" data-tb="${u.id}" data-tbk="congesN" value="${(u.takenBaseline&&u.takenBaseline.congesN)||0}"></label>
+          <label>CP N-1<input type="number" step="0.5" data-tb="${u.id}" data-tbk="congesN1" value="${(u.takenBaseline&&u.takenBaseline.congesN1)||0}"></label>
+          <label>RCC<input type="number" step="0.5" data-tb="${u.id}" data-tbk="rcc" value="${(u.takenBaseline&&u.takenBaseline.rcc)||0}"></label>
+          <label>HSUP<input type="number" step="0.5" data-tb="${u.id}" data-tbk="heuresSupp" value="${(u.takenBaseline&&u.takenBaseline.heuresSupp)||0}"></label>
+        </div>
       </td>
       <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
       ${numCell(u,'congesN')}${numCell(u,'congesN1')}${numCell(u,'rcc')}${numCell(u,'heuresSupp')}
@@ -3577,6 +3674,9 @@ async function adminUsers(body) {
   const saveUser = async (uid) => {
     const payload = {};
     body.querySelectorAll(`[data-uid="${uid}"]`).forEach((inp) => { payload[inp.dataset.bal] = inp.value; });
+    const tb = {};
+    body.querySelectorAll(`[data-tb="${uid}"]`).forEach((inp) => { tb[inp.dataset.tbk] = inp.value; });
+    if (Object.keys(tb).length) payload.takenBaseline = tb;
     await api('PUT', `/admin/users/${uid}`, payload);
   };
 
