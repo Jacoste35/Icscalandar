@@ -647,9 +647,24 @@ app.get('/api/admin/pending', authRequired, adminRequired, (req, res) => {
   res.json({ users: pending });
 });
 
-// Tous les utilisateurs actifs (pour gestion des soldes)
+// Cumul des éléments DÉJÀ PRIS par un salarié (demandes validées).
+//   cpN / cpN1 : jours de congés payés ; rcp : heures de récup ; rcc : heures RCC.
+function takenByUser(db, userId) {
+  const t = { cpN: 0, cpN1: 0, cp: 0, rcp: 0, rcc: 0 };
+  for (const r of db.requests) {
+    if (r.userId !== userId || r.status !== 'approved') continue;
+    if (r.category === 'CP') { t.cp += r.days || 0; if (r.pool === 'N1') t.cpN1 += r.days || 0; else t.cpN += r.days || 0; }
+    else if (r.category === 'RCP') t.rcp += r.hours || 0;
+    else if (r.category === 'RCC') t.rcc += r.hours || 0;
+  }
+  for (const k of Object.keys(t)) t[k] = Math.round(t[k] * 100) / 100;
+  return t;
+}
+
+// Tous les utilisateurs actifs (pour gestion des soldes) + cumul déjà pris.
 app.get('/api/admin/users', authRequired, adminRequired, (req, res) => {
-  res.json({ users: getData().users.map(publicUser) });
+  const db = getData();
+  res.json({ users: db.users.map((u) => ({ ...publicUser(u), taken: takenByUser(db, u.id) })) });
 });
 
 // Vérifie l'unicité de l'email et du nom de compte (hors utilisateur exclu).
@@ -1173,6 +1188,7 @@ function fleetWarnings(db) {
     for (const c of VEHICLE_CHECKS) {
       const ck = ins.checks[c.code];
       if (!ck || ck.ok !== false) continue; // seul un élément explicitement non conforme alerte
+      if (ins.regularized && ins.regularized[c.code]) continue; // manquement régularisé : retiré de l'accueil
       let foundOn = null;
       if (c.hasId) {
         const owned = v.documents && v.documents[c.code] && v.documents[c.code].id;
@@ -1208,13 +1224,51 @@ function fleetWarnings(db) {
       }
     }
   }
+  // Clé stable + filtrage des alertes marquées « lues » (acquittées).
+  const acks = db.settings.vehicleWarnAcks || {};
+  warnings.forEach((w) => { w.key = `${w.vehicleId || w.vehicleName}|${w.item}|${w.date || ''}`; w.acked = !!acks[w.key]; });
+  const visible = warnings.filter((w) => !w.acked);
   // Tri : avertissements (règlement) d'abord.
-  warnings.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'avertissement' ? -1 : 1));
-  return warnings;
+  visible.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'avertissement' ? -1 : 1));
+  return visible;
 }
 
 // Modèles de véhicules proposés (liste déroulante à l'ajout).
 const VEHICLE_MODELS = ['Mercedes Sprinter 12m³', 'Mercedes Sprinter 14m³', 'Citan 6m³'];
+
+// Statut du contrôle technique d'un véhicule.
+//   1er CT : 4 ans après la 1re mise en circulation (anniversaire).
+//   Ensuite, cadence annuelle alternée CT / contrôle pollution (rappel à
+//   l'anniversaire de l'année suivante après chaque contrôle saisi).
+function addYears(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCFullYear(d.getUTCFullYear() + n);
+  return d.toISOString().slice(0, 10);
+}
+function ctStatus(v) {
+  const today = new Date().toISOString().slice(0, 10);
+  const controls = (v.ctControls || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const firstCTDue = v.firstRegistration ? addYears(v.firstRegistration, 4) : null;
+  let nextDate = null, nextType = 'CT';
+  if (controls.length) {
+    const last = controls[controls.length - 1];
+    nextType = last.type === 'CT' ? 'pollution' : 'CT';
+    nextDate = addYears(last.date, 1);
+  } else if (firstCTDue) {
+    nextDate = firstCTDue; nextType = 'CT';
+  }
+  let level = 'ok';
+  if (nextDate) {
+    if (nextDate < today) level = 'overdue';
+    else if (nextDate <= addDays(today, 60)) level = 'soon';
+  }
+  return { nextDate, nextType, firstCTDue, level, lastControl: controls[controls.length - 1] || null };
+}
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
 
 // Norme constructeur d'un consommable selon l'usage du véhicule.
 function normFor(c, usage) {
@@ -1302,6 +1356,7 @@ function fleetAnalysis(db) {
       usage, relais: !!v.relais, groupId: v.groupId || null, tournee: v.tournee || null,
       assignedUserId: v.assignedUserId || null, assignedUserName: v.assignedUserName || null,
       km: Number(v.km) || 0, baseKm: base, curKm, items, wearRatio: vRatio, driving,
+      firstRegistration: v.firstRegistration || null, ctControls: v.ctControls || [], ct: ctStatus(v),
     };
   });
   // Notes de conduite par chauffeur (moyenne des véhicules qui lui sont attribués).
@@ -1387,9 +1442,17 @@ app.get('/api/staff/vehicle-dashboard', authRequired, staffRequired, (req, res) 
     }
   }));
   alerts.sort((a, b) => a.remaining - b.remaining);
+  // Rappels contrôle technique / pollution.
+  const ctReminders = [];
+  analysis.vehicles.forEach((v) => {
+    if (v.ct && v.ct.nextDate && (v.ct.level === 'overdue' || v.ct.level === 'soon')) {
+      ctReminders.push({ vehicleName: v.name, plate: v.plate, type: v.ct.nextType, date: v.ct.nextDate, level: v.ct.level });
+    }
+  });
+  ctReminders.sort((a, b) => a.date.localeCompare(b.date));
   const pendingReports = db.vehicleReports.filter((r) => r.status === 'pending')
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  res.json({ pendingReports, alerts });
+  res.json({ pendingReports, alerts, ctReminders });
 });
 
 // --- Côté salarié : liste de la flotte + signalement d'usure -----------------
@@ -1522,7 +1585,8 @@ app.put('/api/admin/vehicles/:id', authRequired, adminRequired, async (req, res)
   const db = getData();
   const v = db.vehicles.find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
-  const { name, plate, model, km, baseKm, active, groupId, tournee, assignedUserId, relais, usage } = req.body || {};
+  const { name, plate, model, km, baseKm, active, groupId, tournee, assignedUserId, relais, usage, firstRegistration } = req.body || {};
+  if (firstRegistration !== undefined) v.firstRegistration = validDate(firstRegistration) ? firstRegistration : null;
   if (plate !== undefined) v.plate = plate ? formatPlate(plate) : null;
   if (model !== undefined) v.model = VEHICLE_MODELS.includes(model) ? model : (String(model || '').trim() || null);
   if (groupId !== undefined) v.groupId = groupId && db.groups.some((g) => g.id === groupId) ? groupId : null;
@@ -1643,11 +1707,13 @@ app.post('/api/staff/vehicles/:id/inspection', authRequired, staffRequired, asyn
   const v = db.vehicles.find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
   const { km, date, impacts, note, driverId, checks } = req.body || {};
-  const cleanImpacts = Array.isArray(impacts) ? impacts.map((i) => ({
+  const cleanImpacts = Array.isArray(impacts) ? impacts.map((i, idx) => ({
+    id: nextId('vimpact'),
     zone: String(i.zone || '').slice(0, 60),
     zoneLabel: String(i.zoneLabel || i.zone || '').slice(0, 80),
     type: String(i.type || '').slice(0, 60),
     note: String(i.note || '').trim().slice(0, 200),
+    repaired: false,
   })).filter((i) => i.zone && i.type).slice(0, 60) : [];
   // Points de contrôle (documents/équipements/propreté). Non conforme = ok:false.
   const cleanChecks = {};
@@ -1694,6 +1760,165 @@ app.post('/api/staff/vehicles/:id/inspection', authRequired, staffRequired, asyn
 app.delete('/api/staff/vehicles/inspection/:id', authRequired, staffRequired, async (req, res) => {
   const db = getData();
   db.vehicleInspections = db.vehicleInspections.filter((i) => i.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+
+// Marquer un dommage comme réparé / non réparé (conserve l'historique). Une fois
+// réparé, l'élément est considéré neuf ; un nouveau dégât sera un nouveau relevé.
+app.put('/api/staff/vehicles/impact/:impactId/repaired', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  let found = null;
+  for (const ins of db.vehicleInspections) {
+    const im = (ins.impacts || []).find((x) => x.id === req.params.impactId);
+    if (im) { im.repaired = !!(req.body || {}).repaired; im.repairedAt = im.repaired ? new Date().toISOString() : null; found = im; break; }
+  }
+  if (!found) return res.status(404).json({ error: 'Dommage introuvable' });
+  await save();
+  res.json({ ok: true });
+});
+
+// Régulariser / annuler la régularisation d'un manquement d'un tour (retiré de
+// l'accueil mais conservé dans l'historique du tour).
+app.put('/api/staff/vehicles/inspection/:id/regularize', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const ins = db.vehicleInspections.find((x) => x.id === req.params.id);
+  if (!ins) return res.status(404).json({ error: 'Tour introuvable' });
+  const { code, regularized } = req.body || {};
+  if (!code) return res.status(400).json({ error: 'Code manquant' });
+  ins.regularized = ins.regularized || {};
+  if (regularized) ins.regularized[code] = true; else delete ins.regularized[code];
+  await save();
+  res.json({ ok: true });
+});
+
+// « J'ai lu » : masque une alerte de conformité de la page d'accueil.
+app.post('/api/staff/vehicle-warnings/ack', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const { key, acked } = req.body || {};
+  if (!key) return res.status(400).json({ error: 'Clé manquante' });
+  db.settings.vehicleWarnAcks = db.settings.vehicleWarnAcks || {};
+  if (acked === false) delete db.settings.vehicleWarnAcks[key];
+  else db.settings.vehicleWarnAcks[key] = true;
+  await save();
+  res.json({ ok: true });
+});
+
+// Enregistrer un contrôle technique / pollution réalisé.
+app.post('/api/admin/vehicles/:id/ct', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  const { date, type, note } = req.body || {};
+  if (!validDate(date)) return res.status(400).json({ error: 'Date du contrôle invalide' });
+  v.ctControls = v.ctControls || [];
+  v.ctControls.push({ id: nextId('vct'), date, type: type === 'pollution' ? 'pollution' : 'CT', note: String(note || '').trim() });
+  await save();
+  res.json({ vehicle: v, ct: ctStatus(v) });
+});
+app.delete('/api/admin/vehicles/:id/ct/:ctId', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  v.ctControls = (v.ctControls || []).filter((c) => c.id !== req.params.ctId);
+  await save();
+  res.json({ vehicle: v, ct: ctStatus(v) });
+});
+
+// --- Conformité côté chauffeur : documents manquants sur son véhicule ---------
+app.get('/api/me/vehicle-conformity', authRequired, (req, res) => {
+  const db = getData();
+  const latest = latestInspections(db);
+  const out = [];
+  for (const v of db.vehicles) {
+    const ins = latest[v.id]; if (!ins || !ins.checks) continue;
+    const mine = v.assignedUserId === req.user.id || ins.driverId === req.user.id;
+    if (!mine) continue;
+    const missing = VEHICLE_CHECKS.filter((c) => c.mandatory && ins.checks[c.code] && ins.checks[c.code].ok === false && !(ins.regularized && ins.regularized[c.code])).map((c) => c.label);
+    if (missing.length) out.push({ vehicleName: v.name, plate: v.plate || null, date: ins.date, missing });
+  }
+  res.json({ items: out });
+});
+
+// --- Camions nécessitant un entretien (visible de TOUS) -----------------------
+app.get('/api/vehicles/needs-maintenance', authRequired, (req, res) => {
+  const db = getData();
+  const analysis = fleetAnalysis(db);
+  const latest = latestInspections(db);
+  const out = [];
+  for (const v of analysis.vehicles) {
+    const reasons = [];
+    v.items.forEach((it) => { if (it.level === 'overdue') reasons.push(`${it.label} (entretien dépassé)`); else if (it.level === 'soon') reasons.push(`${it.label} (entretien proche)`); });
+    if (v.ct && v.ct.level === 'overdue') reasons.push('Contrôle technique dépassé');
+    else if (v.ct && v.ct.level === 'soon') reasons.push('Contrôle technique à prévoir');
+    const ins = latest[v.id];
+    if (ins && ins.checks) {
+      const miss = VEHICLE_CHECKS.filter((c) => c.mandatory && ins.checks[c.code] && ins.checks[c.code].ok === false && !(ins.regularized && ins.regularized[c.code]));
+      if (miss.length) reasons.push('Document/équipement obligatoire manquant');
+      const dmg = (ins.impacts || []).some((im) => !im.repaired && /choc|enfoncement|bris/i.test(im.type));
+      // (les dommages graves non réparés sont signalés via la conformité)
+    }
+    if (reasons.length) out.push({ vehicleName: v.name, plate: v.plate, tournee: v.tournee, reasons });
+  }
+  res.json({ items: out });
+});
+
+// ---------------------------------------------------------------------------
+// Messagerie interne (annonces de l'encadrement + accusés de lecture)
+// ---------------------------------------------------------------------------
+app.get('/api/messages', authRequired, (req, res) => {
+  const db = getData();
+  const isStaff = req.user.role === 'admin' || req.user.role === 'responsable';
+  const list = db.messages.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((m) => ({
+    id: m.id, authorName: m.authorName, title: m.title, body: m.body, createdAt: m.createdAt,
+    readByMe: (m.reads || []).some((r) => r.userId === req.user.id),
+    readCount: (m.reads || []).length,
+    reads: isStaff ? m.reads : undefined,
+    mine: m.authorId === req.user.id,
+  }));
+  res.json({ messages: list });
+});
+app.post('/api/messages', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const { title, body } = req.body || {};
+  if (!String(body || '').trim()) return res.status(400).json({ error: 'Le message ne peut pas être vide' });
+  const msg = {
+    id: nextId('msg'), authorId: req.user.id, authorName: `${req.user.firstName} ${req.user.lastName}`,
+    title: String(title || '').trim() || 'Information', body: String(body).trim().slice(0, 4000),
+    createdAt: new Date().toISOString(), reads: [],
+  };
+  db.messages.push(msg);
+  await save();
+  res.json({ message: msg });
+});
+app.post('/api/messages/:id/read', authRequired, async (req, res) => {
+  const db = getData();
+  const m = db.messages.find((x) => x.id === req.params.id);
+  if (!m) return res.status(404).json({ error: 'Message introuvable' });
+  m.reads = m.reads || [];
+  if (!m.reads.some((r) => r.userId === req.user.id)) {
+    m.reads.push({ userId: req.user.id, name: `${req.user.firstName} ${req.user.lastName}`, at: new Date().toISOString() });
+    await save();
+  }
+  res.json({ ok: true });
+});
+// Qui a / n'a pas lu (encadrement).
+app.get('/api/messages/:id/reads', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  const m = db.messages.find((x) => x.id === req.params.id);
+  if (!m) return res.status(404).json({ error: 'Message introuvable' });
+  const readIds = new Set((m.reads || []).map((r) => r.userId));
+  const active = db.users.filter((u) => u.status === 'active' && !u.suspended);
+  const readers = (m.reads || []).map((r) => ({ name: r.name, at: r.at }));
+  const nonReaders = active.filter((u) => !readIds.has(u.id)).map((u) => `${u.firstName} ${u.lastName}`);
+  res.json({ readers, nonReaders });
+});
+app.delete('/api/messages/:id', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const m = db.messages.find((x) => x.id === req.params.id);
+  if (!m) return res.status(404).json({ error: 'Message introuvable' });
+  if (m.authorId !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Seul l’auteur ou un administrateur peut supprimer ce message' });
+  db.messages = db.messages.filter((x) => x.id !== req.params.id);
   await save();
   res.json({ ok: true });
 });

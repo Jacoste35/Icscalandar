@@ -593,9 +593,23 @@ async function renderDashboard(main) {
     let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '';
     if (staff) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
-      try { const { pendingReports, alerts } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts); } catch (e) {}
+      try { const { pendingReports, alerts, ctReminders } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
     }
+
+    // Camions nécessitant un entretien (visible de TOUS les salariés).
+    let needsMaintPanel = '';
+    try { const { items } = await api('GET', '/vehicles/needs-maintenance'); needsMaintPanel = needsMaintHTML(items); } catch (e) {}
+
+    // Messagerie interne (annonces de l'encadrement).
+    let messagesPanel = '';
+    try { const { messages } = await api('GET', '/messages'); messagesPanel = messagesPanelHTML(messages); } catch (e) {}
+
+    // Cumul des congés / récup / RCC déjà pris (indicatif).
+    const mineApproved = events.filter((e) => e.userId === State.user.id && e.status === 'approved');
+    const takenCP = Math.round(mineApproved.filter((e) => e.category === 'CP').reduce((s, e) => s + (e.days || 0), 0) * 100) / 100;
+    const takenRCP = Math.round(mineApproved.filter((e) => e.category === 'RCP').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
+    const takenRCC = Math.round(mineApproved.filter((e) => e.category === 'RCC').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
 
     // Alerte conflits de dates dans mon groupe
     const conflictPanel = conflictAlertHTML(events, team);
@@ -610,12 +624,14 @@ async function renderDashboard(main) {
     dashBody.innerHTML = `
       ${anc}
       <div class="grid cols-4">
-        ${statCard('Congés N', b.congesN, 'jours')}
-        ${statCard('Congés N-1', b.congesN1, 'jours')}
-        ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
-        ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
+        ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
+        ${statCard('Congés N-1 restants', b.congesN1, 'jours')}
+        ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h`)}
+        ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
       </div>
       ${philo}
+      ${messagesPanel}
+      ${needsMaintPanel}
       ${disciplinePanel}
       ${vehPendingPanel}
       ${entretiensPanel}
@@ -630,9 +646,99 @@ async function renderDashboard(main) {
       ${dashWeekCard('Semaine en cours', curStart, events, true)}
       ${dashWeekCard('Semaine à venir (+1)', next1, events)}
       ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
+    bindDashboardActions(dashBody);
   } catch (e) {
     document.getElementById('dash-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
+}
+
+// Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
+function bindDashboardActions(scope) {
+  // Composer un message (encadrement).
+  const comp = scope.querySelector('#msg-send');
+  if (comp) comp.onclick = async () => {
+    const title = scope.querySelector('#msg-title').value;
+    const bodyv = scope.querySelector('#msg-body').value;
+    if (!bodyv.trim()) { toast('Le message est vide.', 'err'); return; }
+    try { await api('POST', '/messages', { title, body: bodyv }); toast('Message publié.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  scope.querySelectorAll('[data-msgread]').forEach((b) => b.onclick = async () => {
+    try { await api('POST', '/messages/' + b.dataset.msgread + '/read'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-msgreads]').forEach((b) => b.onclick = async () => {
+    try { const r = await api('GET', '/messages/' + b.dataset.msgreads + '/reads'); messageReadsModal(r); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-msgdel]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Supprimer ce message ?')) return;
+    try { await api('DELETE', '/messages/' + b.dataset.msgdel); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-warnack]').forEach((b) => b.onclick = async () => {
+    try { await api('POST', '/staff/vehicle-warnings/ack', { key: b.dataset.warnack }); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+function messageReadsModal(r) {
+  modal({
+    title: 'Accusés de lecture',
+    bodyHTML: `<h4 style="margin:.2rem 0 .3rem">A lu (${r.readers.length})</h4>
+      ${r.readers.length ? `<ul class="vr-issues">${r.readers.map((x) => `<li>${esc(x.name)} <span class="help">${fmtDateTime(x.at)}</span></li>`).join('')}</ul>` : '<p class="help">Personne pour l’instant.</p>'}
+      <h4 style="margin:.6rem 0 .3rem">N'a pas encore lu (${r.nonReaders.length})</h4>
+      ${r.nonReaders.length ? `<ul class="vr-issues">${r.nonReaders.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : '<p class="help">Tout le monde a lu. 👍</p>'}`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+  });
+}
+
+// Panneau messagerie interne (accueil).
+function messagesPanelHTML(messages) {
+  const staff = isStaff();
+  const compose = staff ? `<div class="msg-compose">
+    <input id="msg-title" placeholder="Titre (facultatif)">
+    <textarea id="msg-body" placeholder="Message d'information à l'ensemble des salariés…" style="min-height:60px"></textarea>
+    <button class="btn accent sm" id="msg-send">Publier</button>
+  </div>` : '';
+  const list = (messages || []).slice(0, 12).map((m) => `<div class="msg-item ${m.readByMe ? '' : 'unread'}">
+    <div class="msg-head"><strong>${esc(m.title)}</strong> <span class="help">— ${esc(m.authorName)}, ${fmtDateTime(m.createdAt)}</span>
+      ${staff ? `<span style="margin-left:auto;display:flex;gap:.3rem"><button class="btn ghost sm" data-msgreads="${m.id}">👁 ${m.readCount} lu(s)</button>${m.mine || State.user.role === 'admin' ? `<button class="btn ghost sm" data-msgdel="${m.id}">✕</button>` : ''}</span>` : ''}
+    </div>
+    <div class="msg-body">${esc(m.body).replace(/\n/g, '<br>')}</div>
+    ${m.readByMe ? '<div class="help">✅ Lu</div>' : `<button class="btn sm" data-msgread="${m.id}">J'ai lu</button>`}
+  </div>`).join('');
+  if (!staff && !(messages || []).length) return '';
+  return `<div class="card">
+    <h3 style="margin:0 0 .5rem">📣 Messagerie interne</h3>
+    ${compose}
+    ${(messages || []).length ? list : '<p class="help">Aucun message pour le moment.</p>'}
+  </div>`;
+}
+
+// Rappels de contrôle technique / pollution (accueil encadrement).
+function ctRemindersHTML(ctReminders) {
+  if (!ctReminders || !ctReminders.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--brand)">
+    <h3 style="margin:0 0 .5rem">🛠️ Contrôles techniques / pollution à prévoir</h3>
+    <ul class="veh-alert-list">${ctReminders.map((c) => `<li>
+      <span class="pill ${c.level === 'overdue' ? 'danger' : 'warn'}">${c.level === 'overdue' ? 'DÉPASSÉ' : 'BIENTÔT'}</span>
+      <strong>${esc(c.vehicleName)}</strong> (${esc(c.plate || '—')}) — ${esc(c.type === 'pollution' ? 'Contrôle pollution' : 'Contrôle technique')} : ${fmtDate(c.date)}
+    </li>`).join('')}</ul>
+  </div>`;
+}
+
+// Camions nécessitant un entretien — visible de tous (ne pas les prendre).
+function needsMaintHTML(items) {
+  if (!items || !items.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--danger)">
+    <h3 style="margin:0 0 .4rem">🚫 Véhicules à ne pas prendre sans accord (entretien nécessaire)</h3>
+    <p class="help" style="margin:0 0 .5rem">Avant de partir le matin, vérifiez : ces véhicules nécessitent une intervention.</p>
+    <ul class="veh-alert-list">${items.map((v) => `<li>
+      <strong>${esc(v.vehicleName)}</strong>${v.plate ? ` (${esc(v.plate)})` : ''}${v.tournee ? ` · ${esc(v.tournee)}` : ''}
+      <div class="help">${v.reasons.map(esc).join(' · ')}</div>
+    </li>`).join('')}</ul>
+  </div>`;
 }
 
 // --- Priorité de pose des congés (administrateur) ----------------------------
@@ -1845,27 +1951,45 @@ async function renderAbsenceManagement(main) {
    VÉHICULES — signalement chauffeur + gestion de flotte
    ========================================================================= */
 
-// Liste des usures / pannes courantes proposées au chauffeur (cases à cocher).
+// Liste des usures / pannes courantes proposées au chauffeur, avec leur degré
+// d'urgence (sécurité). Niveaux : critique (ne pas rouler), urgent (sous quelques
+// jours), planifie (à programmer), surveillance (à surveiller).
 const VEHICLE_ISSUES = [
-  'Pneus avant usés',
-  'Pneus arrière usés',
-  'Freins avant usés (plaquettes / disques)',
-  'Freins arrière usés (plaquettes / disques)',
-  'Pare-brise fissuré ou impacté',
-  'Vidange à prévoir',
-  'Révision « Service A » (intermédiaire) à prévoir',
-  'Révision « Service B » (grande révision) à prévoir',
-  'Éclairage défectueux (feux / clignotants / stop)',
-  'Essuie-glaces à remplacer',
-  'Batterie faible / démarrage difficile',
-  'Niveaux à compléter (huile / lave-glace / liquide de refroidissement)',
-  'Pneus sous-gonflés / témoin de pression allumé',
-  'Fuite constatée (huile / liquide)',
-  'Carrosserie endommagée (choc / rayure)',
-  'Bruit anormal ou vibration',
-  'Climatisation / chauffage défaillant',
-  'Embrayage / boîte de vitesses (point dur, à-coups)',
+  { label: 'Freins avant usés (plaquettes / disques)', urgency: 'critique' },
+  { label: 'Freins arrière usés (plaquettes / disques)', urgency: 'critique' },
+  { label: 'Garniture de frein à main (ne tient plus la charge)', urgency: 'critique' },
+  { label: 'Pneus avant usés', urgency: 'critique' },
+  { label: 'Pneus arrière usés', urgency: 'critique' },
+  { label: 'Voyant moteur avec perte de puissance', urgency: 'critique' },
+  { label: 'Fuite constatée (huile / liquide)', urgency: 'urgent' },
+  { label: 'Voyant moteur sans perte de puissance', urgency: 'urgent' },
+  { label: 'Turbo inefficace', urgency: 'urgent' },
+  { label: 'Pare-brise fissuré ou impacté', urgency: 'urgent' },
+  { label: 'Éclairage défectueux (feux / clignotants / stop à droite)', urgency: 'urgent' },
+  { label: 'Éclairage défectueux (feux / clignotants / stop à gauche)', urgency: 'urgent' },
+  { label: 'Embrayage / boîte de vitesses (point dur, à-coups)', urgency: 'urgent' },
+  { label: 'Batterie faible / démarrage difficile', urgency: 'urgent' },
+  { label: 'Pneus sous-gonflés / témoin de pression allumé', urgency: 'urgent' },
+  { label: 'Bruit anormal ou vibration', urgency: 'urgent' },
+  { label: 'Vidange à prévoir', urgency: 'planifie' },
+  { label: 'Révision « Service A » (intermédiaire) à prévoir', urgency: 'planifie' },
+  { label: 'Révision « Service B » (grande révision) à prévoir', urgency: 'planifie' },
+  { label: 'Essuie-glaces à remplacer', urgency: 'planifie' },
+  { label: 'Niveaux à compléter (huile / lave-glace / liquide de refroidissement)', urgency: 'planifie' },
+  { label: 'Climatisation / chauffage défaillant', urgency: 'planifie' },
+  { label: 'Carrosserie endommagée (choc / rayure)', urgency: 'surveillance' },
 ];
+const URGENCY_META = {
+  critique: { label: 'Critique — ne pas rouler', cls: 'danger' },
+  urgent: { label: 'Urgent — sous quelques jours', cls: 'warn' },
+  planifie: { label: 'À planifier', cls: '' },
+  surveillance: { label: 'À surveiller', cls: 'muted' },
+};
+const ISSUE_URGENCY = Object.fromEntries(VEHICLE_ISSUES.map((i) => [i.label, i.urgency]));
+function issueUrgencyBadge(label) {
+  const u = ISSUE_URGENCY[label]; if (!u) return '';
+  const m = URGENCY_META[u]; return ` <span class="pill ${m.cls}">${esc(m.label.split(' —')[0])}</span>`;
+}
 
 // Types de dommage relevés lors d'un tour de véhicule.
 const IMPACT_TYPES = ['Rayure', 'Choc / enfoncement', 'Fissure', 'Bris de glace', 'Rouille', 'Pièce manquante / cassée', 'Autre'];
@@ -1876,6 +2000,7 @@ function vehicleWarningsHTML(warnings) {
   const row = (w) => `<li>
     <span class="pill ${w.severity === 'avertissement' ? 'danger' : 'warn'}">${w.severity === 'avertissement' ? 'AVERTISSEMENT' : 'À surveiller'}</span>
     <strong>${esc(w.vehicleName || '—')}</strong>${w.plate ? ` (${esc(w.plate)})` : ''}${w.driverName ? ` · chauffeur : <strong>${esc(w.driverName)}</strong>` : ''}
+    ${w.key ? `<button class="btn ghost sm" data-warnack="${esc(w.key)}" style="margin-left:.4rem">J'ai lu</button>` : ''}
     <div class="help">${esc(w.detail)}</div>
   </li>`;
   const av = warnings.filter((w) => w.severity === 'avertissement');
@@ -1947,21 +2072,30 @@ async function renderMyVehicle(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mon véhicule</h1>
     <p>Sélectionnez votre véhicule et signalez toute usure ou anomalie constatée.</p></div></div>
     <div id="mv-body" class="empty">Chargement…</div>`;
-  let vehicles = [], myReports = [];
+  let vehicles = [], myReports = [], conformity = [];
   try {
     vehicles = (await api('GET', '/vehicles')).vehicles;
     myReports = (await api('GET', '/me/vehicle-reports')).reports;
+    conformity = (await api('GET', '/me/vehicle-conformity')).items;
   } catch (e) { document.getElementById('mv-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
 
   const body = document.getElementById('mv-body'); body.className = '';
+  // Bandeau de conformité : documents manquants relevés par le responsable.
+  const conformityBanner = (conformity && conformity.length) ? conformity.map((c) => `
+    <div class="card" style="border-left:5px solid var(--danger)">
+      <h3 style="margin:0 0 .4rem">🚨 Documents manquants sur ${esc(c.vehicleName)}${c.plate ? ' (' + esc(c.plate) + ')' : ''}</h3>
+      <p style="margin:0 0 .4rem">Lors du dernier contrôle (${fmtDate(c.date)}), les éléments suivants étaient <strong>absents / non conformes</strong> :</p>
+      <ul class="vr-issues">${c.missing.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>
+      <p style="margin:.5rem 0 0"><strong>Rapprochez-vous rapidement de la direction</strong> pour mettre votre véhicule en conformité. En cas de contrôle par une autorité compétente débouchant sur une <strong>amende pour non-conformité</strong>, vous en serez redevable du montant.</p>
+    </div>`).join('') : '';
   if (!vehicles.length) {
-    body.innerHTML = `<div class="alert info">Aucun véhicule n'est encore enregistré dans la flotte. Contactez la direction pour qu'elle ajoute les véhicules.</div>`;
+    body.innerHTML = conformityBanner + `<div class="alert info">Aucun véhicule n'est encore enregistré dans la flotte. Contactez la direction pour qu'elle ajoute les véhicules.</div>`;
   } else {
-    const issuesHTML = VEHICLE_ISSUES.map((label, i) => `
-      <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(label)}" id="mv-i${i}"> ${esc(label)}</label>`).join('');
-    body.innerHTML = `
+    const issuesHTML = VEHICLE_ISSUES.map((it, i) => `
+      <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(it.label)}" id="mv-i${i}"> ${esc(it.label)}${issueUrgencyBadge(it.label)}</label>`).join('');
+    body.innerHTML = conformityBanner + `
       <div class="card">
-        <label>Votre véhicule</label>
+        <label>Véhicule en cours d'utilisation</label>
         <select id="mv-vehicle">
           <option value="">— Choisissez votre véhicule —</option>
           ${vehicleOptionsByGroup(vehicles)}
@@ -2013,9 +2147,9 @@ function issuesWithResolution(r) {
   const byIssue = {}; (r.resolutions || []).forEach((x) => { byIssue[x.issue] = x.done; });
   const closed = r.status === 'closed' && (r.resolutions || []).length;
   return `<ul class="vr-issues">${r.issues.map((i) => {
-    if (!closed) return `<li>${esc(i)}</li>`;
+    if (!closed) return `<li>${esc(i)}${issueUrgencyBadge(i)}</li>`;
     const done = byIssue[i];
-    return `<li>${esc(i)} ${done ? '<span class="pill ok">réalisé</span>' : '<span class="pill danger">non réalisé</span>'}</li>`;
+    return `<li>${esc(i)}${issueUrgencyBadge(i)} ${done ? '<span class="pill ok">réalisé</span>' : '<span class="pill danger">non réalisé</span>'}</li>`;
   }).join('')}</ul>`;
 }
 
@@ -2126,6 +2260,7 @@ function vehTabSuivi(body) {
     const wl = worstLevel(v);
     const wlPill = wl === 'overdue' ? '<span class="pill danger">entretien dépassé</span>' : wl === 'soon' ? '<span class="pill warn">entretien proche</span>' : '<span class="pill ok">à jour</span>';
     const usagePill = `<span class="pill">${v.usage === 'ville' ? '🏙️ Ville' : '🛣️ Route + ville'}</span>`;
+    const ctPill = v.ct && v.ct.nextDate ? `<span class="pill ${v.ct.level === 'overdue' ? 'danger' : v.ct.level === 'soon' ? 'warn' : 'muted'}">CT ${v.ct.level === 'overdue' ? 'dépassé' : fmtDate(v.ct.nextDate)}</span>` : '';
     const rows = v.items.map((it) => `<tr class="lvl-${it.level}">
       <td>${esc(it.label)}</td>
       <td>${it.lastKm != null ? kmFmt(it.lastKm) : '<span class="help">—</span>'}</td>
@@ -2138,7 +2273,7 @@ function vehTabSuivi(body) {
       <div class="veh-card-head" data-toggle="${v.id}">
         <span class="veh-caret">${open ? '▾' : '▸'}</span>
         <strong>🚐 ${esc(v.name)}</strong> <span class="help">${esc(v.plate || '')}${v.model ? ' · ' + esc(v.model) : ''}</span>
-        <span style="margin-left:auto;display:flex;gap:.35rem;flex-wrap:wrap;align-items:center">${usagePill} <span class="pill">${kmFmt(v.curKm)}</span> ${wlPill} ${drivingBadge(v.driving)}</span>
+        <span style="margin-left:auto;display:flex;gap:.35rem;flex-wrap:wrap;align-items:center">${usagePill} <span class="pill">${kmFmt(v.curKm)}</span> ${wlPill} ${ctPill} ${drivingBadge(v.driving)}</span>
       </div>
       ${open ? `<div class="veh-card-body">
         ${isAdmin ? `<div class="veh-usage-row">Usage : <button class="btn ghost sm" data-usage="${v.id}" data-to="${v.usage === 'ville' ? 'mixte' : 'ville'}">Basculer en ${v.usage === 'ville' ? 'Route + ville 🛣️' : 'Ville 🏙️'}</button> <span class="help">influe sur les normes d'usure</span></div>` : ''}
@@ -2146,7 +2281,7 @@ function vehTabSuivi(body) {
           <thead><tr><th>Consommable</th><th>Dernier rempl.</th><th>Intervalle / norme</th><th>Prochaine échéance</th><th>Restant</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
-        ${isAdmin ? `<div style="margin-top:.6rem;display:flex;gap:.4rem;flex-wrap:wrap"><button class="btn ghost sm" data-history="${v.id}">Carnet d'entretien</button></div>` : ''}
+        ${isAdmin ? `<div style="margin-top:.6rem;display:flex;gap:.4rem;flex-wrap:wrap"><button class="btn ghost sm" data-history="${v.id}">Carnet d'entretien</button><button class="btn ghost sm" data-ct="${v.id}">Contrôle technique</button></div>` : ''}
       </div>` : ''}
     </div>`;
   }).join('');
@@ -2156,6 +2291,7 @@ function vehTabSuivi(body) {
   if (isAdmin) {
     body.querySelectorAll('[data-maint]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); maintModal(b.dataset.maint, b.dataset.part, b.dataset.plabel); });
     body.querySelectorAll('[data-history]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); maintHistoryModal(b.dataset.history); });
+    body.querySelectorAll('[data-ct]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); ctModal(b.dataset.ct); });
     body.querySelectorAll('[data-usage]').forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       try { const r = await api('PUT', '/admin/vehicles/' + b.dataset.usage, { usage: b.dataset.to }); _veh.analysis = r.analysis; await loadFleet(); vehTabSuivi(body); toast('Usage mis à jour.', 'ok'); }
@@ -2294,7 +2430,7 @@ function vehTabPending(body) {
   const card = (r) => {
     const editable = isAdmin && r.status === 'pending';
     const issuesHTML = r.issues.length ? (editable
-      ? `<div class="vr-reslist">${r.issues.map((i, idx) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}"> Réalisé : ${esc(i)}</label>`).join('')}</div>`
+      ? `<div class="vr-reslist">${r.issues.map((i, idx) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}"> Réalisé : ${esc(i)}${issueUrgencyBadge(i)}</label>`).join('')}</div>`
       : issuesWithResolution(r)) : '';
     return `<div class="card veh-report">
       <div class="vr-head">
@@ -2377,7 +2513,7 @@ function vehTabTour(body) {
     <div class="card">
       <div class="grid2">
         <div><label>Véhicule</label><select id="tr-vehicle">${vehicles.map((v) => `<option value="${v.id}" ${v.id === _tour.vehicleId ? 'selected' : ''}>${esc(vehLabel(v))}</option>`).join('')}</select></div>
-        <div><label>Chauffeur utilisant ce véhicule</label><select id="tr-driver"><option value="">— Non précisé —</option>${team.map((m) => `<option value="${m.id}" ${m.id === _tour.driverId ? 'selected' : ''}>${esc(m.firstName)} ${esc(m.lastName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('')}</select></div>
+        <div><label>Chauffeur utilisant ce véhicule le jour du contrôle</label><select id="tr-driver"><option value="">— Non précisé —</option>${team.map((m) => `<option value="${m.id}" ${m.id === _tour.driverId ? 'selected' : ''}>${esc(m.firstName)} ${esc(m.lastName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('')}</select></div>
         <div><label>Kilométrage</label><input id="tr-km" type="number" min="0" placeholder="km du jour" value="${esc(_tour.km)}"></div>
       </div>
       <p class="help" style="margin-top:.5rem">Cochez ce qui est <strong>présent et conforme</strong>. Tout élément <strong>décoché</strong> sera signalé (manquement). La licence et la carte gasoil sont archivées dans le dossier du véhicule pour le suivi.</p>
@@ -2463,24 +2599,46 @@ function renderTourList() {
 }
 
 function renderTourHistory(el) {
-  const recs = _veh.inspections.filter((i) => i.vehicleId === _tour.vehicleId);
+  const recs = _veh.inspections.filter((i) => i.vehicleId === _tour.vehicleId)
+    .slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)); // chrono pour repérer le 1er
+  const isStaff = State.user.role === 'admin' || State.user.role === 'responsable';
   const isAdmin = State.user.role === 'admin';
   const labelByCode = Object.fromEntries((_veh.checksDef || []).map((c) => [c.code, c.label]));
   if (!recs.length) { el.innerHTML = `<p class="help">Aucun tour enregistré pour ce véhicule.</p>`; return; }
-  el.innerHTML = recs.map((r) => {
+  const baselineId = recs[0].id;
+  el.innerHTML = recs.slice().reverse().map((r) => {
     const checks = r.checks || {};
-    const missing = Object.keys(checks).filter((k) => checks[k].ok === false).map((k) => labelByCode[k] || k);
+    const reg = r.regularized || {};
+    const missingCodes = Object.keys(checks).filter((k) => checks[k].ok === false);
     const docIds = Object.keys(checks).filter((k) => checks[k].id).map((k) => `${labelByCode[k] || k} : ${checks[k].id}`);
-    return `<div class="veh-report">
-      <div class="vr-head"><strong>${fmtDate(r.date)}</strong> · ${kmFmt(r.km)}${r.driverName ? ' · chauffeur : ' + esc(r.driverName) : ''} · contrôlé par ${esc(r.userName)}
-        ${r.impacts.length ? `<span class="pill warn">${r.impacts.length} choc(s)</span>` : ''}${missing.length ? `<span class="pill danger">${missing.length} manquement(s)</span>` : '<span class="pill ok">conforme</span>'}
+    const isBaseline = r.id === baselineId;
+    const activeImpacts = (r.impacts || []).filter((i) => !i.repaired).length;
+    return `<div class="veh-report${isBaseline ? ' veh-baseline' : ''}">
+      <div class="vr-head"><strong>${fmtDate(r.date)}</strong>${isBaseline ? ' <span class="pill">Tour de départ (base)</span>' : ''} · ${kmFmt(r.km)}${r.driverName ? ' · chauffeur : ' + esc(r.driverName) : ''} · contrôlé par ${esc(r.userName)}
+        ${r.impacts && r.impacts.length ? `<span class="pill warn">${activeImpacts}/${r.impacts.length} dommage(s) actif(s)</span>` : ''}${missingCodes.length ? `<span class="pill danger">${missingCodes.length} manquement(s)</span>` : '<span class="pill ok">conforme</span>'}
         ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
-      ${missing.length ? `<div class="help" style="margin-top:.3rem">Manquements : ${missing.map(esc).join(', ')}</div>` : ''}
       ${docIds.length ? `<div class="help">${docIds.map(esc).join(' · ')}</div>` : ''}
-      ${r.impacts.length ? `<ul class="vr-issues">${r.impacts.map((i) => `<li><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''}</li>`).join('')}</ul>` : ''}
+      ${missingCodes.length ? `<div class="tr-manq"><div class="help" style="margin:.3rem 0 .2rem">Manquements :</div>${missingCodes.map((k) => `<div class="impact-row">
+        <span>${esc(labelByCode[k] || k)} ${reg[k] ? '<span class="pill ok">régularisé</span>' : '<span class="pill danger">manquant</span>'}</span>
+        ${isStaff ? `<button class="btn ghost sm" data-reg="${r.id}" data-code="${k}" data-to="${reg[k] ? '0' : '1'}">${reg[k] ? 'Annuler' : 'Régularisé'}</button>` : ''}
+      </div>`).join('')}</div>` : ''}
+      ${(r.impacts && r.impacts.length) ? `<div class="tr-dmg"><div class="help" style="margin:.4rem 0 .2rem">Dommages carrosserie :</div>${r.impacts.map((i) => `<div class="impact-row${i.repaired ? ' repaired' : ''}">
+        <span><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''} ${i.repaired ? '<span class="pill ok">réparation réalisée</span>' : ''}</span>
+        ${isStaff ? `<button class="btn ghost sm" data-rep="${i.id}" data-to="${i.repaired ? '0' : '1'}">${i.repaired ? 'Rouvrir' : 'Réparation réalisée'}</button>` : ''}
+      </div>`).join('')}</div>` : ''}
       ${r.note ? `<p style="margin:.2rem 0 0">${esc(r.note)}</p>` : ''}
     </div>`;
   }).join('');
+  if (isStaff) {
+    el.querySelectorAll('[data-rep]').forEach((b) => b.onclick = async () => {
+      try { await api('PUT', '/staff/vehicles/impact/' + b.dataset.rep + '/repaired', { repaired: b.dataset.to === '1' }); await loadFleet(); vehTab('tour'); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+    el.querySelectorAll('[data-reg]').forEach((b) => b.onclick = async () => {
+      try { await api('PUT', '/staff/vehicles/inspection/' + b.dataset.reg + '/regularize', { code: b.dataset.code, regularized: b.dataset.to === '1' }); await loadFleet(); vehTab('tour'); toast('Mis à jour.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+  }
   if (isAdmin) el.querySelectorAll('[data-delinsp]').forEach((b) => b.onclick = async () => {
     if (!confirm('Supprimer ce tour de véhicule ?')) return;
     try { await api('DELETE', '/staff/vehicles/inspection/' + b.dataset.delinsp); await loadFleet(); vehTab('tour'); toast('Supprimé.', 'ok'); }
@@ -2624,11 +2782,14 @@ function fleetEditModal(id) {
       <div><label>Kilométrage d'origine</label><input id="ev-base" type="number" min="0" value="${v.baseKm || 0}"></div>
       <div><label>Kilométrage actuel (ne peut qu'augmenter)</label><input id="ev-km" type="number" min="0" value="${v.km || 0}"></div>
       <div><label>Usage</label><select id="ev-usage"><option value="mixte" ${v.usage !== 'ville' ? 'selected' : ''}>Route + ville</option><option value="ville" ${v.usage === 'ville' ? 'selected' : ''}>Ville uniquement</option></select></div>
+      <div><label>Date de 1re mise en circulation</label><input id="ev-firstreg" type="date" value="${esc(v.firstRegistration || '')}"></div>
     </div>
+    <div style="margin-top:.6rem"><button class="btn ghost sm" id="ev-ct">🛠️ Contrôle technique / pollution</button> <span class="help">1er CT à 4 ans, puis cadence annuelle alternée.</span></div>
     <label class="veh-check" style="margin-top:.6rem"><input type="checkbox" id="ev-relais" ${v.relais ? 'checked' : ''}> Véhicule relais</label>
     <label class="veh-check"><input type="checkbox" id="ev-active" ${v.active !== false ? 'checked' : ''}> Véhicule actif (proposé aux chauffeurs)</label>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ev-save">Enregistrer</button>`,
     onMount: (overlay) => {
+      overlay.querySelector('#ev-ct').onclick = () => ctModal(id);
       overlay.querySelector('#ev-save').onclick = async () => {
         const payload = {
           name: overlay.querySelector('#ev-name').value,
@@ -2642,10 +2803,44 @@ function fleetEditModal(id) {
           usage: overlay.querySelector('#ev-usage').value,
           relais: overlay.querySelector('#ev-relais').checked,
           active: overlay.querySelector('#ev-active').checked,
+          firstRegistration: overlay.querySelector('#ev-firstreg').value || null,
         };
         try { const r = await api('PUT', '/admin/vehicles/' + id, payload); _veh.analysis = r.analysis; closeModal(); toast('Véhicule mis à jour.', 'ok'); await loadFleet(); vehTab('fleet'); }
         catch (e) { toast(e.message, 'err'); }
       };
+    },
+  });
+}
+
+// Gestion du contrôle technique / pollution d'un véhicule.
+function ctTypeLabel(t) { return t === 'pollution' ? 'Contrôle pollution' : 'Contrôle technique'; }
+function ctModal(vehicleId) {
+  const va = (_veh.analysis.vehicles || []).find((x) => x.id === vehicleId) || {};
+  const ct = va.ct || {};
+  const controls = (va.ctControls || []).slice().sort((a, b) => b.date.localeCompare(a.date));
+  const nextTxt = ct.nextDate
+    ? `Prochain : <strong>${esc(ctTypeLabel(ct.nextType))}</strong> le <strong>${fmtDate(ct.nextDate)}</strong> ${ct.level === 'overdue' ? '<span class="pill danger">dépassé</span>' : ct.level === 'soon' ? '<span class="pill warn">bientôt</span>' : ''}`
+    : (ct.firstCTDue ? `1er contrôle technique éligible le <strong>${fmtDate(ct.firstCTDue)}</strong> (4 ans après la 1re mise en circulation).` : 'Renseignez la date de 1re mise en circulation pour calculer la 1re échéance.');
+  modal({
+    title: 'Contrôle technique / pollution',
+    bodyHTML: `<p class="help">${esc(va.name || '')}${va.firstRegistration ? ' · 1re circulation : ' + fmtDate(va.firstRegistration) : ''}</p>
+      <div class="alert info" style="margin:.3rem 0">${nextTxt}</div>
+      <h4 style="margin:.6rem 0 .3rem">Enregistrer un contrôle réalisé</h4>
+      <div class="grid2"><div><label>Type</label><select id="ct-type"><option value="CT">Contrôle technique</option><option value="pollution">Contrôle pollution</option></select></div>
+        <div><label>Date réalisée</label><input id="ct-date" type="date" value="${iso(new Date())}"></div></div>
+      <div style="margin-top:.5rem"><button class="btn accent sm" id="ct-add">Ajouter</button></div>
+      <h4 style="margin:.8rem 0 .3rem">Historique</h4>
+      ${controls.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Type</th><th>Date</th><th></th></tr></thead><tbody>${controls.map((c) => `<tr><td>${esc(ctTypeLabel(c.type))}</td><td>${fmtDate(c.date)}</td><td><button class="btn ghost sm" data-delct="${c.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun contrôle enregistré.</p>'}`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#ct-add').onclick = async () => {
+        try { await api('POST', '/admin/vehicles/' + vehicleId + '/ct', { type: overlay.querySelector('#ct-type').value, date: overlay.querySelector('#ct-date').value }); await loadFleet(); closeModal(); ctModal(vehicleId); toast('Contrôle enregistré.', 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+      overlay.querySelectorAll('[data-delct]').forEach((b) => b.onclick = async () => {
+        try { await api('DELETE', '/admin/vehicles/' + vehicleId + '/ct/' + b.dataset.delct); await loadFleet(); closeModal(); ctModal(vehicleId); }
+        catch (e) { toast(e.message, 'err'); }
+      });
     },
   });
 }
@@ -3015,6 +3210,7 @@ async function adminUsers(body) {
       <td>${esc(u.firstName)} ${esc(u.lastName)}${u.suspended?' <span class="tag rejected">suspendu</span>':''}
         <div class="help">${roleLabel(u.role)}${u.isParent?' • <strong style="color:var(--text)">Parent</strong>':''}</div>
         <div class="help">Ancienneté : ${u.hireDate?ancienneteText(u.hireDate):'—'}</div>
+        ${u.taken?`<div class="help" style="color:var(--brand)">Déjà pris : CP ${u.taken.cp} j (N ${u.taken.cpN}/N-1 ${u.taken.cpN1}) · RCC ${u.taken.rcc} h · Récup ${u.taken.rcp} h</div>`:''}
       </td>
       <td>${esc(u.username||'')}${u.username&&u.email?'<br>':''}${u.email?`<span class="help">${esc(u.email)}</span>`:(u.username?'':'<em>—</em>')}</td>
       ${numCell(u,'congesN')}${numCell(u,'congesN1')}${numCell(u,'rcc')}${numCell(u,'heuresSupp')}
