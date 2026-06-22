@@ -1248,6 +1248,16 @@ function fleetWarnings(db) {
 // Modèles de véhicules proposés (liste déroulante à l'ajout).
 const VEHICLE_MODELS = ['Mercedes Sprinter 12m³', 'Mercedes Sprinter 14m³', 'Citan 6m³'];
 
+// Kits d'entretien par service (catégories de pièces + quantités). La quantité
+// d'huile dépend du modèle : 9,5 L (Sprinter) / 5,4 L (Citan).
+function oilLitres(model) { return /citan/i.test(model || '') ? 5.4 : 9.5; }
+function serviceKit(service, model) {
+  const oil = { cat: 'Huile moteur 5W30', qty: oilLitres(model) };
+  if (service === 'service_a') return [{ cat: 'Filtre à huile', qty: 1 }, { cat: 'Filtre habitacle', qty: 1 }, oil];
+  if (service === 'service_b') return [{ cat: 'Filtre à huile', qty: 1 }, { cat: 'Filtre à air', qty: 1 }, { cat: 'Filtre habitacle', qty: 1 }, { cat: 'Filtre à gasoil', qty: 1 }, oil];
+  return [];
+}
+
 // Statut du contrôle technique d'un véhicule.
 //   1er CT : 4 ans après la 1re mise en circulation (anniversaire).
 //   Ensuite, cadence annuelle alternée CT / contrôle pollution (rappel à
@@ -1462,9 +1472,19 @@ app.get('/api/staff/vehicle-dashboard', authRequired, staffRequired, (req, res) 
     }
   });
   ctReminders.sort((a, b) => a.date.localeCompare(b.date));
+  // Entretiens programmés (libres) proches de l'échéance.
+  const today = new Date().toISOString().slice(0, 10);
+  const scheduled = (db.vehicleSchedule || []).filter((s) => !s.done).map((s) => {
+    const v = db.vehicles.find((x) => x.id === s.vehicleId) || {};
+    const curKm = effectiveKm(db, v);
+    let near = false, over = false;
+    if (s.dueKm != null) { const r = s.dueKm - curKm; if (r <= 0) over = true; else if (r <= VEHICLE_ALERT_KM) near = true; }
+    if (s.dueDate) { if (s.dueDate < today) over = true; else if (s.dueDate <= addDays(today, 30)) near = true; }
+    return { vehicleName: v.name, plate: v.plate, label: s.label, dueKm: s.dueKm, dueDate: s.dueDate, over, near };
+  }).filter((s) => s.over || s.near);
   const pendingReports = db.vehicleReports.filter((r) => r.status === 'pending')
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  res.json({ pendingReports, alerts, ctReminders });
+  res.json({ pendingReports, alerts, ctReminders, scheduled });
 });
 
 // --- Côté salarié : liste de la flotte + signalement d'usure -----------------
@@ -1543,6 +1563,7 @@ app.get('/api/staff/vehicles', authRequired, staffRequired, (req, res) => {
     models: VEHICLE_MODELS,
     team,
     groups: db.groups,
+    schedule: db.vehicleSchedule.slice(),
     warnings: fleetWarnings(db),
   });
 });
@@ -1635,6 +1656,8 @@ app.delete('/api/admin/vehicles/:id', authRequired, adminRequired, async (req, r
   db.vehicleReports = db.vehicleReports.filter((r) => r.vehicleId !== req.params.id);
   db.vehicleMaint = db.vehicleMaint.filter((m) => m.vehicleId !== req.params.id);
   db.vehicleInspections = db.vehicleInspections.filter((i) => i.vehicleId !== req.params.id);
+  db.vehicleSchedule = db.vehicleSchedule.filter((s) => s.vehicleId !== req.params.id);
+  db.vehicleExpenses = db.vehicleExpenses.filter((e) => e.vehicleId !== req.params.id);
   await save();
   res.json({ ok: true });
 });
@@ -1644,23 +1667,28 @@ app.post('/api/admin/vehicles/:id/maint', authRequired, adminRequired, async (re
   const db = getData();
   const v = db.vehicles.find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
-  const { part, km, date, note, partId, qty } = req.body || {};
+  const { part, km, date, note, partId, qty, items } = req.body || {};
   const consumables = db.settings.vehicleConsumables || [];
   if (!consumables.some((c) => c.code === part)) return res.status(400).json({ error: 'Pièce / consommable invalide' });
   const kmNum = intStr(km);
   if (kmNum == null || kmNum < 0) return res.status(400).json({ error: 'Kilométrage du remplacement obligatoire' });
   const mdate = validDate(date) ? date : new Date().toISOString().slice(0, 10);
-  // Déstockage d'une pièce du stock + dépense d'entretien (coût réel).
-  let cost = null, stockPart = null;
-  if (partId) {
-    stockPart = db.parts.find((p) => p.id === partId);
-    if (stockPart) {
-      const q = num(qty) || 1;
-      cost = Math.round(stockPart.unitPrice * q * 100) / 100;
-      stockPart.qty = Math.max(0, stockPart.qty - q);
-      db.vehicleExpenses.push({ id: nextId('vexp'), vehicleId: v.id, date: mdate, category: 'entretien', label: `${stockPart.name} (${q} ${stockPart.unit})`, amount: cost, partId: stockPart.id, qty: q, km: kmNum });
-    }
+  // Pièces consommées : kit du service + pièces additionnelles (déstockage +
+  // imputation directe du coût au véhicule, sans double saisie).
+  let lines = Array.isArray(items) ? items.slice() : [];
+  if (partId) lines.push({ partId, qty });
+  let cost = 0; const usedNames = [];
+  for (const it of lines) {
+    const p = db.parts.find((x) => x.id === it.partId);
+    if (!p) continue;
+    const q = num(it.qty) || 1;
+    const lineCost = Math.round(p.unitPrice * q * 100) / 100;
+    cost += lineCost;
+    p.qty = Math.max(0, Math.round((p.qty - q) * 100) / 100);
+    usedNames.push(`${p.name} ×${q}`);
+    db.vehicleExpenses.push({ id: nextId('vexp'), vehicleId: v.id, date: mdate, category: 'entretien', label: `${p.name} (${q} ${p.unit})`, amount: lineCost, partId: p.id, qty: q, km: kmNum });
   }
+  cost = lines.length ? Math.round(cost * 100) / 100 : null;
   const rec = {
     id: nextId('vmaint'),
     vehicleId: v.id,
@@ -1668,8 +1696,8 @@ app.post('/api/admin/vehicles/:id/maint', authRequired, adminRequired, async (re
     km: kmNum,
     date: mdate,
     note: String(note || '').trim(),
-    partId: stockPart ? stockPart.id : null,
-    partName: stockPart ? stockPart.name : null,
+    items: lines.map((l) => ({ partId: l.partId, qty: num(l.qty) || 1 })),
+    partName: usedNames.join(', ') || null,
     cost,
     createdBy: req.user.id,
     createdAt: new Date().toISOString(),
@@ -1707,19 +1735,27 @@ app.post('/api/admin/vehicle-reports/:id/decide', authRequired, adminRequired, a
   const db = getData();
   const r = db.vehicleReports.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Signalement introuvable' });
-  const { decision, adminNote, resolutions } = req.body || {};
+  const { decision, adminNote, resolutions, resolution, checkup } = req.body || {};
   if (!['reviewed', 'closed', 'pending'].includes(decision)) return res.status(400).json({ error: 'Décision invalide' });
   r.status = decision;
   r.adminNote = String(adminNote || '').trim();
+  if (Array.isArray(checkup)) r.checkup = checkup.map((c) => ({ label: String(c.label || '').slice(0, 120), ok: !!c.ok }));
   if (Array.isArray(resolutions)) {
     r.resolutions = resolutions.map((x) => ({ issue: String(x.issue || '').slice(0, 200), done: !!x.done }));
   }
   if (decision === 'closed') {
-    const total = r.resolutions.length || (r.issues ? r.issues.length : 0);
-    const done = r.resolutions.filter((x) => x.done).length;
-    r.resolution = total > 0 && done === 0 ? 'notdone' : (done < total ? 'partial' : 'done');
-    if (r.resolution !== 'done' && !r.adminNote) {
-      return res.status(400).json({ error: 'Précisez le motif lorsque les travaux ne sont pas (entièrement) réalisés.' });
+    if (resolution === 'none') {
+      // « Aucune réparation à effectuer » : vérifié, rien à prévoir.
+      r.resolution = 'none';
+      r.resolutions = (r.issues || []).map((i) => ({ issue: i, done: false }));
+      if (!r.adminNote) r.adminNote = 'Vérifié : aucune réparation à effectuer.';
+    } else {
+      const total = r.resolutions.length || (r.issues ? r.issues.length : 0);
+      const done = r.resolutions.filter((x) => x.done).length;
+      r.resolution = total > 0 && done === 0 ? 'notdone' : (done < total ? 'partial' : 'done');
+      if (r.resolution !== 'done' && !r.adminNote) {
+        return res.status(400).json({ error: 'Précisez le motif lorsque les travaux ne sont pas (entièrement) réalisés.' });
+      }
     }
   }
   r.decidedAt = new Date().toISOString();
@@ -1967,6 +2003,51 @@ app.get('/api/admin/parts', authRequired, adminRequired, (req, res) => {
     categories: db.settings.partCategories || [],
     units: db.settings.partUnits || [],
   });
+});
+
+// Kit d'entretien d'un service pour un véhicule (catégories + qté + stock dispo).
+app.get('/api/admin/service-kit', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.query.vehicleId);
+  const kit = serviceKit(req.query.service, v ? v.model : '');
+  const lines = kit.map((k) => ({
+    cat: k.cat, qty: k.qty,
+    parts: db.parts.filter((p) => p.category === k.cat).map((p) => ({ id: p.id, name: p.name, unitPrice: p.unitPrice, qty: p.qty, unit: p.unit })),
+  }));
+  res.json({ lines, oil: oilLitres(v ? v.model : '') });
+});
+
+// Alertes de stock bas (page d'accueil) : ≤1 rouge, =2 jaune, =3 vert.
+app.get('/api/admin/stock-alerts', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const low = db.parts.filter((p) => p.qty <= 3).map((p) => ({
+    id: p.id, name: p.name, category: p.category, qty: p.qty, unit: p.unit,
+    level: p.qty <= 1 ? 'red' : p.qty === 2 ? 'yellow' : 'green',
+  })).sort((a, b) => a.qty - b.qty);
+  res.json({ alerts: low });
+});
+
+// Entretiens à programmer (libres) — par véhicule.
+app.post('/api/admin/vehicles/:id/schedule', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  const { label, dueKm, dueDate, note } = req.body || {};
+  if (!String(label || '').trim()) return res.status(400).json({ error: 'Intitulé obligatoire' });
+  const s = { id: nextId('vsched'), vehicleId: v.id, label: String(label).trim(), dueKm: intStr(dueKm), dueDate: validDate(dueDate) ? dueDate : null, note: String(note || '').trim(), done: false, createdAt: new Date().toISOString() };
+  db.vehicleSchedule.push(s); await save(); res.json({ schedule: s });
+});
+app.put('/api/admin/vehicles/schedule/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const s = db.vehicleSchedule.find((x) => x.id === req.params.id);
+  if (!s) return res.status(404).json({ error: 'Introuvable' });
+  if ((req.body || {}).done !== undefined) s.done = !!req.body.done;
+  await save(); res.json({ schedule: s });
+});
+app.delete('/api/admin/vehicles/schedule/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.vehicleSchedule = db.vehicleSchedule.filter((x) => x.id !== req.params.id);
+  await save(); res.json({ ok: true });
 });
 
 // Paramétrage des catégories et unités de pièces.
