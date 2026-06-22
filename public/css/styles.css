@@ -434,3 +434,21 @@ tr:last-child td { border-bottom: 0; }
 .tr-check-item .tr-id { font-size: .85rem; }
 .veh-warn-list li { margin: .5rem 0; }
 .veh-warn-list .pill { margin-right: .35rem; }
+
+/* Cartes véhicule repliables */
+.veh-card { padding: 0; overflow: hidden; }
+.veh-card-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .9rem 1.1rem; cursor: pointer; }
+.veh-card-head:hover { background: #f8fafc; }
+.veh-caret { color: var(--muted); font-size: .9rem; width: 1rem; }
+.veh-card-body { padding: 0 1.1rem 1.1rem; }
+.veh-usage-row { margin: 0 0 .6rem; font-size: .88rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.vr-reslist { margin: .4rem 0; display: grid; gap: .25rem; }
+
+/* Bouton bascule ON/OFF (flotte active) */
+.toggle { border: 0; border-radius: 999px; padding: .15rem .6rem; font-weight: 700; font-size: .72rem; color: #fff; }
+.toggle.on { background: var(--ok); }
+.toggle.off { background: #94a3b8; }
+
+/* Étiquettes de zones sur le schéma véhicule */
+.van-label { fill: #334155; font-size: 9px; font-weight: 600; pointer-events: none; }
+.van-side-label { fill: #475569; font-size: 9px; font-weight: 600; pointer-events: none; }
