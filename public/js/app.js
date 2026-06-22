@@ -32,6 +32,10 @@ function pad(n) { return String(n).padStart(2, '0'); }
 function iso(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function parseISO(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
 function fmtDate(s) { const d = parseISO(s); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`; }
+// Date en toutes lettres, ex. « Lundi 22 Juin 2026 ».
+function fmtDateLong(s) { const d = parseISO(s); const mon = MONTHS[d.getMonth()]; return `${DOW[(d.getDay() + 6) % 7]} ${d.getDate()} ${mon.charAt(0).toUpperCase() + mon.slice(1)} ${d.getFullYear()}`; }
+// Période en toutes lettres : un seul jour, ou « du … au … ».
+function fmtPeriodLong(start, end) { return start === end ? fmtDateLong(start) : `du ${fmtDateLong(start)} au ${fmtDateLong(end)}`; }
 function fmtDateTime(s) { const d = new Date(s); return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function fmtDateTimeS(s) { const d = new Date(s); return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} à ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
@@ -382,7 +386,11 @@ function navSections() {
     ] },
   ];
   if (State.user.role === 'admin') {
-    sections.push({ title: 'Gestion', items: [{ id: 'admin', icon: '⚙️', label: 'Administration' }] });
+    sections.push({ title: 'Gestion', items: [
+      { id: 'admin', icon: '⚙️', label: 'Administration' },
+      { id: 'stocks', icon: '📦', label: 'Stocks & flotte' },
+      { id: 'finance', icon: '💶', label: 'Financière' },
+    ] });
   }
   sections.push({ title: 'Informations', items: [{ id: 'info', icon: 'ℹ️', label: 'Droits & devoirs' }] });
   return sections;
@@ -533,6 +541,8 @@ function renderView() {
   if (v === 'vehmgmt') return renderVehicleManagement(main);
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
+  if (v === 'stocks') return renderStocks(main);
+  if (v === 'finance') return renderFinance(main);
 }
 
 /* =========================================================================
@@ -820,7 +830,7 @@ function pendingSummaryHTML(pending) {
       <tbody>${pending.map((r) => `<tr>
         <td>${esc(r.userName)}</td><td>${groupChip(r)}</td>
         <td>${esc(r.category)}</td>
-        <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td>
+        <td>${fmtPeriodLong(r.startDate, r.endDate)}</td>
         <td><strong>${waitingSince(r.createdAt)}</strong></td>
       </tr>`).join('')}</tbody></table></div>
     <button class="btn accent sm" onclick="State.view='admin';renderApp()" style="margin-top:.6rem">Traiter les demandes</button>
@@ -1612,7 +1622,7 @@ async function renderRequests(main) {
         <h3>Mon historique récent <span class="help">(3 derniers mois)</span></h3>
         ${recent.length===0?`<div class="empty">Aucun évènement sur les 3 derniers mois.</div>`:`<div class="table-wrap"><table>
           <thead><tr><th>Type</th><th>Période</th><th>Jours</th><th>Statut</th><th>Déposé le</th></tr></thead>
-          <tbody>${recent.map((r)=>`<tr><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days} j${reqHours(r)}</td><td>${statusTag(r.status)}</td><td class="help">${fmtDateTime(r.createdAt)}</td></tr>`).join('')}</tbody></table></div>`}
+          <tbody>${recent.map((r)=>`<tr><td>${esc(reqLabel(r))}</td><td>${fmtPeriodLong(r.startDate, r.endDate)}</td><td>${r.days} j${reqHours(r)}</td><td>${statusTag(r.status)}</td><td class="help">${fmtDateTime(r.createdAt)}</td></tr>`).join('')}</tbody></table></div>`}
       </div>
       <div class="card">
         <h3>Toutes mes demandes</h3>
@@ -1921,27 +1931,36 @@ async function renderAbsenceManagement(main) {
   try {
     const { team } = await api('GET', '/team');
     const el = document.getElementById('abs-list'); el.className = '';
-    // Salariés regroupés par groupe ; responsables et admins à part.
+    // Chaque équipe affiche SON responsable au-dessus de ses membres.
+    const RESP_OF = { grp_gls: 'grp_resp_gls', grp_ciblex: 'grp_resp_ciblex', grp_fedex: 'grp_resp_fedex' };
+    const respGroupIds = new Set(Object.values(RESP_OF));
     const staffMembers = team.filter((m) => m.role !== 'employee');
     const employees = team.filter((m) => m.role === 'employee');
     const byGroup = {};
     employees.forEach((m) => { const k = m.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
-    const order = State.groups.map((g) => g.id).concat([null]);
+    const byName = (a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName);
     const personBox = (m, sub) => `<div class="person-box" style="border-left:4px solid ${(groupById(m.groupId)||{}).color||'#94a3b8'}">
       <div class="pb-name">${esc(m.firstName)} ${esc(m.lastName)}</div>
       ${sub?`<div class="help">${sub}</div>`:''}
       <button class="btn ghost sm" data-abs="${m.id}" style="margin-top:.4rem">Saisir une absence</button>
     </div>`;
+    const usedStaff = new Set();
+    // Groupes opérationnels (on saute les groupes « Responsable … » dédiés).
+    const order = State.groups.map((g) => g.id).filter((id) => !respGroupIds.has(id)).concat([null]);
     const sections = order.map((gid) => {
-      const list = byGroup[gid || 'none']; if (!list || !list.length) return '';
       const g = groupById(gid);
-      list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-      return `<div class="card"><h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${list.length}</span></h3>
-        <div class="person-grid">${list.map((m) => personBox(m)).join('')}</div></div>`;
+      const emps = (byGroup[gid || 'none'] || []).slice().sort(byName);
+      const resps = gid ? staffMembers.filter((m) => m.groupId === RESP_OF[gid] || m.groupId === gid).sort(byName) : [];
+      resps.forEach((r) => usedStaff.add(r.id));
+      if (!emps.length && !resps.length) return '';
+      return `<div class="card"><h3>${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${emps.length} salarié(s)</span></h3>
+        ${resps.length?`<div class="abs-resp"><div class="help" style="margin:0 0 .35rem">👔 Responsable(s)</div><div class="person-grid">${resps.map((m) => personBox(m, roleLabel(m.role))).join('')}</div></div>`:''}
+        <div class="person-grid">${emps.length?emps.map((m) => personBox(m)).join(''):'<div class="help">Aucun salarié dans ce groupe.</div>'}</div></div>`;
     }).join('');
-    staffMembers.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-    const staffSection = staffMembers.length ? `<div class="card" style="border-left:4px solid var(--brand)"><h3>👔 Encadrement (responsables & administration)</h3>
-      <div class="person-grid">${staffMembers.map((m) => personBox(m, roleLabel(m.role))).join('')}</div></div>` : '';
+    // Encadrement restant (direction, exploitation, responsables non rattachés).
+    const remaining = staffMembers.filter((m) => !usedStaff.has(m.id)).sort(byName);
+    const staffSection = remaining.length ? `<div class="card" style="border-left:4px solid var(--brand)"><h3>👔 Direction & encadrement</h3>
+      <div class="person-grid">${remaining.map((m) => personBox(m, roleLabel(m.role))).join('')}</div></div>` : '';
     el.innerHTML = sections + staffSection;
     el.querySelectorAll('[data-abs]').forEach((b) => b.onclick = () => adminAssignModal(null, b.dataset.abs));
   } catch (e) { document.getElementById('abs-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
@@ -2179,7 +2198,6 @@ async function renderVehicleManagement(main) {
       <button data-vtab="suivi" class="active">Suivi & alertes</button>
       <button data-vtab="pending">Demandes concernant les véhicules en attente <span id="veh-pending-badge"></span></button>
       <button data-vtab="tour">Tour du véhicule</button>
-      ${State.user.role === 'admin' ? `<button data-vtab="fleet">Flotte</button>` : ''}
     </div>
     <div id="veh-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#veh-tabs');
@@ -2204,12 +2222,20 @@ async function loadFleet() {
 }
 
 function vehTab(tab) {
-  const body = document.getElementById('veh-body'); body.className = '';
+  const body = document.getElementById('veh-body'); if (!body) return; body.className = '';
   if (!_veh) { body.innerHTML = `<div class="alert warn">Données indisponibles.</div>`; return; }
   if (tab === 'suivi') return vehTabSuivi(body);
   if (tab === 'pending') return vehTabPending(body);
   if (tab === 'tour') return vehTabTour(body);
   if (tab === 'fleet') return vehTabFleet(body);
+}
+
+// Rafraîchit la vue véhicule active selon le contexte (Gestion des véhicules
+// ou module Stocks & flotte).
+let _stockTab = 'fleet';
+function vehRefresh() {
+  if (document.getElementById('stk-body')) return stockTab(_stockTab);
+  if (document.getElementById('veh-body')) return vehTab('suivi');
 }
 
 // Pastilles d'usure et de conduite (comparaison à la norme constructeur).
@@ -2322,7 +2348,7 @@ function maintModal(vehicleId, part, partLabel) {
         try {
           const r = await api('POST', '/admin/vehicles/' + vehicleId + '/maint', payload);
           _veh.analysis = r.analysis; closeModal(); toast('Remplacement enregistré.', 'ok');
-          await loadFleet(); vehTab('suivi');
+          await loadFleet(); vehRefresh();
         } catch (e) { toast(e.message, 'err'); }
       };
     },
@@ -2372,7 +2398,7 @@ function maintHistoryModal(vehicleId) {
       overlay.querySelector('#mh-pdf').onclick = () => vehicleMaintPDF(vehicleId);
       overlay.querySelectorAll('[data-delm]').forEach((b) => b.onclick = async () => {
         if (!confirm('Supprimer ce remplacement ?')) return;
-        try { const r = await api('DELETE', '/admin/vehicles/maint/' + b.dataset.delm); _veh.analysis = r.analysis; closeModal(); await loadFleet(); vehTab('suivi'); toast('Supprimé.', 'ok'); }
+        try { const r = await api('DELETE', '/admin/vehicles/maint/' + b.dataset.delm); _veh.analysis = r.analysis; closeModal(); await loadFleet(); vehRefresh(); toast('Supprimé.', 'ok'); }
         catch (e) { toast(e.message, 'err'); }
       });
       overlay.querySelectorAll('[data-editm]').forEach((b) => b.onclick = () => editMaintModal(b.dataset.editm, vehicleId));
@@ -2752,18 +2778,18 @@ function vehTabFleet(body) {
       relais: document.getElementById('fl-relais').checked,
     };
     if (!payload.assignedUserId && !payload.groupId && !payload.tournee.trim()) { toast('Renseignez au moins un chauffeur, un groupe ou une tournée.', 'err'); return; }
-    try { await api('POST', '/admin/vehicles', payload); toast('Véhicule ajouté.', 'ok'); await loadFleet(); vehTab('fleet'); }
+    try { await api('POST', '/admin/vehicles', payload); toast('Véhicule ajouté.', 'ok'); await loadFleet(); vehRefresh(); }
     catch (e) { toast(e.message, 'err'); }
   };
   body.querySelectorAll('[data-carnet]').forEach((b) => b.onclick = () => maintHistoryModal(b.dataset.carnet));
   body.querySelectorAll('[data-editv]').forEach((b) => b.onclick = () => fleetEditModal(b.dataset.editv));
   body.querySelectorAll('[data-toggleactive]').forEach((b) => b.onclick = async () => {
-    try { await api('PUT', '/admin/vehicles/' + b.dataset.toggleactive, { active: b.dataset.active !== '1' }); await loadFleet(); vehTab('fleet'); }
+    try { await api('PUT', '/admin/vehicles/' + b.dataset.toggleactive, { active: b.dataset.active !== '1' }); await loadFleet(); vehRefresh(); }
     catch (e) { toast(e.message, 'err'); }
   });
   body.querySelectorAll('[data-delv]').forEach((b) => b.onclick = async () => {
     if (!confirm('Supprimer ce véhicule et tout son historique (signalements, remplacements, tours) ?')) return;
-    try { await api('DELETE', '/admin/vehicles/' + b.dataset.delv); toast('Véhicule supprimé.', 'ok'); await loadFleet(); vehTab('fleet'); }
+    try { await api('DELETE', '/admin/vehicles/' + b.dataset.delv); toast('Véhicule supprimé.', 'ok'); await loadFleet(); vehRefresh(); }
     catch (e) { toast(e.message, 'err'); }
   });
 }
@@ -2805,7 +2831,7 @@ function fleetEditModal(id) {
           active: overlay.querySelector('#ev-active').checked,
           firstRegistration: overlay.querySelector('#ev-firstreg').value || null,
         };
-        try { const r = await api('PUT', '/admin/vehicles/' + id, payload); _veh.analysis = r.analysis; closeModal(); toast('Véhicule mis à jour.', 'ok'); await loadFleet(); vehTab('fleet'); }
+        try { const r = await api('PUT', '/admin/vehicles/' + id, payload); _veh.analysis = r.analysis; closeModal(); toast('Véhicule mis à jour.', 'ok'); await loadFleet(); vehRefresh(); }
         catch (e) { toast(e.message, 'err'); }
       };
     },
@@ -2843,6 +2869,301 @@ function ctModal(vehicleId) {
       });
     },
   });
+}
+
+/* =========================================================================
+   STOCKS & FLOTTE (administrateur) : pièces, coûts d'exploitation, flotte
+   ========================================================================= */
+const eur = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+
+async function renderStocks(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Stocks & flotte</h1>
+    <p>Gérez la flotte, le stock de pièces et de consommables, et le coût réel d'exploitation des véhicules.</p></div></div>
+    <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-stab="costs" class="active">Coûts par véhicule</button>
+      <button data-stab="parts">Stock de pièces & consommables</button>
+      <button data-stab="fleet">Flotte (création & gestion)</button>
+    </div>
+    <div id="stk-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#stk-tabs');
+  tabs.querySelectorAll('[data-stab]').forEach((b) => b.onclick = () => {
+    tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active'); stockTab(b.dataset.stab);
+  });
+  await loadFleet();
+  stockTab('costs');
+}
+
+function stockTab(tab) {
+  _stockTab = tab;
+  const body = document.getElementById('stk-body'); if (!body) return; body.className = '';
+  if (tab === 'fleet') return vehTabFleet(body);
+  if (tab === 'parts') return stockParts(body);
+  if (tab === 'costs') return stockCosts(body);
+}
+
+async function stockParts(body) {
+  let parts = [];
+  try { parts = (await api('GET', '/admin/parts')).parts; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const stockValue = parts.reduce((s, p) => s + p.unitPrice * p.qty, 0);
+  body.innerHTML = `
+    <div class="card">
+      <h3>Ajouter une pièce / un consommable</h3>
+      <div class="grid2">
+        <div><label>Désignation *</label><input id="pt-name" placeholder="ex. Plaquettes avant, Huile 5W30, Gasoil…"></div>
+        <div><label>Référence</label><input id="pt-ref" placeholder="réf. fournisseur"></div>
+        <div><label>Catégorie</label><input id="pt-cat" placeholder="pièce / huile / carburant / pneu…" value="pièce"></div>
+        <div><label>Prix unitaire (€)</label><input id="pt-price" type="number" step="0.01" min="0"></div>
+        <div><label>Quantité en stock</label><input id="pt-qty" type="number" step="0.01" min="0"></div>
+        <div><label>Unité</label><input id="pt-unit" placeholder="u / L / jeu" value="u"></div>
+      </div>
+      <div style="margin-top:.7rem"><button class="btn accent" id="pt-add">Ajouter au stock</button></div>
+    </div>
+    <div class="card"><h3>Stock (${parts.length}) — valeur totale ${eur(stockValue)}</h3>
+      ${parts.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Désignation</th><th>Réf.</th><th>Catégorie</th><th>Prix U.</th><th>Qté</th><th>Valeur</th><th></th></tr></thead>
+      <tbody>${parts.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.ref || '—')}</td><td>${esc(p.category)}</td><td>${eur(p.unitPrice)}</td><td>${p.qty} ${esc(p.unit)}</td><td>${eur(p.unitPrice * p.qty)}</td>
+        <td style="white-space:nowrap"><button class="btn ghost sm" data-editp="${p.id}">✎</button> <button class="btn ghost sm" data-delp="${p.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune pièce en stock.</p>'}
+    </div>`;
+  document.getElementById('pt-add').onclick = async () => {
+    const payload = { name: v('#pt-name'), ref: v('#pt-ref'), category: v('#pt-cat'), unitPrice: v('#pt-price'), qty: v('#pt-qty'), unit: v('#pt-unit') };
+    if (!payload.name.trim()) { toast('Désignation obligatoire.', 'err'); return; }
+    try { await api('POST', '/admin/parts', payload); toast('Ajouté au stock.', 'ok'); stockParts(body); } catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelectorAll('[data-delp]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette pièce ?')) return; try { await api('DELETE', '/admin/parts/' + b.dataset.delp); stockParts(body); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-editp]').forEach((b) => b.onclick = () => editPartModal(parts.find((p) => p.id === b.dataset.editp), body));
+  function v(sel) { return document.querySelector(sel).value; }
+}
+
+function editPartModal(p, body) {
+  modal({
+    title: 'Modifier la pièce',
+    bodyHTML: `<div class="grid2">
+      <div><label>Désignation</label><input id="ep-name" value="${esc(p.name)}"></div>
+      <div><label>Référence</label><input id="ep-ref" value="${esc(p.ref || '')}"></div>
+      <div><label>Catégorie</label><input id="ep-cat" value="${esc(p.category)}"></div>
+      <div><label>Prix unitaire (€)</label><input id="ep-price" type="number" step="0.01" value="${p.unitPrice}"></div>
+      <div><label>Quantité</label><input id="ep-qty" type="number" step="0.01" value="${p.qty}"></div>
+      <div><label>Unité</label><input id="ep-unit" value="${esc(p.unit)}"></div>
+    </div>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ep-save">Enregistrer</button>`,
+    onMount: (ov) => { ov.querySelector('#ep-save').onclick = async () => {
+      try { await api('PUT', '/admin/parts/' + p.id, { name: ov.querySelector('#ep-name').value, ref: ov.querySelector('#ep-ref').value, category: ov.querySelector('#ep-cat').value, unitPrice: ov.querySelector('#ep-price').value, qty: ov.querySelector('#ep-qty').value, unit: ov.querySelector('#ep-unit').value }); closeModal(); stockParts(body); toast('Modifié.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    }; },
+  });
+}
+
+async function stockCosts(body) {
+  let rows = [];
+  try { rows = (await api('GET', '/admin/vehicle-costs')).vehicles; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  if (!rows.length) { body.innerHTML = `<div class="alert info">Aucun véhicule. Ajoutez-en dans l'onglet « Flotte ».</div>`; return; }
+  const maxTotal = Math.max(1, ...rows.map((r) => r.total));
+  body.innerHTML = `
+    <div class="alert info">Coût d'exploitation par véhicule (entretien, carburant, pièces), du plus coûteux au moins coûteux. Ajoutez des dépenses par véhicule pour affiner.</div>
+    ${rows.map((r) => `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <h3 style="margin:0">🚐 ${esc(r.name)} <span class="help">${esc(r.plate || '')}</span></h3>
+        <span style="display:flex;gap:.4rem;flex-wrap:wrap"><span class="pill danger">Total ${eur(r.total)}</span><span class="pill">${eur(r.monthly)}/mois</span><span class="pill">${r.perKm != null ? eur(r.perKm) + '/km' : '—/km'}</span></span>
+      </div>
+      <div class="cost-bar"><div class="cost-bar-fill" style="width:${Math.round((r.total / maxTotal) * 100)}%"></div></div>
+      <div class="help">${r.kmDriven.toLocaleString('fr-FR')} km parcourus · ${r.months} mois · ${Object.keys(r.byCat).length ? Object.entries(r.byCat).map(([c, a]) => `${esc(c)} ${eur(a)}`).join(' · ') : 'aucune dépense'}</div>
+      <div style="margin-top:.5rem"><button class="btn ghost sm" data-exp="${r.id}">+ Dépense</button> <button class="btn ghost sm" data-explist="${r.id}">Voir les dépenses (${r.expenses.length})</button></div>
+    </div>`).join('')}`;
+  body.querySelectorAll('[data-exp]').forEach((b) => b.onclick = () => expenseModal(b.dataset.exp, body));
+  body.querySelectorAll('[data-explist]').forEach((b) => b.onclick = () => expenseListModal(rows.find((r) => r.id === b.dataset.explist), body));
+}
+
+async function expenseModal(vehicleId, body) {
+  let parts = [];
+  try { parts = (await api('GET', '/admin/parts')).parts; } catch (e) {}
+  const v = (_veh && _veh.vehicles || []).find((x) => x.id === vehicleId) || {};
+  modal({
+    title: 'Ajouter une dépense',
+    bodyHTML: `<p class="help">${esc(v.name || '')}</p>
+      <label>Catégorie</label><select id="ex-cat"><option value="entretien">Entretien</option><option value="carburant">Carburant</option><option value="pneus">Pneus</option><option value="reparation">Réparation</option><option value="autre">Autre</option></select>
+      <label>Pièce du stock (optionnel — déstocke et calcule le prix)</label>
+      <select id="ex-part"><option value="">— Aucune (montant libre) —</option>${parts.map((p) => `<option value="${p.id}" data-price="${p.unitPrice}">${esc(p.name)} — ${eur(p.unitPrice)} (${p.qty} ${esc(p.unit)})</option>`).join('')}</select>
+      <div class="grid2" style="margin-top:.5rem">
+        <div><label>Quantité</label><input id="ex-qty" type="number" step="0.01" value="1"></div>
+        <div><label>Montant (€) — si pas de pièce</label><input id="ex-amount" type="number" step="0.01"></div>
+        <div><label>Date</label><input id="ex-date" type="date" value="${iso(new Date())}"></div>
+        <div><label>Libellé</label><input id="ex-label" placeholder="détail"></div>
+      </div>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ex-save">Enregistrer</button>`,
+    onMount: (ov) => { ov.querySelector('#ex-save').onclick = async () => {
+      const payload = { category: ov.querySelector('#ex-cat').value, partId: ov.querySelector('#ex-part').value || null, qty: ov.querySelector('#ex-qty').value, amount: ov.querySelector('#ex-amount').value, date: ov.querySelector('#ex-date').value, label: ov.querySelector('#ex-label').value };
+      try { await api('POST', '/admin/vehicles/' + vehicleId + '/expense', payload); closeModal(); stockCosts(body); toast('Dépense enregistrée.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    }; },
+  });
+}
+
+function expenseListModal(row, body) {
+  modal({
+    title: 'Dépenses — ' + (row.name || ''),
+    bodyHTML: row.expenses.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Catégorie</th><th>Libellé</th><th>Montant</th><th></th></tr></thead>
+      <tbody>${row.expenses.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.category)}</td><td>${esc(e.label)}</td><td>${eur(e.amount)}</td><td><button class="btn ghost sm" data-delx="${e.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune dépense.</p>',
+    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+    onMount: (ov) => ov.querySelectorAll('[data-delx]').forEach((b) => b.onclick = async () => {
+      try { await api('DELETE', '/admin/vehicles/expense/' + b.dataset.delx); closeModal(); stockCosts(body); } catch (e) { toast(e.message, 'err'); }
+    }),
+  });
+}
+
+/* =========================================================================
+   FINANCIÈRE (administrateur) : recettes, charges, TVA, clients, projection
+   ========================================================================= */
+async function renderFinance(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Financière</h1>
+    <p>Pilotez l'équilibre financier : recettes, charges, TVA, rentabilité par client et projections.</p></div></div>
+    <div class="view-switch" id="fin-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-ftab="resume" class="active">Résumé & graphiques</button>
+      <button data-ftab="flash">Flash comptable & TVA</button>
+      <button data-ftab="clients">Rentabilité clients</button>
+      <button data-ftab="projection">Projection</button>
+      <button data-ftab="saisie">Saisie</button>
+    </div>
+    <div id="fin-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#fin-tabs');
+  tabs.querySelectorAll('[data-ftab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); finTab(b.dataset.ftab); });
+  await loadFinance();
+  finTab('resume');
+}
+
+let _fin = null;
+async function loadFinance() { _fin = await api('GET', '/admin/finance'); }
+function finTab(tab) {
+  const body = document.getElementById('fin-body'); if (!body) return; body.className = '';
+  if (tab === 'resume') return finResume(body);
+  if (tab === 'flash') return finFlash(body);
+  if (tab === 'clients') return finClients(body);
+  if (tab === 'projection') return finProjection(body);
+  if (tab === 'saisie') return finSaisie(body);
+}
+
+// Agrège des mois en périodes (trimestre/semestre/année).
+function aggregatePeriods(months, size) {
+  const out = {};
+  months.forEach((m) => {
+    const [y, mm] = m.ym.split('-').map(Number);
+    let key;
+    if (size === 3) key = `${y}-T${Math.ceil(mm / 3)}`;
+    else if (size === 6) key = `${y}-S${Math.ceil(mm / 6)}`;
+    else key = `${y}`;
+    const o = out[key] = out[key] || { key, revenue: 0, charges: 0, result: 0 };
+    o.revenue += m.revenue; o.charges += m.charges; o.result += m.result;
+  });
+  return Object.values(out).map((o) => ({ key: o.key, revenue: Math.round(o.revenue * 100) / 100, charges: Math.round(o.charges * 100) / 100, result: Math.round(o.result * 100) / 100 }));
+}
+
+// Mini graphique en barres (résultat par période ; vert = bénéfice, rouge = perte).
+function barChart(items, valueKey, labelKey) {
+  if (!items.length) return '<p class="help">Aucune donnée. Saisissez des écritures.</p>';
+  const max = Math.max(1, ...items.map((i) => Math.abs(i[valueKey])));
+  return `<div class="bars">${items.map((i) => {
+    const val = i[valueKey]; const h = Math.round((Math.abs(val) / max) * 100);
+    return `<div class="bar-col"><div class="bar-wrap"><div class="bar ${val >= 0 ? 'pos' : 'neg'}" style="height:${h}%" title="${eur(val)}"></div></div><div class="bar-lbl">${esc(i[labelKey])}</div><div class="bar-val ${val >= 0 ? 'pos' : 'neg'}">${eur(val)}</div></div>`;
+  }).join('')}</div>`;
+}
+
+function finResume(body) {
+  const s = _fin.summary; const m = s.months;
+  const t = s.totals;
+  const kpi = (lbl, val, cls) => `<div class="stat ${cls || ''}"><div class="value" style="font-size:1.4rem">${eur(val)}</div><div class="label">${lbl}</div></div>`;
+  body.innerHTML = `
+    <div class="grid cols-4">
+      ${kpi('Recettes cumulées', t.revenue)}
+      ${kpi('Charges cumulées', t.charges)}
+      ${kpi('Résultat', t.result, t.result >= 0 ? '' : 'alt')}
+      ${kpi('TVA due (cumul)', t.vatDue)}
+    </div>
+    <div class="card"><h3>Résultat mensuel</h3>${barChart(m, 'result', 'ym')}</div>
+    <div class="card"><h3>Résultat par trimestre</h3>${barChart(aggregatePeriods(m, 3), 'result', 'key')}</div>
+    <div class="card"><h3>Résultat par semestre</h3>${barChart(aggregatePeriods(m, 6), 'result', 'key')}</div>
+    <div class="card"><h3>Résultat annuel</h3>${barChart(aggregatePeriods(m, 12), 'result', 'key')}</div>
+    <div class="card"><h3>Détail mensuel</h3>
+      ${m.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Recettes</th><th>Charges fixes</th><th>Charges var.</th><th>Résultat</th></tr></thead>
+      <tbody>${m.map((x) => `<tr><td>${esc(x.ym)}</td><td>${eur(x.revenue)}</td><td>${eur(x.chargesFixed)}</td><td>${eur(x.chargesVar)}</td><td class="${x.result >= 0 ? 'pos' : 'neg'}">${eur(x.result)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune donnée.</p>'}
+    </div>`;
+}
+
+function finFlash(body) {
+  const s = _fin.summary;
+  // Regroupe charges par poste (catégorie) sur l'ensemble.
+  const poste = {}; let caHT = 0;
+  _fin.entries.forEach((e) => {
+    if (e.kind === 'recette') caHT += e.amount;
+    else { const k = (e.fixed ? 'Fixe — ' : 'Variable — ') + e.category; poste[k] = (poste[k] || 0) + e.amount; }
+  });
+  const latest = s.months[s.months.length - 1];
+  body.innerHTML = `
+    <div class="card"><h3>Flash comptable (cumul)</h3>
+      <div class="grid cols-3">
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur(caHT)}</div><div class="label">Chiffre d'affaires (HT)</div></div>
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur(s.totals.charges)}</div><div class="label">Charges totales</div></div>
+        <div class="stat ${s.totals.result >= 0 ? '' : 'alt'}"><div class="value" style="font-size:1.4rem">${eur(s.totals.result)}</div><div class="label">Résultat</div></div>
+      </div>
+    </div>
+    <div class="card"><h3>Charges par pôle</h3>
+      ${Object.keys(poste).length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Pôle</th><th>Montant</th></tr></thead><tbody>${Object.entries(poste).sort((a, b) => b[1] - a[1]).map(([k, val]) => `<tr><td>${esc(k)}</td><td>${eur(val)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune charge saisie.</p>'}
+    </div>
+    <div class="card"><h3>TVA — à reverser, mois par mois</h3>
+      <p class="help">TVA collectée (sur recettes) − TVA déductible (sur charges) = TVA due.</p>
+      ${s.months.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>TVA collectée</th><th>TVA déductible</th><th>TVA due</th></tr></thead>
+      <tbody>${s.months.map((x) => `<tr><td>${esc(x.ym)}</td><td>${eur(x.vatCollected)}</td><td>${eur(x.vatDeductible)}</td><td class="${x.vatDue >= 0 ? 'neg' : 'pos'}"><strong>${eur(x.vatDue)}</strong></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune donnée.</p>'}
+    </div>`;
+}
+
+function finClients(body) {
+  const c = _fin.summary.clients;
+  body.innerHTML = `<div class="card"><h3>Rentabilité par client</h3>
+    <p class="help">Recettes, charges affectées et marge par client (GLS, FedEx, Ciblex). Affectez le client à vos écritures lors de la saisie.</p>
+    ${c.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Client</th><th>Recettes</th><th>Charges</th><th>Marge</th><th>Marge %</th></tr></thead>
+      <tbody>${c.map((x) => `<tr><td><strong>${esc(x.client)}</strong></td><td>${eur(x.revenue)}</td><td>${eur(x.charges)}</td><td class="${x.margin >= 0 ? 'pos' : 'neg'}">${eur(x.margin)}</td><td>${x.marginPct}%</td></tr>`).join('')}</tbody></table></div>
+      <div style="margin-top:1rem">${barChart(c.map((x) => ({ v: x.margin, l: x.client })), 'v', 'l')}</div>` : '<p class="help">Aucune écriture affectée à un client.</p>'}
+  </div>`;
+}
+
+function finProjection(body) {
+  const p = _fin.summary.projection; const t = _fin.summary.totals;
+  body.innerHTML = `<div class="card"><h3>Projection (si le cap est maintenu)</h3>
+    <div class="grid cols-3">
+      <div class="stat"><div class="value" style="font-size:1.4rem">${eur(p.avgMonthlyResult)}</div><div class="label">Résultat moyen / mois</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${p.monthsLeftYear}</div><div class="label">Mois restants (année)</div></div>
+      <div class="stat ${p.projectedYearEnd >= 0 ? '' : 'alt'}"><div class="value" style="font-size:1.4rem">${eur(p.projectedYearEnd)}</div><div class="label">Résultat projeté fin d'année</div></div>
+    </div>
+    <p class="help" style="margin-top:.8rem">Projection linéaire basée sur la moyenne des résultats mensuels saisis (${eur(t.result)} cumulés). Plus vous saisissez de mois, plus la projection est fiable.</p>
+  </div>`;
+}
+
+function finSaisie(body) {
+  const clients = _fin.clients;
+  body.innerHTML = `
+    <div class="card"><h3>Ajouter une écriture</h3>
+      <div class="grid2">
+        <div><label>Mois</label><input id="fn-ym" type="month" value="${iso(new Date()).slice(0, 7)}"></div>
+        <div><label>Type</label><select id="fn-kind"><option value="recette">Recette</option><option value="charge">Charge</option></select></div>
+        <div><label>Poste / catégorie</label><input id="fn-cat" placeholder="ex. Prestation, Carburant, Salaires, Loyer…"></div>
+        <div><label>Client (optionnel)</label><select id="fn-client"><option value="">— Aucun —</option>${clients.map((c) => `<option>${esc(c)}</option>`).join('')}</select></div>
+        <div><label>Montant HT (€)</label><input id="fn-amount" type="number" step="0.01" min="0"></div>
+        <div><label>Taux TVA (%)</label><select id="fn-vat"><option value="20">20</option><option value="10">10</option><option value="5.5">5,5</option><option value="0">0</option></select></div>
+      </div>
+      <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="fn-fixed"> Charge fixe (sinon variable)</label>
+      <div style="margin-top:.6rem"><button class="btn accent" id="fn-add">Enregistrer l'écriture</button></div>
+    </div>
+    <div class="card"><h3>Écritures récentes</h3>
+      ${_fin.entries.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Type</th><th>Poste</th><th>Client</th><th>Montant</th><th>TVA</th><th></th></tr></thead>
+      <tbody>${_fin.entries.slice(0, 60).map((e) => `<tr><td>${esc(e.ym)}</td><td>${e.kind === 'recette' ? '<span class="pill ok">Recette</span>' : `<span class="pill warn">Charge${e.fixed ? ' fixe' : ''}</span>`}</td><td>${esc(e.category)}</td><td>${esc(e.client || '—')}</td><td>${eur(e.amount)}</td><td>${e.vatRate}%</td><td><button class="btn ghost sm" data-delf="${e.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune écriture.</p>'}
+    </div>`;
+  document.getElementById('fn-add').onclick = async () => {
+    const payload = { ym: document.getElementById('fn-ym').value, kind: document.getElementById('fn-kind').value, category: document.getElementById('fn-cat').value, client: document.getElementById('fn-client').value, amount: document.getElementById('fn-amount').value, vatRate: document.getElementById('fn-vat').value, fixed: document.getElementById('fn-fixed').checked };
+    if (!payload.ym) { toast('Indiquez le mois.', 'err'); return; }
+    try { const r = await api('POST', '/admin/finance', payload); _fin.summary = r.summary; _fin.entries.unshift(r.entry); toast('Écriture enregistrée.', 'ok'); await loadFinance(); finTab('saisie'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelectorAll('[data-delf]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette écriture ?')) return; try { await api('DELETE', '/admin/finance/' + b.dataset.delf); await loadFinance(); finTab('saisie'); } catch (e) { toast(e.message, 'err'); } });
 }
 
 /* =========================================================================
@@ -3184,7 +3505,7 @@ function adminReqRow(r, rank) {
     <td>${esc(r.userName)}${parentTag(r)}</td>
     <td>${groupChip(r)}</td>
     <td><span class="tag" style="background:${catColor(r.category)}22;color:${catColor(r.category)}">${esc(r.category)}</span> ${esc(reqLabel(r))}</td>
-    <td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}
+    <td>${fmtPeriodLong(r.startDate, r.endDate)}${r.containsHoliday?`<div class="help" style="color:#b45309">⚠️ contient un ou plusieurs jours fériés</div>`:''}
       <div style="margin-top:.2rem">${r.replacedByName?`<span class="help" style="color:var(--brand-2)">Remplacé par : <strong>${esc(r.replacedByName)}</strong></span> `:''}<button class="btn ghost sm" data-repl="${r.id}">${r.replacedByName?'Modifier remplaçant':'+ Remplaçant'}</button></div></td>
     <td>${orderBadge(rank)}</td>
     <td>${r.days} j${reqHours(r)}</td>
