@@ -374,7 +374,11 @@ function navSections() {
       { id: 'mydata', icon: '👤', label: 'Mon Profil' },
       { id: 'requests', icon: '📝', label: 'Mes événements' },
       { id: 'team', icon: '👥', label: 'Mon équipe' },
-      ...(isStaff() ? [{ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' }] : []),
+      { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
+      ...(isStaff() ? [
+        { id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' },
+        { id: 'vehmgmt', icon: '🔧', label: 'Gestion des véhicules' },
+      ] : []),
     ] },
   ];
   if (State.user.role === 'admin') {
@@ -525,6 +529,8 @@ function renderView() {
   if (v === 'team') return renderTeam(main);
   if (v === 'organigramme') return renderOrganigramme(main);
   if (v === 'absmgmt') return renderAbsenceManagement(main);
+  if (v === 'myvehicle') return renderMyVehicle(main);
+  if (v === 'vehmgmt') return renderVehicleManagement(main);
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
 }
@@ -1817,6 +1823,483 @@ async function renderAbsenceManagement(main) {
     el.innerHTML = sections + staffSection;
     el.querySelectorAll('[data-abs]').forEach((b) => b.onclick = () => adminAssignModal(null, b.dataset.abs));
   } catch (e) { document.getElementById('abs-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+}
+
+/* =========================================================================
+   VÉHICULES — signalement chauffeur + gestion de flotte
+   ========================================================================= */
+
+// Liste des usures / pannes courantes proposées au chauffeur (cases à cocher).
+const VEHICLE_ISSUES = [
+  'Pneus avant usés',
+  'Pneus arrière usés',
+  'Freins avant usés (plaquettes / disques)',
+  'Freins arrière usés (plaquettes / disques)',
+  'Pare-brise fissuré ou impacté',
+  'Vidange à prévoir',
+  'Révision « Service A » (intermédiaire) à prévoir',
+  'Révision « Service B » (grande révision) à prévoir',
+  'Éclairage défectueux (feux / clignotants / stop)',
+  'Essuie-glaces à remplacer',
+  'Batterie faible / démarrage difficile',
+  'Niveaux à compléter (huile / lave-glace / liquide de refroidissement)',
+  'Pneus sous-gonflés / témoin de pression allumé',
+  'Fuite constatée (huile / liquide)',
+  'Carrosserie endommagée (choc / rayure)',
+  'Bruit anormal ou vibration',
+  'Climatisation / chauffage défaillant',
+  'Embrayage / boîte de vitesses (point dur, à-coups)',
+];
+
+// Types de dommage relevés lors d'un tour de véhicule.
+const IMPACT_TYPES = ['Rayure', 'Choc / enfoncement', 'Fissure', 'Bris de glace', 'Rouille', 'Pièce manquante / cassée', 'Autre'];
+
+function vehLabel(v) { return `${v.name}${v.plate ? ' — ' + v.plate : ''}`; }
+function kmFmt(n) { return (Number(n) || 0).toLocaleString('fr-FR') + ' km'; }
+function vReportStatusLabel(s) { return s === 'reviewed' ? 'Pris en compte' : s === 'closed' ? 'Clôturé' : 'En attente'; }
+function vReportStatusClass(s) { return s === 'reviewed' ? 'ok' : s === 'closed' ? 'muted' : 'warn'; }
+
+// --- Côté salarié : « Mon véhicule » ----------------------------------------
+async function renderMyVehicle(main) {
+  main.innerHTML = `<div class="page-head"><div><h1>Mon véhicule</h1>
+    <p>Sélectionnez votre véhicule et signalez toute usure ou anomalie constatée.</p></div></div>
+    <div id="mv-body" class="empty">Chargement…</div>`;
+  let vehicles = [], myReports = [];
+  try {
+    vehicles = (await api('GET', '/vehicles')).vehicles;
+    myReports = (await api('GET', '/me/vehicle-reports')).reports;
+  } catch (e) { document.getElementById('mv-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+
+  const body = document.getElementById('mv-body'); body.className = '';
+  if (!vehicles.length) {
+    body.innerHTML = `<div class="alert info">Aucun véhicule n'est encore enregistré dans la flotte. Contactez la direction pour qu'elle ajoute les véhicules.</div>`;
+  } else {
+    const issuesHTML = VEHICLE_ISSUES.map((label, i) => `
+      <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(label)}" id="mv-i${i}"> ${esc(label)}</label>`).join('');
+    body.innerHTML = `
+      <div class="card">
+        <label>Votre véhicule</label>
+        <select id="mv-vehicle">
+          <option value="">— Choisissez votre véhicule —</option>
+          ${vehicles.map((v) => `<option value="${v.id}" data-plate="${esc(v.plate || '')}" data-km="${v.km || 0}">${esc(vehLabel(v))}</option>`).join('')}
+        </select>
+        <div class="grid2" style="margin-top:.8rem">
+          <div><label>Plaque d'immatriculation *</label><input id="mv-plate" placeholder="AA-123-BB" autocomplete="off"></div>
+          <div><label>Kilométrage actuel *</label><input id="mv-km" type="number" min="0" inputmode="numeric" placeholder="ex. 84500"></div>
+        </div>
+        <label style="margin-top:.8rem">Usures / anomalies constatées</label>
+        <div class="veh-issues">${issuesHTML}</div>
+        <label style="margin-top:.8rem">Précisions (facultatif)</label>
+        <textarea id="mv-note" placeholder="Décrivez le problème, sa localisation, depuis quand…" style="min-height:90px"></textarea>
+        <div style="margin-top:1rem"><button class="btn accent" id="mv-send">Envoyer le signalement</button></div>
+        <p class="help" style="margin-top:.5rem">Votre signalement est transmis à la direction et apparaît dans le suivi du véhicule.</p>
+      </div>
+      <div class="card"><h3>Mes signalements récents</h3><div id="mv-mine"></div></div>`;
+
+    const sel = document.getElementById('mv-vehicle');
+    const plate = document.getElementById('mv-plate');
+    const km = document.getElementById('mv-km');
+    sel.onchange = () => {
+      const o = sel.selectedOptions[0];
+      if (o && o.value) { if (!plate.value) plate.value = o.dataset.plate || ''; if (!km.value && o.dataset.km && o.dataset.km !== '0') km.value = o.dataset.km; }
+    };
+    document.getElementById('mv-send').onclick = async () => {
+      const issues = Array.from(document.querySelectorAll('.mv-issue:checked')).map((c) => c.value);
+      const payload = { vehicleId: sel.value, plate: plate.value, km: km.value, issues, note: document.getElementById('mv-note').value };
+      if (!payload.vehicleId) { toast('Choisissez votre véhicule.', 'err'); return; }
+      try {
+        await api('POST', '/vehicles/report', payload);
+        toast('Signalement envoyé. Merci !', 'ok');
+        renderMyVehicle(main);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    renderMyVehReports(document.getElementById('mv-mine'), myReports);
+  }
+}
+
+function renderMyVehReports(el, reports) {
+  if (!reports.length) { el.innerHTML = `<p class="help">Aucun signalement pour le moment.</p>`; return; }
+  el.innerHTML = reports.map((r) => `
+    <div class="veh-report">
+      <div class="vr-head">
+        <strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
+        <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span>
+      </div>
+      <div class="help">${fmtDateTime(r.createdAt)}</div>
+      ${r.issues.length ? `<ul class="vr-issues">${r.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+      ${r.note ? `<p style="margin:.3rem 0 0">${esc(r.note)}</p>` : ''}
+      ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ Réponse direction : ${esc(r.adminNote)}</p>` : ''}
+    </div>`).join('');
+}
+
+// --- Côté encadrement : « Gestion des véhicules » ----------------------------
+let _veh = null; // cache des données de flotte pour la vue encadrement
+
+async function renderVehicleManagement(main) {
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des véhicules</h1>
+    <p>Suivi de la flotte, alertes d'entretien, signalements et tours de véhicule.</p></div></div>
+    <div class="view-switch" id="veh-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-vtab="suivi" class="active">Suivi & alertes</button>
+      <button data-vtab="pending">Demandes concernant les véhicules en attente <span id="veh-pending-badge"></span></button>
+      <button data-vtab="tour">Tour du véhicule</button>
+      ${State.user.role === 'admin' ? `<button data-vtab="fleet">Flotte</button>` : ''}
+    </div>
+    <div id="veh-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#veh-tabs');
+  tabs.querySelectorAll('[data-vtab]').forEach((b) => b.onclick = () => {
+    tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    vehTab(b.dataset.vtab);
+  });
+  await loadFleet();
+  vehTab('suivi');
+}
+
+async function loadFleet() {
+  _veh = await api('GET', '/staff/vehicles');
+  const badge = document.getElementById('veh-pending-badge');
+  if (badge) {
+    const n = _veh.reports.filter((r) => r.status === 'pending').length;
+    badge.textContent = n ? n : '';
+    badge.className = n ? 'badge' : '';
+    badge.style.cssText = n ? 'background:var(--accent);color:#fff;border-radius:999px;padding:0 .45rem;font-size:.72rem;font-weight:700' : '';
+  }
+}
+
+function vehTab(tab) {
+  const body = document.getElementById('veh-body'); body.className = '';
+  if (!_veh) { body.innerHTML = `<div class="alert warn">Données indisponibles.</div>`; return; }
+  if (tab === 'suivi') return vehTabSuivi(body);
+  if (tab === 'pending') return vehTabPending(body);
+  if (tab === 'tour') return vehTabTour(body);
+  if (tab === 'fleet') return vehTabFleet(body);
+}
+
+// Onglet « Suivi & alertes » : par véhicule, état des consommables + alertes.
+function vehTabSuivi(body) {
+  const { vehicles, consumables, alertKm } = _veh.analysis;
+  if (!vehicles.length) { body.innerHTML = `<div class="alert info">Aucun véhicule. Ajoutez-en dans l'onglet « Flotte ».</div>`; return; }
+  const isAdmin = State.user.role === 'admin';
+  // Bandeau d'alertes globales (entretiens à anticiper).
+  const alerts = [];
+  vehicles.forEach((v) => v.items.forEach((it) => {
+    if (it.level === 'overdue') alerts.push({ v, it, overdue: true });
+    else if (it.level === 'soon') alerts.push({ v, it, overdue: false });
+  }));
+  alerts.sort((a, b) => a.it.remaining - b.it.remaining);
+  const alertBanner = alerts.length ? `<div class="card" style="border-left:5px solid var(--accent)">
+    <h3 style="margin:0">🔔 Entretiens à anticiper (commander les pièces)</h3>
+    <ul class="veh-alert-list">${alerts.map((a) => `<li>
+      <span class="pill ${a.overdue ? 'danger' : 'warn'}">${a.overdue ? 'DÉPASSÉ' : 'BIENTÔT'}</span>
+      <strong>${esc(a.v.name)}</strong> (${esc(a.v.plate || '—')}) — ${esc(a.it.label)} :
+      ${a.overdue ? `dépassé de ${kmFmt(-a.it.remaining)}` : `dans ${kmFmt(a.it.remaining)}`}
+      <span class="help">(échéance ~${kmFmt(a.it.dueKm)}, actuel ${kmFmt(a.v.curKm)})</span>
+    </li>`).join('')}</ul></div>` : `<div class="alert ok">✅ Aucun entretien imminent (seuil d'alerte : ${kmFmt(alertKm)}).</div>`;
+
+  const cards = vehicles.map((v) => {
+    const rows = v.items.map((it) => `<tr class="lvl-${it.level}">
+      <td>${esc(it.label)}</td>
+      <td>${it.lastKm != null ? kmFmt(it.lastKm) : '<span class="help">—</span>'}</td>
+      <td>${kmFmt(it.interval)}${it.count >= 2 ? ' <span class="help">(moy.)</span>' : ''}</td>
+      <td>${kmFmt(it.dueKm)}</td>
+      <td>${it.level === 'overdue' ? `<span class="pill danger">dépassé ${kmFmt(-it.remaining)}</span>` : it.level === 'soon' ? `<span class="pill warn">dans ${kmFmt(it.remaining)}</span>` : `<span class="pill ok">${kmFmt(it.remaining)}</span>`}</td>
+      ${isAdmin ? `<td><button class="btn ghost sm" data-maint="${v.id}" data-part="${it.code}" data-plabel="${esc(it.label)}">Remplacement</button></td>` : ''}
+    </tr>`).join('');
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <h3 style="margin:0">🚐 ${esc(v.name)} <span class="help">${esc(v.plate || '')}${v.model ? ' · ' + esc(v.model) : ''}</span></h3>
+        <span class="pill">${kmFmt(v.curKm)}</span>
+      </div>
+      <div class="table-wrap"><table class="veh-table">
+        <thead><tr><th>Consommable</th><th>Dernier rempl.</th><th>Intervalle</th><th>Prochaine échéance</th><th>Restant</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      ${isAdmin ? `<div style="margin-top:.6rem"><button class="btn ghost sm" data-history="${v.id}">Historique des remplacements</button></div>` : ''}
+    </div>`;
+  }).join('');
+
+  body.innerHTML = alertBanner + cards;
+  if (isAdmin) {
+    body.querySelectorAll('[data-maint]').forEach((b) => b.onclick = () => maintModal(b.dataset.maint, b.dataset.part, b.dataset.plabel));
+    body.querySelectorAll('[data-history]').forEach((b) => b.onclick = () => maintHistoryModal(b.dataset.history));
+  }
+}
+
+function maintModal(vehicleId, part, partLabel) {
+  const v = _veh.vehicles.find((x) => x.id === vehicleId);
+  const consumables = _veh.consumables;
+  modal({
+    title: 'Enregistrer un remplacement',
+    bodyHTML: `
+      <p class="help">${esc(v ? vehLabel(v) : '')}</p>
+      <label>Pièce / consommable remplacé</label>
+      <select id="mt-part">${consumables.map((c) => `<option value="${c.code}" ${c.code === part ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select>
+      <div class="grid2" style="margin-top:.6rem">
+        <div><label>Kilométrage au remplacement *</label><input id="mt-km" type="number" min="0" value="${v ? (v.km || '') : ''}"></div>
+        <div><label>Date</label><input id="mt-date" type="date" value="${iso(new Date())}"></div>
+      </div>
+      <label style="margin-top:.6rem">Note (facultatif)</label>
+      <input id="mt-note" placeholder="Marque de pièce, atelier…">`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="mt-save">Enregistrer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#mt-save').onclick = async () => {
+        const payload = { part: overlay.querySelector('#mt-part').value, km: overlay.querySelector('#mt-km').value, date: overlay.querySelector('#mt-date').value, note: overlay.querySelector('#mt-note').value };
+        try {
+          const r = await api('POST', '/admin/vehicles/' + vehicleId + '/maint', payload);
+          _veh.analysis = r.analysis; closeModal(); toast('Remplacement enregistré.', 'ok');
+          await loadFleet(); vehTab('suivi');
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
+}
+
+function maintHistoryModal(vehicleId) {
+  const v = _veh.vehicles.find((x) => x.id === vehicleId);
+  const labelByCode = Object.fromEntries(_veh.consumables.map((c) => [c.code, c.label]));
+  const recs = _veh.maint.filter((m) => m.vehicleId === vehicleId).sort((a, b) => b.km - a.km);
+  modal({
+    title: 'Historique des remplacements',
+    bodyHTML: `<p class="help">${esc(v ? vehLabel(v) : '')}</p>
+      ${recs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Pièce</th><th>Km</th><th>Date</th><th>Note</th><th></th></tr></thead>
+        <tbody>${recs.map((m) => `<tr><td>${esc(labelByCode[m.part] || m.part)}</td><td>${kmFmt(m.km)}</td><td>${fmtDate(m.date)}</td><td>${esc(m.note || '')}</td><td><button class="btn ghost sm" data-delm="${m.id}">✕</button></td></tr>`).join('')}</tbody></table></div>`
+      : `<p class="help">Aucun remplacement enregistré.</p>`}`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelectorAll('[data-delm]').forEach((b) => b.onclick = async () => {
+        if (!confirm('Supprimer ce remplacement ?')) return;
+        try { const r = await api('DELETE', '/admin/vehicles/maint/' + b.dataset.delm); _veh.analysis = r.analysis; closeModal(); await loadFleet(); vehTab('suivi'); toast('Supprimé.', 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+      });
+    },
+  });
+}
+
+// Onglet « Demandes concernant les véhicules en attente ».
+function vehTabPending(body) {
+  const isAdmin = State.user.role === 'admin';
+  const reports = _veh.reports;
+  const pending = reports.filter((r) => r.status === 'pending');
+  const others = reports.filter((r) => r.status !== 'pending').slice(0, 30);
+  const card = (r) => `<div class="card veh-report">
+    <div class="vr-head">
+      <strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
+      <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span>
+    </div>
+    <div class="help">Signalé par ${esc(r.userName)} le ${fmtDateTime(r.createdAt)}</div>
+    ${r.issues.length ? `<ul class="vr-issues">${r.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
+    ${r.note ? `<p style="margin:.3rem 0 0">${esc(r.note)}</p>` : ''}
+    ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ ${esc(r.adminNote)}</p>` : ''}
+    ${isAdmin ? `<div class="vr-actions">
+      <input class="vr-note" data-note="${r.id}" placeholder="Note / suite donnée (facultatif)" value="${esc(r.adminNote || '')}">
+      <button class="btn sm" data-decide="${r.id}" data-d="reviewed">Pris en compte</button>
+      <button class="btn ghost sm" data-decide="${r.id}" data-d="closed">Clôturer</button>
+    </div>` : ''}
+  </div>`;
+  body.innerHTML = `
+    <h3>En attente (${pending.length})</h3>
+    ${pending.length ? pending.map(card).join('') : '<div class="alert ok">Aucun signalement en attente. 👍</div>'}
+    ${others.length ? `<h3 style="margin-top:1.2rem">Traités récemment</h3>${others.map(card).join('')}` : ''}`;
+  if (isAdmin) {
+    body.querySelectorAll('[data-decide]').forEach((b) => b.onclick = async () => {
+      const id = b.dataset.decide;
+      const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
+      try { await api('POST', '/admin/vehicle-reports/' + id + '/decide', { decision: b.dataset.d, adminNote: note }); await loadFleet(); vehTab('pending'); toast('Mis à jour.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+  }
+}
+
+// Onglet « Tour du véhicule » : schéma cliquable + relevé des chocs.
+let _tour = { vehicleId: '', impacts: [] };
+function vehTabTour(body) {
+  const vehicles = _veh.vehicles;
+  if (!vehicles.length) { body.innerHTML = `<div class="alert info">Aucun véhicule. Ajoutez-en dans l'onglet « Flotte ».</div>`; return; }
+  if (!vehicles.some((v) => v.id === _tour.vehicleId)) _tour = { vehicleId: vehicles[0].id, impacts: [] };
+  body.innerHTML = `
+    <div class="card">
+      <div class="grid2">
+        <div><label>Véhicule</label><select id="tr-vehicle">${vehicles.map((v) => `<option value="${v.id}" ${v.id === _tour.vehicleId ? 'selected' : ''}>${esc(vehLabel(v))}</option>`).join('')}</select></div>
+        <div><label>Kilométrage</label><input id="tr-km" type="number" min="0" placeholder="km du jour"></div>
+      </div>
+      <p class="help" style="margin-top:.6rem">Cliquez sur une zone du véhicule pour signaler un choc ou un dommage, puis choisissez le type.</p>
+      <div class="van-wrap">${vanDiagramSVG(_tour.impacts)}</div>
+    </div>
+    <div class="card">
+      <h3>Points relevés (${_tour.impacts.length})</h3>
+      <div id="tr-list"></div>
+      <label style="margin-top:.6rem">Observations générales (facultatif)</label>
+      <textarea id="tr-note" style="min-height:70px" placeholder="État général, propreté, équipements…"></textarea>
+      <div style="margin-top:1rem"><button class="btn accent" id="tr-save">Enregistrer le tour du véhicule</button></div>
+    </div>
+    <div class="card"><h3>Tours de véhicule précédents</h3><div id="tr-history"></div></div>`;
+
+  document.getElementById('tr-vehicle').onchange = (e) => { _tour = { vehicleId: e.target.value, impacts: [] }; vehTab('tour'); };
+  bindVanZones(body);
+  renderTourList();
+  renderTourHistory(document.getElementById('tr-history'));
+  document.getElementById('tr-save').onclick = async () => {
+    if (!_tour.impacts.length) { toast('Ajoutez au moins un point sur le schéma.', 'err'); return; }
+    try {
+      await api('POST', '/staff/vehicles/' + _tour.vehicleId + '/inspection', {
+        km: document.getElementById('tr-km').value,
+        impacts: _tour.impacts,
+        note: document.getElementById('tr-note').value,
+      });
+      _tour = { vehicleId: _tour.vehicleId, impacts: [] };
+      toast('Tour du véhicule enregistré.', 'ok');
+      await loadFleet(); vehTab('tour');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+function bindVanZones(scope) {
+  scope.querySelectorAll('.van-zone').forEach((z) => z.onclick = () => {
+    const zone = z.dataset.zone, label = z.dataset.label;
+    pickImpactType(label, (type, note) => {
+      _tour.impacts.push({ zone, zoneLabel: label, type, note: note || '' });
+      vehTab('tour');
+    });
+  });
+}
+
+function pickImpactType(zoneLabel, cb) {
+  modal({
+    title: 'Dommage — ' + zoneLabel,
+    bodyHTML: `<label>Type de dommage</label>
+      <select id="im-type">${IMPACT_TYPES.map((t) => `<option>${esc(t)}</option>`).join('')}</select>
+      <label style="margin-top:.6rem">Précision (facultatif)</label>
+      <input id="im-note" placeholder="Taille, gravité…">`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="im-add">Ajouter</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#im-add').onclick = () => { cb(overlay.querySelector('#im-type').value, overlay.querySelector('#im-note').value); closeModal(); };
+    },
+  });
+}
+
+function renderTourList() {
+  const el = document.getElementById('tr-list'); if (!el) return;
+  if (!_tour.impacts.length) { el.innerHTML = `<p class="help">Aucun point relevé. Cliquez sur le schéma ci-dessus.</p>`; return; }
+  el.innerHTML = _tour.impacts.map((i, idx) => `<div class="impact-row">
+    <span class="impact-dot"></span>
+    <span><strong>${esc(i.zoneLabel)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''}</span>
+    <button class="btn ghost sm" data-rmimp="${idx}">✕</button>
+  </div>`).join('');
+  el.querySelectorAll('[data-rmimp]').forEach((b) => b.onclick = () => { _tour.impacts.splice(Number(b.dataset.rmimp), 1); vehTab('tour'); });
+}
+
+function renderTourHistory(el) {
+  const recs = _veh.inspections.filter((i) => i.vehicleId === _tour.vehicleId);
+  const isAdmin = State.user.role === 'admin';
+  if (!recs.length) { el.innerHTML = `<p class="help">Aucun tour enregistré pour ce véhicule.</p>`; return; }
+  el.innerHTML = recs.map((r) => `<div class="veh-report">
+    <div class="vr-head"><strong>${fmtDate(r.date)}</strong> · ${kmFmt(r.km)} · ${esc(r.userName)} <span class="pill">${r.impacts.length} point(s)</span>
+      ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
+    <ul class="vr-issues">${r.impacts.map((i) => `<li><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''}</li>`).join('')}</ul>
+    ${r.note ? `<p style="margin:.2rem 0 0">${esc(r.note)}</p>` : ''}
+  </div>`).join('');
+  if (isAdmin) el.querySelectorAll('[data-delinsp]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Supprimer ce tour de véhicule ?')) return;
+    try { await api('DELETE', '/staff/vehicles/inspection/' + b.dataset.delinsp); await loadFleet(); vehTab('tour'); toast('Supprimé.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Schéma SVG d'un fourgon (vue de dessus) avec zones cliquables. Les "impacts"
+// déjà relevés sont matérialisés par une pastille sur la zone concernée.
+const VAN_ZONES = [
+  { zone: 'pare_chocs_av', label: 'Pare-chocs avant', x: 66, y: 26, w: 208, h: 24 },
+  { zone: 'capot', label: 'Capot / calandre', x: 66, y: 52, w: 208, h: 44 },
+  { zone: 'retro_g', label: 'Rétroviseur gauche', x: 40, y: 104, w: 18, h: 26 },
+  { zone: 'retro_d', label: 'Rétroviseur droit', x: 282, y: 104, w: 18, h: 26 },
+  { zone: 'pare_brise', label: 'Pare-brise', x: 110, y: 100, w: 120, h: 42 },
+  { zone: 'cote_av_g', label: 'Côté avant gauche (porte conducteur)', x: 66, y: 100, w: 40, h: 150 },
+  { zone: 'cote_av_d', label: 'Côté avant droit (porte passager)', x: 234, y: 100, w: 40, h: 150 },
+  { zone: 'toit', label: 'Toit', x: 110, y: 146, w: 120, h: 320 },
+  { zone: 'cote_ar_g', label: 'Côté arrière gauche', x: 66, y: 254, w: 40, h: 270 },
+  { zone: 'cote_ar_d', label: 'Côté arrière droit', x: 234, y: 254, w: 40, h: 270 },
+  { zone: 'portes_ar', label: 'Portes arrière', x: 110, y: 470, w: 120, h: 96 },
+  { zone: 'pare_chocs_ar', label: 'Pare-chocs arrière', x: 66, y: 570, w: 208, h: 44 },
+  { zone: 'roue_av_g', label: 'Roue avant gauche', x: 34, y: 140, w: 22, h: 64 },
+  { zone: 'roue_av_d', label: 'Roue avant droite', x: 284, y: 140, w: 22, h: 64 },
+  { zone: 'roue_ar_g', label: 'Roue arrière gauche', x: 34, y: 430, w: 22, h: 64 },
+  { zone: 'roue_ar_d', label: 'Roue arrière droite', x: 284, y: 430, w: 22, h: 64 },
+];
+
+function vanDiagramSVG(impacts) {
+  const counts = {};
+  (impacts || []).forEach((i) => { counts[i.zone] = (counts[i.zone] || 0) + 1; });
+  const zones = VAN_ZONES.map((z) => {
+    const n = counts[z.zone] || 0;
+    const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+    const mark = n ? `<g class="van-mark"><circle cx="${cx}" cy="${cy}" r="11" /><text x="${cx}" y="${cy + 4}" text-anchor="middle">${n}</text></g>` : '';
+    return `<rect class="van-zone${n ? ' has-mark' : ''}" data-zone="${z.zone}" data-label="${esc(z.label)}" x="${z.x}" y="${z.y}" width="${z.w}" height="${z.h}" rx="7"><title>${esc(z.label)}</title></rect>${mark}`;
+  }).join('');
+  return `<svg viewBox="0 0 340 640" class="van-svg" role="img" aria-label="Schéma du véhicule">
+    <rect x="60" y="22" width="220" height="596" rx="30" class="van-body" />
+    <text x="170" y="14" text-anchor="middle" class="van-cap">AVANT</text>
+    <text x="170" y="634" text-anchor="middle" class="van-cap">ARRIÈRE</text>
+    ${zones}
+  </svg>`;
+}
+
+// Onglet « Flotte » : ajout / modification / suppression des véhicules (admin).
+function vehTabFleet(body) {
+  const vehicles = _veh.vehicles;
+  body.innerHTML = `
+    <div class="card">
+      <h3>Ajouter un véhicule</h3>
+      <div class="grid2">
+        <div><label>Nom / identifiant *</label><input id="fl-name" placeholder="ex. Fourgon 1, Sprinter GLS…"></div>
+        <div><label>Plaque</label><input id="fl-plate" placeholder="AA-123-BB"></div>
+        <div><label>Modèle</label><input id="fl-model" placeholder="Mercedes Sprinter"></div>
+        <div><label>Kilométrage actuel</label><input id="fl-km" type="number" min="0" placeholder="0"></div>
+      </div>
+      <div style="margin-top:.8rem"><button class="btn accent" id="fl-add">Ajouter à la flotte</button></div>
+    </div>
+    <div class="card"><h3>Flotte (${vehicles.length})</h3>
+      ${vehicles.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Nom</th><th>Plaque</th><th>Modèle</th><th>Km</th><th>État</th><th></th></tr></thead>
+        <tbody>${vehicles.map((v) => `<tr>
+          <td>${esc(v.name)}</td><td>${esc(v.plate || '—')}</td><td>${esc(v.model || '—')}</td><td>${kmFmt(v.km)}</td>
+          <td>${v.active !== false ? '<span class="pill ok">Actif</span>' : '<span class="pill muted">Inactif</span>'}</td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-editv="${v.id}">Modifier</button> <button class="btn ghost sm" data-delv="${v.id}">Supprimer</button></td>
+        </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
+    </div>`;
+  document.getElementById('fl-add').onclick = async () => {
+    const payload = { name: document.getElementById('fl-name').value, plate: document.getElementById('fl-plate').value, model: document.getElementById('fl-model').value, km: document.getElementById('fl-km').value };
+    if (!payload.name.trim()) { toast('Nom du véhicule obligatoire.', 'err'); return; }
+    try { await api('POST', '/admin/vehicles', payload); toast('Véhicule ajouté.', 'ok'); await loadFleet(); vehTab('fleet'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelectorAll('[data-editv]').forEach((b) => b.onclick = () => fleetEditModal(b.dataset.editv));
+  body.querySelectorAll('[data-delv]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Supprimer ce véhicule et tout son historique (signalements, remplacements, tours) ?')) return;
+    try { await api('DELETE', '/admin/vehicles/' + b.dataset.delv); toast('Véhicule supprimé.', 'ok'); await loadFleet(); vehTab('fleet'); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+function fleetEditModal(id) {
+  const v = _veh.vehicles.find((x) => x.id === id); if (!v) return;
+  modal({
+    title: 'Modifier le véhicule',
+    bodyHTML: `<div class="grid2">
+      <div><label>Nom *</label><input id="ev-name" value="${esc(v.name)}"></div>
+      <div><label>Plaque</label><input id="ev-plate" value="${esc(v.plate || '')}"></div>
+      <div><label>Modèle</label><input id="ev-model" value="${esc(v.model || '')}"></div>
+      <div><label>Kilométrage</label><input id="ev-km" type="number" min="0" value="${v.km || 0}"></div>
+    </div>
+    <label class="veh-check" style="margin-top:.6rem"><input type="checkbox" id="ev-active" ${v.active !== false ? 'checked' : ''}> Véhicule actif (proposé aux chauffeurs)</label>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ev-save">Enregistrer</button>`,
+    onMount: (overlay) => {
+      overlay.querySelector('#ev-save').onclick = async () => {
+        const payload = { name: overlay.querySelector('#ev-name').value, plate: overlay.querySelector('#ev-plate').value, model: overlay.querySelector('#ev-model').value, km: overlay.querySelector('#ev-km').value, active: overlay.querySelector('#ev-active').checked };
+        try { await api('PUT', '/admin/vehicles/' + id, payload); closeModal(); toast('Véhicule mis à jour.', 'ok'); await loadFleet(); vehTab('fleet'); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
 }
 
 /* =========================================================================
