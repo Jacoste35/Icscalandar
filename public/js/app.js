@@ -600,11 +600,14 @@ async function renderDashboard(main) {
     const philo = philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Panneaux véhicules + discipline (encadrement).
-    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '';
+    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '';
     if (staff) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
-      try { const { pendingReports, alerts, ctReminders } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders); } catch (e) {}
+      try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
+    }
+    if (State.user.role === 'admin') {
+      try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
     }
 
     // Camions nécessitant un entretien (visible de TOUS les salariés).
@@ -641,6 +644,7 @@ async function renderDashboard(main) {
       </div>
       ${philo}
       ${messagesPanel}
+      ${stockAlertPanel}
       ${needsMaintPanel}
       ${disciplinePanel}
       ${vehPendingPanel}
@@ -2043,6 +2047,24 @@ function dashVehiclePendingHTML(reports) {
     <button class="btn ghost sm" onclick="State.view='vehmgmt';renderApp()">Traiter dans Gestion des véhicules</button>
   </div>`;
 }
+// Accueil : alertes de stock bas (rouge ≤1, jaune 2, vert 3).
+function stockAlertHTML(alerts) {
+  if (!alerts || !alerts.length) return '';
+  const reds = alerts.filter((a) => a.level === 'red'), yel = alerts.filter((a) => a.level === 'yellow'), grn = alerts.filter((a) => a.level === 'green');
+  const line = (a) => `<li><span class="pill ${a.level === 'red' ? 'danger' : a.level === 'yellow' ? 'warn' : 'ok'}">${a.qty} ${esc(a.unit)}</span> <strong>${esc(a.name)}</strong> <span class="help">(${esc(a.category)})</span>${a.level === 'red' ? ' — <strong style="color:var(--danger)">à commander d\'urgence</strong>' : a.level === 'yellow' ? ' — à commander bientôt' : ''}</li>`;
+  return `<div class="card" style="border-left:5px solid ${reds.length ? 'var(--danger)' : yel.length ? 'var(--warn)' : 'var(--ok)'}">
+    <h3 style="margin:0 0 .4rem">📦 Stock à réapprovisionner</h3>
+    <ul class="veh-alert-list">${reds.map(line).join('')}${yel.map(line).join('')}${grn.map(line).join('')}</ul>
+  </div>`;
+}
+// Accueil : entretiens libres programmés proches de l'échéance.
+function scheduledHTML(scheduled) {
+  if (!scheduled || !scheduled.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--warn)">
+    <h3 style="margin:0 0 .4rem">🗓️ Entretiens programmés à venir</h3>
+    <ul class="veh-alert-list">${scheduled.map((s) => `<li><span class="pill ${s.over ? 'danger' : 'warn'}">${s.over ? 'À FAIRE' : 'BIENTÔT'}</span> <strong>${esc(s.vehicleName)}</strong>${s.plate ? ` (${esc(s.plate)})` : ''} — ${esc(s.label)}${s.dueKm != null ? ` · à ${kmFmt(s.dueKm)}` : ''}${s.dueDate ? ` · ${fmtDate(s.dueDate)}` : ''}</li>`).join('')}</ul>
+  </div>`;
+}
 // Accueil : entretiens à anticiper (commander les pièces).
 function dashEntretiensHTML(alerts) {
   if (!alerts || !alerts.length) return '';
@@ -2158,6 +2180,7 @@ function resolutionBadge(r) {
   if (r.resolution === 'done') return `<span class="pill ok">Travaux réalisés ✔</span>`;
   if (r.resolution === 'partial') return `<span class="pill warn">Partiellement réalisé</span>`;
   if (r.resolution === 'notdone') return `<span class="pill danger">Non réalisé</span>`;
+  if (r.resolution === 'none') return `<span class="pill muted">Aucune réparation nécessaire</span>`;
   return '';
 }
 // Détail des usures avec leur statut réalisé / non réalisé (après clôture).
@@ -2307,7 +2330,8 @@ function vehTabSuivi(body) {
           <thead><tr><th>Consommable</th><th>Dernier rempl.</th><th>Intervalle / norme</th><th>Prochaine échéance</th><th>Restant</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
-        ${isAdmin ? `<div style="margin-top:.6rem;display:flex;gap:.4rem;flex-wrap:wrap"><button class="btn ghost sm" data-history="${v.id}">Carnet d'entretien</button><button class="btn ghost sm" data-ct="${v.id}">Contrôle technique</button></div>` : ''}
+        ${schedListHTML(v.id, isAdmin)}
+        ${isAdmin ? `<div style="margin-top:.6rem;display:flex;gap:.4rem;flex-wrap:wrap"><button class="btn ghost sm" data-history="${v.id}">Carnet d'entretien</button><button class="btn ghost sm" data-ct="${v.id}">Contrôle technique</button><button class="btn ghost sm" data-sched="${v.id}">+ Entretien à programmer</button></div>` : ''}
       </div>` : ''}
     </div>`;
   }).join('');
@@ -2318,6 +2342,9 @@ function vehTabSuivi(body) {
     body.querySelectorAll('[data-maint]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); maintModal(b.dataset.maint, b.dataset.part, b.dataset.plabel); });
     body.querySelectorAll('[data-history]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); maintHistoryModal(b.dataset.history); });
     body.querySelectorAll('[data-ct]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); ctModal(b.dataset.ct); });
+    body.querySelectorAll('[data-sched]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); scheduleModal(b.dataset.sched); });
+    body.querySelectorAll('[data-schdone]').forEach((b) => b.onclick = async (e) => { e.stopPropagation(); try { await api('PUT', '/admin/vehicles/schedule/' + b.dataset.schdone, { done: true }); await loadFleet(); vehTabSuivi(body); } catch (err) { toast(err.message, 'err'); } });
+    body.querySelectorAll('[data-schdel]').forEach((b) => b.onclick = async (e) => { e.stopPropagation(); try { await api('DELETE', '/admin/vehicles/schedule/' + b.dataset.schdel); await loadFleet(); vehTabSuivi(body); } catch (err) { toast(err.message, 'err'); } });
     body.querySelectorAll('[data-usage]').forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       try { const r = await api('PUT', '/admin/vehicles/' + b.dataset.usage, { usage: b.dataset.to }); _veh.analysis = r.analysis; await loadFleet(); vehTabSuivi(body); toast('Usage mis à jour.', 'ok'); }
@@ -2326,39 +2353,102 @@ function vehTabSuivi(body) {
   }
 }
 
+// Entretiens libres programmés d'un véhicule (ex. freins/pneus aux 3/4).
+function schedListHTML(vehicleId, isAdmin) {
+  const list = (_veh.schedule || []).filter((s) => s.vehicleId === vehicleId && !s.done);
+  if (!list.length) return '';
+  return `<div class="sched-box"><div class="help" style="margin:.4rem 0 .2rem">🗓️ Entretiens à programmer</div>
+    ${list.map((s) => `<div class="impact-row"><span><strong>${esc(s.label)}</strong>${s.dueKm != null ? ` · à ${kmFmt(s.dueKm)}` : ''}${s.dueDate ? ` · ${fmtDate(s.dueDate)}` : ''}${s.note ? ` — ${esc(s.note)}` : ''}</span>
+      ${isAdmin ? `<span style="margin-left:auto;display:flex;gap:.3rem"><button class="btn ghost sm" data-schdone="${s.id}">Fait</button><button class="btn ghost sm" data-schdel="${s.id}">✕</button></span>` : ''}</div>`).join('')}</div>`;
+}
+function scheduleModal(vehicleId) {
+  const v = _veh.vehicles.find((x) => x.id === vehicleId) || {};
+  modal({
+    title: 'Programmer un entretien',
+    bodyHTML: `<p class="help">${esc(vehLabel(v))} — actuel ${kmFmt(v.km)}</p>
+      <label>Intitulé *</label><input id="sc-label" placeholder="ex. Freins avant à prévoir (3/4 d'usure)">
+      <div class="grid2" style="margin-top:.5rem">
+        <div><label>Échéance kilométrique</label><input id="sc-km" type="number" min="0" placeholder="ex. 90000"></div>
+        <div><label>Échéance date</label><input id="sc-date" type="date"></div>
+      </div>
+      <label style="margin-top:.5rem">Note</label><input id="sc-note" placeholder="détail">`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="sc-save">Programmer</button>`,
+    onMount: (ov) => { ov.querySelector('#sc-save').onclick = async () => {
+      const payload = { label: ov.querySelector('#sc-label').value, dueKm: ov.querySelector('#sc-km').value, dueDate: ov.querySelector('#sc-date').value, note: ov.querySelector('#sc-note').value };
+      if (!payload.label.trim()) { toast('Intitulé obligatoire.', 'err'); return; }
+      try { await api('POST', '/admin/vehicles/' + vehicleId + '/schedule', payload); closeModal(); await loadFleet(); vehTab('suivi'); toast('Entretien programmé.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    }; },
+  });
+}
+
+// Kit d'entretien (côté client) : catégories + quantités selon le service/modèle.
+function oilLitresClient(model) { return /citan/i.test(model || '') ? 5.4 : 9.5; }
+function serviceKitClient(service, model) {
+  const oil = { cat: 'Huile moteur 5W30', qty: oilLitresClient(model) };
+  if (service === 'service_a') return [{ cat: 'Filtre à huile', qty: 1 }, { cat: 'Filtre habitacle', qty: 1 }, oil];
+  if (service === 'service_b') return [{ cat: 'Filtre à huile', qty: 1 }, { cat: 'Filtre à air', qty: 1 }, { cat: 'Filtre habitacle', qty: 1 }, { cat: 'Filtre à gasoil', qty: 1 }, oil];
+  return [];
+}
+
 async function maintModal(vehicleId, part, partLabel) {
   const v = _veh.vehicles.find((x) => x.id === vehicleId);
   const consumables = _veh.consumables;
   let parts = [], categories = [];
   try { const r = await api('GET', '/admin/parts'); parts = r.parts; categories = r.categories; } catch (e) {}
-  const catOpts = ['<option value="">— Toutes catégories —</option>'].concat(categories.map((c) => `<option>${esc(c)}</option>`)).join('');
-  const partOptsFor = (cat) => ['<option value="">— Aucune pièce (saisie manuelle) —</option>']
-    .concat(parts.filter((p) => !cat || p.category === cat).map((p) => `<option value="${p.id}" data-price="${p.unitPrice}">${esc(p.name)} — ${eur(p.unitPrice)} (stock ${p.qty} ${esc(p.unit)})</option>`)).join('');
+  const partOptsFor = (cat, sel) => ['<option value="">— Aucune —</option>']
+    .concat(parts.filter((p) => !cat || p.category === cat).map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)} — ${eur(p.unitPrice)} (stock ${p.qty} ${esc(p.unit)})</option>`)).join('');
+  const catOptsSel = (sel) => categories.map((c) => `<option ${c === sel ? 'selected' : ''}>${esc(c)}</option>`).join('');
+
+  // Lignes du kit selon le service sélectionné.
+  const kitHTML = (service) => {
+    const kit = serviceKitClient(service, v ? v.model : '');
+    if (!kit.length) return '';
+    return `<div class="card" style="margin:.6rem 0;padding:.7rem"><strong>Kit ${service === 'service_a' ? 'Service A' : 'Service B'}</strong> <span class="help">(${esc((v && v.model) || '')})</span>
+      ${kit.map((k, i) => `<div class="kit-line"><span class="kit-cat">${esc(k.cat)}</span>
+        <select class="mt-kitpart" data-i="${i}">${partOptsFor(k.cat, '')}</select>
+        <input class="mt-kitqty" data-i="${i}" type="number" step="0.01" min="0" value="${k.qty}" title="quantité">
+      </div>`).join('')}
+      <p class="help" style="margin:.3rem 0 0">Choisissez la pièce du stock pour chaque ligne. Le coût s'impute automatiquement au véhicule.</p></div>`;
+  };
+
   modal({
-    title: 'Enregistrer un remplacement',
+    title: 'Enregistrer un entretien / remplacement',
     bodyHTML: `
       <p class="help">${esc(v ? vehLabel(v) : '')}</p>
-      <label>Pièce / consommable remplacé</label>
+      <label>Type d'entretien / consommable</label>
       <select id="mt-part">${consumables.map((c) => `<option value="${c.code}" ${c.code === part ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select>
+      <div id="mt-kit">${kitHTML(part)}</div>
       <div class="grid2" style="margin-top:.6rem">
-        <div><label>Catégorie de pièce</label><select id="mt-cat">${catOpts}</select></div>
-        <div><label>Pièce du stock (déstocke & calcule le coût)</label><select id="mt-stock">${partOptsFor('')}</select></div>
-        <div><label>Quantité utilisée</label><input id="mt-qty" type="number" step="0.01" min="0" value="1"></div>
-        <div><label>Kilométrage au remplacement *</label><input id="mt-km" type="number" min="0" value="${v ? (v.km || '') : ''}"></div>
+        <div><label>Kilométrage *</label><input id="mt-km" type="number" min="0" value="${v ? (v.km || '') : ''}"></div>
         <div><label>Date</label><input id="mt-date" type="date" value="${iso(new Date())}"></div>
       </div>
+      <label style="margin-top:.6rem">Pièces additionnelles du stock (au cas où)</label>
+      <div id="mt-extra"></div>
+      <button class="btn ghost sm" id="mt-addextra" type="button">+ Ajouter une pièce</button>
       <label style="margin-top:.6rem">Note (facultatif)</label>
-      <input id="mt-note" placeholder="Marque de pièce, atelier…">`,
-    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="mt-save">Enregistrer</button>`,
+      <input id="mt-note" placeholder="Atelier, remarque…">`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="mt-save">Enregistrer l'entretien</button>`,
     onMount: (overlay) => {
-      const catSel = overlay.querySelector('#mt-cat');
-      const stockSel = overlay.querySelector('#mt-stock');
-      catSel.onchange = () => { stockSel.innerHTML = partOptsFor(catSel.value); };
+      const extra = overlay.querySelector('#mt-extra');
+      const addExtraRow = () => {
+        const row = document.createElement('div'); row.className = 'kit-line';
+        row.innerHTML = `<select class="mt-xcat">${catOptsSel('')}</select><select class="mt-xpart">${partOptsFor(categories[0], '')}</select><input class="mt-xqty" type="number" step="0.01" min="0" value="1"><button class="btn ghost sm mt-xdel" type="button">✕</button>`;
+        extra.appendChild(row);
+        row.querySelector('.mt-xcat').onchange = (e) => { row.querySelector('.mt-xpart').innerHTML = partOptsFor(e.target.value, ''); };
+        row.querySelector('.mt-xdel').onclick = () => row.remove();
+      };
+      overlay.querySelector('#mt-addextra').onclick = addExtraRow;
+      overlay.querySelector('#mt-part').onchange = (e) => { overlay.querySelector('#mt-kit').innerHTML = kitHTML(e.target.value); };
       overlay.querySelector('#mt-save').onclick = async () => {
-        const payload = { part: overlay.querySelector('#mt-part').value, km: overlay.querySelector('#mt-km').value, date: overlay.querySelector('#mt-date').value, note: overlay.querySelector('#mt-note').value, partId: stockSel.value || null, qty: overlay.querySelector('#mt-qty').value };
+        const items = [];
+        overlay.querySelectorAll('.mt-kitpart').forEach((sel) => { const i = sel.dataset.i; const q = overlay.querySelector(`.mt-kitqty[data-i="${i}"]`).value; if (sel.value) items.push({ partId: sel.value, qty: q }); });
+        overlay.querySelectorAll('#mt-extra .kit-line').forEach((row) => { const pid = row.querySelector('.mt-xpart').value; const q = row.querySelector('.mt-xqty').value; if (pid) items.push({ partId: pid, qty: q }); });
+        const payload = { part: overlay.querySelector('#mt-part').value, km: overlay.querySelector('#mt-km').value, date: overlay.querySelector('#mt-date').value, note: overlay.querySelector('#mt-note').value, items };
         try {
           const r = await api('POST', '/admin/vehicles/' + vehicleId + '/maint', payload);
-          _veh.analysis = r.analysis; closeModal(); toast('Remplacement enregistré.', 'ok');
+          _veh.analysis = r.analysis; closeModal();
+          toast(r.maint.cost != null ? `Entretien enregistré (${eur(r.maint.cost)}).` : 'Entretien enregistré.', 'ok');
           await loadFleet(); vehRefresh();
         } catch (e) { toast(e.message, 'err'); }
       };
@@ -2458,48 +2548,77 @@ function vehicleMaintPDF(vehicleId) {
   setTimeout(() => { w.focus(); w.print(); }, 300);
 }
 
-// Onglet « Demandes concernant les véhicules en attente ».
+// Liste de contrôle rapide pour un ordre de réparation.
+const REPAIR_CHECKUP = ['Niveaux (huile / liquides)', 'Éclairage & signalisation', 'État des pneus', 'Freins', 'Pare-brise / essuie-glaces', 'Documents de bord', 'Propreté', 'Essai routier OK'];
+
+// Onglet « Demandes concernant les véhicules en attente » — ordres de réparation.
 function vehTabPending(body) {
   const isAdmin = State.user.role === 'admin';
   const reports = _veh.reports;
   const pending = reports.filter((r) => r.status === 'pending');
-  const others = reports.filter((r) => r.status !== 'pending').slice(0, 30);
-  const card = (r) => {
-    const editable = isAdmin && r.status === 'pending';
-    const issuesHTML = r.issues.length ? (editable
-      ? `<div class="vr-reslist">${r.issues.map((i, idx) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}"> Réalisé : ${esc(i)}${issueUrgencyBadge(i)}</label>`).join('')}</div>`
-      : issuesWithResolution(r)) : '';
-    return `<div class="card veh-report">
-      <div class="vr-head">
-        <strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
-        <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span> ${resolutionBadge(r)}
-      </div>
-      <div class="help">Signalé par ${esc(r.userName)} le ${fmtDateTime(r.createdAt)}</div>
-      ${issuesHTML}
-      ${r.note ? `<p style="margin:.3rem 0 0">${esc(r.note)}</p>` : ''}
-      ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ ${esc(r.adminNote)}</p>` : ''}
-      ${editable ? `<div class="vr-actions">
-        <input class="vr-note" data-note="${r.id}" placeholder="Note / motif si non réalisé" value="${esc(r.adminNote || '')}">
-        <button class="btn sm" data-decide="${r.id}" data-d="reviewed">Pris en compte</button>
-        <button class="btn ok sm" data-decide="${r.id}" data-d="closed">Clôturer (travaux statués)</button>
-      </div>
-      <p class="help">Cochez les usures « réalisées ». En clôturant, les usures non cochées seront marquées non réalisées (motif requis).</p>` : ''}
-    </div>`;
-  };
+  // Non clôturés (pris en compte) que l'on peut ré-ouvrir ou clôturer.
+  const openOrders = reports.filter((r) => r.status === 'reviewed');
+  const closed = reports.filter((r) => r.status === 'closed').slice(0, 20);
+
+  // Carte « ordre de réparation » éditable (signalement en attente).
+  const orderCard = (r) => `<div class="card repair-order">
+    <div class="ro-head">
+      <div><span class="ro-tag">ORDRE DE RÉPARATION</span> N° ${esc(r.id)}</div>
+      <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span>
+    </div>
+    <div class="ro-grid">
+      <div><span class="help">Véhicule</span><br><strong>${esc(r.vehicleName)}</strong></div>
+      <div><span class="help">Immatriculation</span><br>${esc(r.plate)}</div>
+      <div><span class="help">Kilométrage</span><br>${kmFmt(r.km)}</div>
+      <div><span class="help">Déclarant</span><br>${esc(r.userName)}</div>
+      <div><span class="help">Le</span><br>${fmtDateTime(r.createdAt)}</div>
+    </div>
+    <h4 style="margin:.6rem 0 .3rem">Travaux demandés</h4>
+    ${r.issues.length ? `<div class="vr-reslist">${r.issues.map((i) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}" ${(r.resolutions || []).find((x) => x.issue === i && x.done) ? 'checked' : ''}> Réalisé : ${esc(i)}${issueUrgencyBadge(i)}</label>`).join('')}</div>` : '<p class="help">Aucune usure cochée — voir la remarque du chauffeur.</p>'}
+    ${r.note ? `<p style="margin:.3rem 0 0"><em>« ${esc(r.note)} »</em></p>` : ''}
+    <h4 style="margin:.7rem 0 .3rem">Check-up atelier rapide</h4>
+    <div class="vr-reslist ro-checkup">${REPAIR_CHECKUP.map((c) => `<label class="veh-check"><input type="checkbox" class="ro-chk" data-rep="${r.id}" data-c="${esc(c)}"> ${esc(c)}</label>`).join('')}</div>
+    <label style="margin-top:.5rem">Commentaire de clôture / motif</label>
+    <input class="vr-note" data-note="${r.id}" placeholder="Travaux réalisés, pièces, ou motif de non-réalisation…" value="${esc(r.adminNote || '')}">
+    <div class="vr-actions" style="margin-top:.5rem">
+      <button class="btn sm" data-decide="${r.id}" data-d="reviewed">Prendre en compte (laisser ouvert)</button>
+      <button class="btn ok sm" data-decide="${r.id}" data-d="closed">Clôturer (travaux statués)</button>
+      <button class="btn ghost sm" data-none="${r.id}">Aucune réparation à effectuer</button>
+    </div>
+  </div>`;
+
+  // Carte récapitulative (traité / clôturé) avec ré-ouverture si non clôturé.
+  const summaryCard = (r) => `<div class="card veh-report">
+    <div class="vr-head"><strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
+      <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span> ${resolutionBadge(r)}</div>
+    <div class="help">Signalé par ${esc(r.userName)} le ${fmtDateTime(r.createdAt)}</div>
+    ${issuesWithResolution(r)}
+    ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ ${esc(r.adminNote)}</p>` : ''}
+    ${isAdmin ? `<div class="vr-actions" style="margin-top:.4rem">
+      <button class="btn sm" data-reopen="${r.id}">Ré-ouvrir</button>
+      ${r.status !== 'closed' ? `<button class="btn ok sm" data-reopenclose="${r.id}">Clôturer</button>` : ''}
+    </div>` : ''}
+  </div>`;
+
   body.innerHTML = `
-    <h3>En attente (${pending.length})</h3>
-    ${pending.length ? pending.map(card).join('') : '<div class="alert ok">Aucun signalement en attente. 👍</div>'}
-    ${others.length ? `<h3 style="margin-top:1.2rem">Traités récemment</h3>${others.map(card).join('')}` : ''}`;
-  if (isAdmin) {
-    body.querySelectorAll('[data-decide]').forEach((b) => b.onclick = async () => {
-      const id = b.dataset.decide;
-      const rep = pending.find((x) => x.id === id);
-      const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
-      const resolutions = rep ? rep.issues.map((i) => ({ issue: i, done: !!body.querySelector(`.vr-res[data-rep="${id}"][data-issue="${cssEsc(i)}"]`)?.checked })) : [];
-      try { await api('POST', '/admin/vehicle-reports/' + id + '/decide', { decision: b.dataset.d, adminNote: note, resolutions }); await loadFleet(); vehTab('pending'); toast('Mis à jour. Le chauffeur est informé.', 'ok'); }
-      catch (e) { toast(e.message, 'err'); }
-    });
-  }
+    <h3>Ordres de réparation ouverts (${pending.length})</h3>
+    ${pending.length ? pending.map(orderCard).join('') : '<div class="alert ok">Aucune demande en attente. 👍</div>'}
+    ${openOrders.length ? `<h3 style="margin-top:1.2rem">Pris en compte — à clôturer (${openOrders.length})</h3>${openOrders.map(summaryCard).join('')}` : ''}
+    ${closed.length ? `<h3 style="margin-top:1.2rem">Clôturés récemment</h3>${closed.map(summaryCard).join('')}` : ''}`;
+
+  if (!isAdmin) return;
+  const collectAndDecide = async (id, decision, extra = {}) => {
+    const rep = reports.find((x) => x.id === id);
+    const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
+    const resolutions = rep && rep.issues ? rep.issues.map((i) => ({ issue: i, done: !!body.querySelector(`.vr-res[data-rep="${id}"][data-issue="${cssEsc(i)}"]`)?.checked })) : [];
+    const checkup = REPAIR_CHECKUP.map((c) => ({ label: c, ok: !!body.querySelector(`.ro-chk[data-rep="${id}"][data-c="${cssEsc(c)}"]`)?.checked }));
+    try { await api('POST', '/admin/vehicle-reports/' + id + '/decide', Object.assign({ decision, adminNote: note, resolutions, checkup }, extra)); await loadFleet(); vehTab('pending'); toast('Mis à jour. Le chauffeur est informé.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelectorAll('[data-decide]').forEach((b) => b.onclick = () => collectAndDecide(b.dataset.decide, b.dataset.d));
+  body.querySelectorAll('[data-none]').forEach((b) => b.onclick = () => collectAndDecide(b.dataset.none, 'closed', { resolution: 'none' }));
+  body.querySelectorAll('[data-reopen]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopen + '/decide', { decision: 'pending' }); await loadFleet(); vehTab('pending'); toast('Ré-ouvert.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-reopenclose]').forEach((b) => b.onclick = async () => { const note = prompt('Commentaire de clôture (obligatoire si rien n\'a été fait) :', ''); try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopenclose + '/decide', { decision: 'closed', adminNote: note || 'Clôturé', resolution: 'none' }); await loadFleet(); vehTab('pending'); toast('Clôturé.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
 }
 // Échappe une valeur pour un sélecteur d'attribut CSS.
 function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
@@ -2959,9 +3078,7 @@ async function stockParts(body) {
       <div style="margin-top:.7rem"><button class="btn accent" id="pt-add">Ajouter au stock</button></div>
     </div>
     <div class="card"><h3>Stock (${parts.length}) — valeur totale ${eur(stockValue)}</h3>
-      ${parts.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Désignation</th><th>Réf.</th><th>Catégorie</th><th>Prix U.</th><th>Qté</th><th>Valeur</th><th></th></tr></thead>
-      <tbody>${parts.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.ref || '—')}</td><td>${esc(p.category)}</td><td>${eur(p.unitPrice)}</td><td>${p.qty} ${esc(p.unit)}</td><td>${eur(p.unitPrice * p.qty)}</td>
-        <td style="white-space:nowrap"><button class="btn ghost sm" data-editp="${p.id}">✎</button> <button class="btn ghost sm" data-delp="${p.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune pièce en stock.</p>'}
+      ${parts.length ? stockByCategory(parts) : '<p class="help">Aucune pièce en stock.</p>'}
     </div>`;
   document.getElementById('pt-add').onclick = async () => {
     const payload = { name: v('#pt-name'), ref: v('#pt-ref'), category: v('#pt-cat'), unitPrice: v('#pt-price'), qty: v('#pt-qty'), unit: v('#pt-unit') };
@@ -2971,6 +3088,21 @@ async function stockParts(body) {
   body.querySelectorAll('[data-delp]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette pièce ?')) return; try { await api('DELETE', '/admin/parts/' + b.dataset.delp); stockParts(body); } catch (e) { toast(e.message, 'err'); } });
   body.querySelectorAll('[data-editp]').forEach((b) => b.onclick = () => editPartModal(parts.find((p) => p.id === b.dataset.editp), body));
   function v(sel) { return document.querySelector(sel).value; }
+}
+
+// Stock affiché en tableaux par catégorie (lecture rapide). Pastille de stock bas.
+function stockByCategory(parts) {
+  const byCat = {};
+  parts.forEach((p) => { (byCat[p.category || 'Divers'] = byCat[p.category || 'Divers'] || []).push(p); });
+  const lvlPill = (q) => q <= 1 ? '<span class="pill danger">stock bas</span>' : q === 2 ? '<span class="pill warn">à surveiller</span>' : q === 3 ? '<span class="pill ok">ok</span>' : '';
+  return Object.keys(byCat).sort().map((cat) => {
+    const list = byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name));
+    const val = list.reduce((s, p) => s + p.unitPrice * p.qty, 0);
+    return `<h4 style="margin:1rem 0 .3rem">${esc(cat)} <span class="help">${list.length} réf. · ${eur(val)}</span></h4>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Désignation</th><th>Réf.</th><th>Prix U.</th><th>Qté</th><th>Valeur</th><th></th></tr></thead>
+      <tbody>${list.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.ref || '—')}</td><td>${eur(p.unitPrice)}</td><td>${p.qty} ${esc(p.unit)} ${lvlPill(p.qty)}</td><td>${eur(p.unitPrice * p.qty)}</td>
+        <td style="white-space:nowrap"><button class="btn ghost sm" data-editp="${p.id}">✎</button> <button class="btn ghost sm" data-delp="${p.id}">✕</button></td></tr>`).join('')}</tbody></table></div>`;
+  }).join('');
 }
 
 function editPartModal(p, body) {
