@@ -1923,6 +1923,152 @@ app.delete('/api/messages/:id', authRequired, staffRequired, async (req, res) =>
   res.json({ ok: true });
 });
 
+// ---------------------------------------------------------------------------
+// Stocks de pièces / consommables + coût d'exploitation des véhicules (admin)
+// ---------------------------------------------------------------------------
+function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function monthsBetween(fromIso, toDate) {
+  const f = new Date(fromIso); if (isNaN(f.getTime())) return 1;
+  const months = (toDate.getFullYear() - f.getFullYear()) * 12 + (toDate.getMonth() - f.getMonth()) + 1;
+  return Math.max(1, months);
+}
+
+app.get('/api/admin/parts', authRequired, adminRequired, (req, res) => {
+  res.json({ parts: getData().parts.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))) });
+});
+app.post('/api/admin/parts', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { name, ref, category, unitPrice, qty, unit } = req.body || {};
+  if (!String(name || '').trim()) return res.status(400).json({ error: 'Nom de la pièce obligatoire' });
+  const part = { id: nextId('part'), name: String(name).trim(), ref: String(ref || '').trim() || null, category: String(category || 'piece').trim(), unitPrice: num(unitPrice), qty: num(qty), unit: String(unit || 'u').trim() };
+  db.parts.push(part); await save(); res.json({ part });
+});
+app.put('/api/admin/parts/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const p = db.parts.find((x) => x.id === req.params.id);
+  if (!p) return res.status(404).json({ error: 'Pièce introuvable' });
+  const { name, ref, category, unitPrice, qty, unit } = req.body || {};
+  if (name !== undefined) p.name = String(name).trim() || p.name;
+  if (ref !== undefined) p.ref = String(ref || '').trim() || null;
+  if (category !== undefined) p.category = String(category || 'piece').trim();
+  if (unitPrice !== undefined) p.unitPrice = num(unitPrice);
+  if (qty !== undefined) p.qty = num(qty);
+  if (unit !== undefined) p.unit = String(unit || 'u').trim();
+  await save(); res.json({ part: p });
+});
+app.delete('/api/admin/parts/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.parts = db.parts.filter((p) => p.id !== req.params.id);
+  await save(); res.json({ ok: true });
+});
+
+// Dépenses d'un véhicule (entretien, carburant, pièces…).
+app.post('/api/admin/vehicles/:id/expense', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  const { date, category, label, amount, partId, qty } = req.body || {};
+  let amt = num(amount);
+  let usedPart = null;
+  if (partId) {
+    usedPart = db.parts.find((p) => p.id === partId);
+    if (usedPart) {
+      const q = num(qty) || 1;
+      amt = usedPart.unitPrice * q;
+      usedPart.qty = Math.max(0, usedPart.qty - q); // déstockage
+    }
+  }
+  if (amt <= 0) return res.status(400).json({ error: 'Montant (ou pièce + quantité) requis' });
+  const exp = { id: nextId('vexp'), vehicleId: v.id, date: validDate(date) ? date : new Date().toISOString().slice(0, 10), category: String(category || 'entretien'), label: String(label || (usedPart ? usedPart.name : 'Dépense')).trim(), amount: Math.round(amt * 100) / 100, partId: usedPart ? usedPart.id : null, qty: num(qty) || (usedPart ? 1 : null), km: intStr((req.body || {}).km) };
+  db.vehicleExpenses.push(exp); await save(); res.json({ expense: exp });
+});
+app.delete('/api/admin/vehicles/expense/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.vehicleExpenses = db.vehicleExpenses.filter((e) => e.id !== req.params.id);
+  await save(); res.json({ ok: true });
+});
+
+// Synthèse des coûts par véhicule (mensuel + au km), du plus cher au moins cher.
+app.get('/api/admin/vehicle-costs', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const now = new Date();
+  const rows = db.vehicles.map((v) => {
+    const exps = db.vehicleExpenses.filter((e) => e.vehicleId === v.id);
+    const total = exps.reduce((s, e) => s + num(e.amount), 0);
+    const byCat = {};
+    exps.forEach((e) => { byCat[e.category] = (byCat[e.category] || 0) + num(e.amount); });
+    const kmDriven = Math.max(0, effectiveKm(db, v) - (num(v.baseKm)));
+    const months = monthsBetween(v.createdAt || now.toISOString(), now);
+    return {
+      id: v.id, name: v.name, plate: v.plate || null, model: v.model || null,
+      total: Math.round(total * 100) / 100,
+      monthly: Math.round((total / months) * 100) / 100,
+      perKm: kmDriven > 0 ? Math.round((total / kmDriven) * 1000) / 1000 : null,
+      kmDriven, months, byCat, expenses: exps.slice().sort((a, b) => b.date.localeCompare(a.date)),
+    };
+  }).sort((a, b) => b.total - a.total);
+  res.json({ vehicles: rows });
+});
+
+// ---------------------------------------------------------------------------
+// Financière (recettes / charges / TVA / clients) — administrateur
+// ---------------------------------------------------------------------------
+const FINANCE_CLIENTS = ['GLS', 'FedEx', 'Ciblex'];
+
+function financeSummary(db) {
+  const entries = db.finance.entries || [];
+  const byMonth = {}; // ym -> { revenue, chargesFixed, chargesVar, vatCollected, vatDeductible }
+  const byClient = {}; // client -> { revenue, charges }
+  for (const e of entries) {
+    const ym = e.ym; if (!ym) continue;
+    const m = byMonth[ym] = byMonth[ym] || { ym, revenue: 0, chargesFixed: 0, chargesVar: 0, vatCollected: 0, vatDeductible: 0 };
+    const amt = num(e.amount);
+    const vat = amt * (num(e.vatRate) / 100);
+    if (e.kind === 'recette') { m.revenue += amt; m.vatCollected += vat; }
+    else { if (e.fixed) m.chargesFixed += amt; else m.chargesVar += amt; m.vatDeductible += vat; }
+    if (e.client && FINANCE_CLIENTS.includes(e.client)) {
+      const c = byClient[e.client] = byClient[e.client] || { client: e.client, revenue: 0, charges: 0 };
+      if (e.kind === 'recette') c.revenue += amt; else c.charges += amt;
+    }
+  }
+  const months = Object.values(byMonth).map((m) => ({
+    ...m,
+    charges: m.chargesFixed + m.chargesVar,
+    result: m.revenue - m.chargesFixed - m.chargesVar,
+    vatDue: Math.round((m.vatCollected - m.vatDeductible) * 100) / 100,
+  })).sort((a, b) => a.ym.localeCompare(b.ym));
+  const round = (o) => { for (const k of Object.keys(o)) if (typeof o[k] === 'number') o[k] = Math.round(o[k] * 100) / 100; return o; };
+  months.forEach(round);
+  const totals = months.reduce((t, m) => ({ revenue: t.revenue + m.revenue, charges: t.charges + m.charges, result: t.result + m.result, vatDue: t.vatDue + m.vatDue }), { revenue: 0, charges: 0, result: 0, vatDue: 0 });
+  round(totals);
+  const clients = Object.values(byClient).map((c) => round({ ...c, margin: c.revenue - c.charges, marginPct: c.revenue > 0 ? Math.round(((c.revenue - c.charges) / c.revenue) * 1000) / 10 : 0 })).sort((a, b) => b.margin - a.margin);
+  // Projection : moyenne des résultats mensuels appliquée jusqu'à fin d'année.
+  const avgResult = months.length ? totals.result / months.length : 0;
+  const now = new Date();
+  const monthsLeftYear = 12 - (now.getMonth() + 1);
+  const projection = { avgMonthlyResult: Math.round(avgResult * 100) / 100, monthsLeftYear, projectedYearEnd: Math.round((totals.result + avgResult * monthsLeftYear) * 100) / 100 };
+  return { months, totals, clients, projection, clientsList: FINANCE_CLIENTS };
+}
+
+app.get('/api/admin/finance', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  res.json({ entries: db.finance.entries.slice().sort((a, b) => (b.ym || '').localeCompare(a.ym || '')), summary: financeSummary(db), clients: FINANCE_CLIENTS });
+});
+app.post('/api/admin/finance', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { ym, kind, category, client, amount, fixed, vatRate, note } = req.body || {};
+  if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) return res.status(400).json({ error: 'Mois invalide (AAAA-MM)' });
+  if (!['recette', 'charge'].includes(kind)) return res.status(400).json({ error: 'Type invalide' });
+  if (num(amount) <= 0) return res.status(400).json({ error: 'Montant invalide' });
+  const entry = { id: nextId('fin'), ym, kind, category: String(category || (kind === 'recette' ? 'Chiffre d\'affaires' : 'Charge')).trim(), client: FINANCE_CLIENTS.includes(client) ? client : null, amount: Math.round(num(amount) * 100) / 100, fixed: !!fixed, vatRate: num(vatRate), note: String(note || '').trim() };
+  db.finance.entries.push(entry); await save(); res.json({ entry, summary: financeSummary(db) });
+});
+app.delete('/api/admin/finance/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.finance.entries = db.finance.entries.filter((e) => e.id !== req.params.id);
+  await save(); res.json({ ok: true, summary: financeSummary(db) });
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

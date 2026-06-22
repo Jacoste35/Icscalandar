@@ -464,3 +464,55 @@ tr:last-child td { border-bottom: 0; }
 .msg-item.unread { border-left: 4px solid var(--accent); background: #fff7f7; }
 .msg-head { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
 .msg-body { margin: .3rem 0; font-size: .92rem; }
+
+/* Responsable au-dessus de son équipe (gestion des absences) */
+.abs-resp { background: #f1f5f9; border-radius: 10px; padding: .5rem .6rem; margin-bottom: .6rem; }
+
+/* Coûts d'exploitation (barres) */
+.cost-bar { height: 10px; background: #eef2f7; border-radius: 999px; overflow: hidden; margin: .5rem 0 .3rem; }
+.cost-bar-fill { height: 100%; background: linear-gradient(90deg, var(--brand-2), var(--accent)); }
+
+/* Graphiques financiers (barres résultat) */
+.bars { display: flex; gap: .5rem; align-items: flex-end; overflow-x: auto; padding: .5rem 0; }
+.bar-col { flex: 0 0 auto; min-width: 56px; text-align: center; }
+.bar-wrap { height: 120px; display: flex; align-items: flex-end; justify-content: center; }
+.bar { width: 26px; border-radius: 6px 6px 0 0; min-height: 3px; }
+.bar.pos { background: var(--ok); }
+.bar.neg { background: var(--danger); }
+.bar-lbl { font-size: .72rem; color: var(--muted); margin-top: .25rem; white-space: nowrap; }
+.bar-val { font-size: .72rem; font-weight: 700; }
+.pos { color: #15803d; }
+.neg { color: var(--danger); }
+td.pos { color: #15803d; font-weight: 700; }
+td.neg { color: var(--danger); font-weight: 700; }
+
+/* ============== RESPONSIVE (mobile / tablette) ============== */
+@media (max-width: 860px) {
+  /* Évite le zoom auto iOS et améliore la lisibilité des champs */
+  input, select, textarea { font-size: 16px; padding: .7rem .8rem; }
+  label { font-size: .95rem; }
+  /* Icône du menu nettement plus grande et lisible */
+  .nav-toggle {
+    top: .55rem; left: .6rem; padding: .55rem .8rem; font-size: 1.5rem;
+    background: rgba(255,255,255,.22); border-radius: 10px;
+  }
+  .sidebar .brand { font-size: 1.05rem; padding-left: 4rem; min-height: 56px; }
+  .sidebar .brand .brand-logo { width: 34px; height: 34px; flex-basis: 34px; }
+  /* Cibles tactiles plus grandes dans le menu */
+  .sidebar nav button { font-size: 1.05rem; padding: .9rem 1rem; }
+  .nav-section { font-size: .8rem; }
+  /* Onglets : défilables horizontalement, plus gros */
+  .view-switch { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .view-switch button { font-size: .95rem; padding: .6rem .9rem; white-space: nowrap; flex: 0 0 auto; }
+  .btn { font-size: 1rem; }
+  .btn.sm { font-size: .9rem; padding: .45rem .75rem; }
+  .page-head h1 { font-size: 1.35rem; }
+  .bar-col { min-width: 64px; }
+}
+@media (max-width: 520px) {
+  .main { padding: .7rem; }
+  .grid2 { grid-template-columns: 1fr; }
+  .person-grid { grid-template-columns: 1fr; }
+  /* Tableaux larges : police lisible + scroll horizontal géré par .table-wrap */
+  .veh-table th, .veh-table td { font-size: .9rem; padding: .5rem .45rem; }
+}
