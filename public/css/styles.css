@@ -452,3 +452,15 @@ tr:last-child td { border-bottom: 0; }
 /* Étiquettes de zones sur le schéma véhicule */
 .van-label { fill: #334155; font-size: 9px; font-weight: 600; pointer-events: none; }
 .van-side-label { fill: #475569; font-size: 9px; font-weight: 600; pointer-events: none; }
+
+/* Tour : base de référence + dommages réparés */
+.veh-baseline { border-left: 4px solid var(--brand); }
+.impact-row.repaired span { color: var(--muted); text-decoration: line-through; }
+.tr-manq, .tr-dmg { margin-top: .2rem; }
+
+/* Messagerie interne */
+.msg-compose { display: grid; gap: .4rem; margin-bottom: .8rem; }
+.msg-item { border: 1px solid var(--border); border-radius: 10px; padding: .6rem .8rem; margin-bottom: .6rem; }
+.msg-item.unread { border-left: 4px solid var(--accent); background: #fff7f7; }
+.msg-head { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.msg-body { margin: .3rem 0; font-size: .92rem; }
