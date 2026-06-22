@@ -589,6 +589,13 @@ async function renderDashboard(main) {
     const classement = staff ? retardRankingHTML(events, team) : '';
     const philo = philoMessageHTML(retardCountSince(myRetards, 365));
 
+    // Conformité des véhicules (encadrement) : mises en demeure avant avertissement
+    let vehicleWarnPanel = '';
+    if (staff) {
+      try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); }
+      catch (e) {}
+    }
+
     // Alerte conflits de dates dans mon groupe
     const conflictPanel = conflictAlertHTML(events, team);
 
@@ -608,6 +615,7 @@ async function renderDashboard(main) {
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
       </div>
       ${philo}
+      ${vehicleWarnPanel}
       ${retardCards}
       ${conflictPanel}
       ${pendingPanel}
@@ -1854,6 +1862,23 @@ const VEHICLE_ISSUES = [
 // Types de dommage relevés lors d'un tour de véhicule.
 const IMPACT_TYPES = ['Rayure', 'Choc / enfoncement', 'Fissure', 'Bris de glace', 'Rouille', 'Pièce manquante / cassée', 'Autre'];
 
+// Bandeau d'accueil (encadrement) : véhicules/chauffeurs à mettre en conformité.
+function vehicleWarningsHTML(warnings) {
+  if (!warnings || !warnings.length) return '';
+  const row = (w) => `<li>
+    <span class="pill ${w.severity === 'avertissement' ? 'danger' : 'warn'}">${w.severity === 'avertissement' ? 'AVERTISSEMENT' : 'À surveiller'}</span>
+    <strong>${esc(w.vehicleName || '—')}</strong>${w.plate ? ` (${esc(w.plate)})` : ''}${w.driverName ? ` · chauffeur : <strong>${esc(w.driverName)}</strong>` : ''}
+    <div class="help">${esc(w.detail)}</div>
+  </li>`;
+  const av = warnings.filter((w) => w.severity === 'avertissement');
+  const su = warnings.filter((w) => w.severity !== 'avertissement');
+  return `<div class="card" style="border-left:5px solid var(--danger)">
+    <h3 style="margin:0">⚠️ Conformité des véhicules — à mettre en demeure avant avertissement</h3>
+    <p class="help" style="margin:.3rem 0 .6rem">Manquements relevés lors des derniers tours de véhicule (documents, équipements, propreté, localisation des documents). ${av.length} avertissement(s), ${su.length} point(s) à surveiller.</p>
+    <ul class="veh-alert-list veh-warn-list">${av.map(row).join('')}${su.map(row).join('')}</ul>
+  </div>`;
+}
+
 function vehLabel(v) { return `${v.name}${v.plate ? ' — ' + v.plate : ''}`; }
 function kmFmt(n) { return (Number(n) || 0).toLocaleString('fr-FR') + ' km'; }
 function vReportStatusLabel(s) { return s === 'reviewed' ? 'Pris en compte' : s === 'closed' ? 'Clôturé' : 'En attente'; }
@@ -2111,43 +2136,95 @@ function vehTabPending(body) {
   }
 }
 
-// Onglet « Tour du véhicule » : schéma cliquable + relevé des chocs.
-let _tour = { vehicleId: '', impacts: [] };
+// Onglet « Tour du véhicule » : documents/équipements + propreté + chocs.
+let _tour = { vehicleId: '', driverId: '', km: '', note: '', checks: {}, impacts: [] };
+
+// État d'une case : conforme par défaut (true) tant qu'on ne la décoche pas.
+function trCheckOk(code) { const c = _tour.checks[code]; return !c || c.ok !== false; }
+function trCheckId(code, vehicle) {
+  const c = _tour.checks[code];
+  if (c && c.id !== undefined) return c.id;
+  const arch = vehicle && vehicle.documents && vehicle.documents[code];
+  return arch ? arch.id : '';
+}
+
+function captureTourForm() {
+  const d = document.getElementById('tr-driver'); if (d) _tour.driverId = d.value;
+  const k = document.getElementById('tr-km'); if (k) _tour.km = k.value;
+  const n = document.getElementById('tr-note'); if (n) _tour.note = n.value;
+  _tour.checks = _tour.checks || {};
+  document.querySelectorAll('.tr-chk').forEach((cb) => {
+    const code = cb.dataset.code; _tour.checks[code] = _tour.checks[code] || {}; _tour.checks[code].ok = cb.checked;
+  });
+  document.querySelectorAll('.tr-id').forEach((inp) => {
+    const code = inp.dataset.code; _tour.checks[code] = _tour.checks[code] || { ok: true }; _tour.checks[code].id = inp.value;
+  });
+}
+
+function checkItemHTML(c, vehicle) {
+  const ok = trCheckOk(c.code);
+  const id = c.hasId ? `<input class="tr-id" data-code="${c.code}" placeholder="${esc(c.idLabel || 'N° / référence')}" value="${esc(trCheckId(c.code, vehicle))}" style="margin-top:.25rem">` : '';
+  return `<div class="tr-check-item">
+    <label class="veh-check"><input type="checkbox" class="tr-chk" data-code="${c.code}" ${ok ? 'checked' : ''}> ${esc(c.label)}</label>
+    ${id}
+  </div>`;
+}
+
 function vehTabTour(body) {
   const vehicles = _veh.vehicles;
   if (!vehicles.length) { body.innerHTML = `<div class="alert info">Aucun véhicule. Ajoutez-en dans l'onglet « Flotte ».</div>`; return; }
-  if (!vehicles.some((v) => v.id === _tour.vehicleId)) _tour = { vehicleId: vehicles[0].id, impacts: [] };
+  if (!vehicles.some((v) => v.id === _tour.vehicleId)) _tour = { vehicleId: vehicles[0].id, driverId: '', km: '', note: '', checks: {}, impacts: [] };
+  const vehicle = vehicles.find((v) => v.id === _tour.vehicleId);
+  const team = _veh.team || [];
+  const docs = (_veh.checksDef || []).filter((c) => c.group === 'doc');
+  const etat = (_veh.checksDef || []).filter((c) => c.group === 'etat');
   body.innerHTML = `
     <div class="card">
       <div class="grid2">
         <div><label>Véhicule</label><select id="tr-vehicle">${vehicles.map((v) => `<option value="${v.id}" ${v.id === _tour.vehicleId ? 'selected' : ''}>${esc(vehLabel(v))}</option>`).join('')}</select></div>
-        <div><label>Kilométrage</label><input id="tr-km" type="number" min="0" placeholder="km du jour"></div>
+        <div><label>Chauffeur utilisant ce véhicule</label><select id="tr-driver"><option value="">— Non précisé —</option>${team.map((m) => `<option value="${m.id}" ${m.id === _tour.driverId ? 'selected' : ''}>${esc(m.firstName)} ${esc(m.lastName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('')}</select></div>
+        <div><label>Kilométrage</label><input id="tr-km" type="number" min="0" placeholder="km du jour" value="${esc(_tour.km)}"></div>
       </div>
-      <p class="help" style="margin-top:.6rem">Cliquez sur une zone du véhicule pour signaler un choc ou un dommage, puis choisissez le type.</p>
-      <div class="van-wrap">${vanDiagramSVG(_tour.impacts)}</div>
+      <p class="help" style="margin-top:.5rem">Cochez ce qui est <strong>présent et conforme</strong>. Tout élément <strong>décoché</strong> sera signalé (manquement). La licence et la carte gasoil sont archivées dans le dossier du véhicule pour le suivi.</p>
     </div>
     <div class="card">
-      <h3>Points relevés (${_tour.impacts.length})</h3>
-      <div id="tr-list"></div>
-      <label style="margin-top:.6rem">Observations générales (facultatif)</label>
-      <textarea id="tr-note" style="min-height:70px" placeholder="État général, propreté, équipements…"></textarea>
+      <h3>📄 Documents & équipements de bord</h3>
+      <div class="tr-checks">${docs.map((c) => checkItemHTML(c, vehicle)).join('')}</div>
+    </div>
+    <div class="card">
+      <h3>🧽 Propreté & état général</h3>
+      <div class="tr-checks">${etat.map((c) => checkItemHTML(c, vehicle)).join('')}</div>
+    </div>
+    <div class="card">
+      <h3>💥 Chocs & dommages carrosserie</h3>
+      <p class="help">Cliquez sur une zone du véhicule pour signaler un choc ou un dommage, puis choisissez le type.</p>
+      <div class="van-wrap">${vanDiagramSVG(_tour.impacts)}</div>
+      <div id="tr-list" style="margin-top:.6rem"></div>
+    </div>
+    <div class="card">
+      <label>Observations générales (facultatif)</label>
+      <textarea id="tr-note" style="min-height:70px" placeholder="État général, remarques…">${esc(_tour.note)}</textarea>
       <div style="margin-top:1rem"><button class="btn accent" id="tr-save">Enregistrer le tour du véhicule</button></div>
     </div>
     <div class="card"><h3>Tours de véhicule précédents</h3><div id="tr-history"></div></div>`;
 
-  document.getElementById('tr-vehicle').onchange = (e) => { _tour = { vehicleId: e.target.value, impacts: [] }; vehTab('tour'); };
+  document.getElementById('tr-vehicle').onchange = (e) => { _tour = { vehicleId: e.target.value, driverId: '', km: '', note: '', checks: {}, impacts: [] }; vehTab('tour'); };
   bindVanZones(body);
   renderTourList();
   renderTourHistory(document.getElementById('tr-history'));
   document.getElementById('tr-save').onclick = async () => {
-    if (!_tour.impacts.length) { toast('Ajoutez au moins un point sur le schéma.', 'err'); return; }
+    captureTourForm();
+    const checksDef = _veh.checksDef || [];
+    const hasChecks = checksDef.length > 0;
+    if (!hasChecks && !_tour.impacts.length) { toast('Renseignez les contrôles ou ajoutez un choc.', 'err'); return; }
+    // Construit l'objet checks pour toutes les cases définies.
+    const checks = {};
+    checksDef.forEach((c) => { const cur = _tour.checks[c.code] || {}; checks[c.code] = { ok: cur.ok !== false, id: c.hasId ? (cur.id || '') : '' }; });
     try {
       await api('POST', '/staff/vehicles/' + _tour.vehicleId + '/inspection', {
-        km: document.getElementById('tr-km').value,
-        impacts: _tour.impacts,
-        note: document.getElementById('tr-note').value,
+        km: _tour.km, driverId: _tour.driverId, note: _tour.note, checks, impacts: _tour.impacts,
       });
-      _tour = { vehicleId: _tour.vehicleId, impacts: [] };
+      _tour = { vehicleId: _tour.vehicleId, driverId: '', km: '', note: '', checks: {}, impacts: [] };
       toast('Tour du véhicule enregistré.', 'ok');
       await loadFleet(); vehTab('tour');
     } catch (e) { toast(e.message, 'err'); }
@@ -2158,6 +2235,7 @@ function bindVanZones(scope) {
   scope.querySelectorAll('.van-zone').forEach((z) => z.onclick = () => {
     const zone = z.dataset.zone, label = z.dataset.label;
     pickImpactType(label, (type, note) => {
+      captureTourForm();
       _tour.impacts.push({ zone, zoneLabel: label, type, note: note || '' });
       vehTab('tour');
     });
@@ -2186,19 +2264,28 @@ function renderTourList() {
     <span><strong>${esc(i.zoneLabel)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''}</span>
     <button class="btn ghost sm" data-rmimp="${idx}">✕</button>
   </div>`).join('');
-  el.querySelectorAll('[data-rmimp]').forEach((b) => b.onclick = () => { _tour.impacts.splice(Number(b.dataset.rmimp), 1); vehTab('tour'); });
+  el.querySelectorAll('[data-rmimp]').forEach((b) => b.onclick = () => { captureTourForm(); _tour.impacts.splice(Number(b.dataset.rmimp), 1); vehTab('tour'); });
 }
 
 function renderTourHistory(el) {
   const recs = _veh.inspections.filter((i) => i.vehicleId === _tour.vehicleId);
   const isAdmin = State.user.role === 'admin';
+  const labelByCode = Object.fromEntries((_veh.checksDef || []).map((c) => [c.code, c.label]));
   if (!recs.length) { el.innerHTML = `<p class="help">Aucun tour enregistré pour ce véhicule.</p>`; return; }
-  el.innerHTML = recs.map((r) => `<div class="veh-report">
-    <div class="vr-head"><strong>${fmtDate(r.date)}</strong> · ${kmFmt(r.km)} · ${esc(r.userName)} <span class="pill">${r.impacts.length} point(s)</span>
-      ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
-    <ul class="vr-issues">${r.impacts.map((i) => `<li><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''}</li>`).join('')}</ul>
-    ${r.note ? `<p style="margin:.2rem 0 0">${esc(r.note)}</p>` : ''}
-  </div>`).join('');
+  el.innerHTML = recs.map((r) => {
+    const checks = r.checks || {};
+    const missing = Object.keys(checks).filter((k) => checks[k].ok === false).map((k) => labelByCode[k] || k);
+    const docIds = Object.keys(checks).filter((k) => checks[k].id).map((k) => `${labelByCode[k] || k} : ${checks[k].id}`);
+    return `<div class="veh-report">
+      <div class="vr-head"><strong>${fmtDate(r.date)}</strong> · ${kmFmt(r.km)}${r.driverName ? ' · chauffeur : ' + esc(r.driverName) : ''} · contrôlé par ${esc(r.userName)}
+        ${r.impacts.length ? `<span class="pill warn">${r.impacts.length} choc(s)</span>` : ''}${missing.length ? `<span class="pill danger">${missing.length} manquement(s)</span>` : '<span class="pill ok">conforme</span>'}
+        ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
+      ${missing.length ? `<div class="help" style="margin-top:.3rem">Manquements : ${missing.map(esc).join(', ')}</div>` : ''}
+      ${docIds.length ? `<div class="help">${docIds.map(esc).join(' · ')}</div>` : ''}
+      ${r.impacts.length ? `<ul class="vr-issues">${r.impacts.map((i) => `<li><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''}</li>`).join('')}</ul>` : ''}
+      ${r.note ? `<p style="margin:.2rem 0 0">${esc(r.note)}</p>` : ''}
+    </div>`;
+  }).join('');
   if (isAdmin) el.querySelectorAll('[data-delinsp]').forEach((b) => b.onclick = async () => {
     if (!confirm('Supprimer ce tour de véhicule ?')) return;
     try { await api('DELETE', '/staff/vehicles/inspection/' + b.dataset.delinsp); await loadFleet(); vehTab('tour'); toast('Supprimé.', 'ok'); }
