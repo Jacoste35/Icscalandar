@@ -468,6 +468,20 @@ tr:last-child td { border-bottom: 0; }
 /* Responsable au-dessus de son équipe (gestion des absences) */
 .abs-resp { background: #f1f5f9; border-radius: 10px; padding: .5rem .6rem; margin-bottom: .6rem; }
 
+/* Compteur « déjà pris » (saisi) dans Salariés actifs */
+.taken-base { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; align-items: center; }
+.taken-base label { display: inline-flex; align-items: center; gap: .25rem; margin: 0; font-size: .72rem; color: var(--muted); font-weight: 600; }
+.taken-base input { width: 58px; padding: .25rem .35rem; font-size: .82rem; }
+
+/* Plan de comptes (financière) */
+.acct { border: 1px solid var(--border); border-radius: 8px; margin-bottom: .45rem; }
+.acct-head { display: flex; align-items: center; gap: .5rem; padding: .55rem .7rem; cursor: pointer; }
+.acct-head:hover { background: #f8fafc; }
+.acct-caret { color: var(--muted); width: .9rem; }
+.acct-total { margin-left: auto; font-weight: 700; }
+.acct-subs { padding: 0 .7rem .5rem 2rem; }
+.acct-sub { display: flex; justify-content: space-between; padding: .25rem 0; border-top: 1px dashed var(--border); font-size: .9rem; }
+
 /* Coûts d'exploitation (barres) */
 .cost-bar { height: 10px; background: #eef2f7; border-radius: 999px; overflow: hidden; margin: .5rem 0 .3rem; }
 .cost-bar-fill { height: 100%; background: linear-gradient(90deg, var(--brand-2), var(--accent)); }
