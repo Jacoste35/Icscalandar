@@ -427,3 +427,10 @@ tr:last-child td { border-bottom: 0; }
 .impact-row { display: flex; align-items: center; gap: .55rem; padding: .35rem 0; border-bottom: 1px solid var(--border); font-size: .9rem; }
 .impact-row .btn { margin-left: auto; }
 .impact-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); flex: none; }
+
+.tr-checks { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem .9rem; }
+@media (max-width: 720px) { .tr-checks { grid-template-columns: 1fr; } }
+.tr-check-item { border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; }
+.tr-check-item .tr-id { font-size: .85rem; }
+.veh-warn-list li { margin: .5rem 0; }
+.veh-warn-list .pill { margin-right: .35rem; }

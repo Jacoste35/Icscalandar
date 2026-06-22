@@ -1107,7 +1107,105 @@ app.put('/api/admin/school-holidays', authRequired, adminRequired, async (req, r
 
 const VEHICLE_ALERT_KM = 3000; // marge d'alerte avant l'échéance d'un entretien
 
+// Points de contrôle d'un « tour du véhicule ».
+//   group : 'doc' (documents/équipements) | 'etat' (propreté & état)
+//   mandatory : un manquement constitue un possible manquement au règlement
+//   hasId : on archive un n°/nom (licence, carte gasoil) pour le suivi croisé
+const VEHICLE_CHECKS = [
+  { code: 'extincteur', label: 'Extincteur', group: 'doc', mandatory: true },
+  { code: 'licence', label: 'Licence de transport', group: 'doc', mandatory: true, hasId: true, idLabel: 'N° / nom de la licence' },
+  { code: 'assurance', label: "Attestation d'assurance", group: 'doc', mandatory: true },
+  { code: 'carte_grise', label: "Carte grise (certificat d'immatriculation)", group: 'doc', mandatory: true },
+  { code: 'carte_gasoil', label: 'Carte gasoil / carburant', group: 'doc', mandatory: true, hasId: true, idLabel: 'N° / nom de la carte gasoil' },
+  { code: 'gilet', label: 'Gilet de sécurité', group: 'doc', mandatory: true },
+  { code: 'triangle', label: 'Triangle de signalisation', group: 'doc', mandatory: true },
+  { code: 'constat', label: 'Constat amiable à bord', group: 'doc', mandatory: false },
+  { code: 'roue_secours', label: 'Roue de secours / kit anti-crevaison', group: 'doc', mandatory: false },
+  { code: 'proprete_ext', label: 'Propreté extérieure correcte', group: 'etat', mandatory: false },
+  { code: 'proprete_int', label: 'Propreté intérieure correcte', group: 'etat', mandatory: false },
+  { code: 'carburant', label: 'Niveau de carburant correct', group: 'etat', mandatory: false },
+  { code: 'adblue', label: 'Niveau AdBlue correct', group: 'etat', mandatory: false },
+  { code: 'pneus_etat', label: 'État visuel des pneus correct', group: 'etat', mandatory: false },
+  { code: 'eclairage', label: 'Éclairage fonctionnel', group: 'etat', mandatory: false },
+  { code: 'carrosserie', label: 'Carrosserie sans nouveau dommage', group: 'etat', mandatory: false },
+];
+const VEHICLE_CHECK_BY_CODE = Object.fromEntries(VEHICLE_CHECKS.map((c) => [c.code, c]));
+
 function intStr(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
+
+// Dernière inspection (tour) par véhicule.
+function latestInspections(db) {
+  const latest = {};
+  for (const ins of db.vehicleInspections) {
+    if (!latest[ins.vehicleId] || ins.createdAt > latest[ins.vehicleId].createdAt) latest[ins.vehicleId] = ins;
+  }
+  return latest;
+}
+
+// Alertes de conformité de la flotte (documents/équipements manquants, propreté,
+// et anomalies de localisation des documents identifiés). Sert à la page d'accueil
+// pour mettre les véhicules/chauffeurs en demeure avant un avertissement.
+function fleetWarnings(db) {
+  const latest = latestInspections(db);
+  // Où se trouve chaque document identifié (licence, carte gasoil) au dernier tour.
+  const presentId = {}; // code -> { id -> [ {vehicleId, vehicleName} ] }
+  for (const v of db.vehicles) {
+    const ins = latest[v.id]; if (!ins || !ins.checks) continue;
+    for (const c of VEHICLE_CHECKS) {
+      if (!c.hasId) continue;
+      const ck = ins.checks[c.code];
+      if (ck && ck.ok !== false && ck.id) {
+        presentId[c.code] = presentId[c.code] || {};
+        (presentId[c.code][ck.id] = presentId[c.code][ck.id] || []).push({ vehicleId: v.id, vehicleName: v.name });
+      }
+    }
+  }
+  const warnings = [];
+  for (const v of db.vehicles) {
+    const ins = latest[v.id]; if (!ins || !ins.checks) continue;
+    const driverName = ins.driverName || null;
+    for (const c of VEHICLE_CHECKS) {
+      const ck = ins.checks[c.code];
+      if (!ck || ck.ok !== false) continue; // seul un élément explicitement non conforme alerte
+      let foundOn = null;
+      if (c.hasId) {
+        const owned = v.documents && v.documents[c.code] && v.documents[c.code].id;
+        if (owned && presentId[c.code] && presentId[c.code][owned]) {
+          const others = presentId[c.code][owned].filter((x) => x.vehicleId !== v.id);
+          if (others.length) foundOn = others.map((o) => o.vehicleName).join(', ');
+        }
+      }
+      const detail = c.mandatory
+        ? `${c.label} non présent(e) / non conforme à bord lors du contrôle du ${ins.date}.`
+          + (foundOn ? ` Ce document est peut-être à bord de : ${foundOn}.` : '')
+          + ' Élément obligatoire — manquement susceptible de relever du règlement intérieur (obligation d\'entretien et de présentation du véhicule et de ses documents). Mise en conformité requise avant avertissement.'
+        : `${c.label} : à corriger (constaté le ${ins.date}).`;
+      warnings.push({
+        vehicleId: v.id, vehicleName: v.name, plate: v.plate || null, driverName,
+        severity: c.mandatory ? 'avertissement' : 'surveillance',
+        item: c.label, reglement: !!c.mandatory, foundOn, date: ins.date, detail,
+      });
+    }
+  }
+  // Anomalie : un même document identifié présent dans plusieurs véhicules.
+  for (const code of Object.keys(presentId)) {
+    for (const id of Object.keys(presentId[code])) {
+      const list = presentId[code][id];
+      if (list.length > 1) {
+        const names = list.map((x) => x.vehicleName).join(', ');
+        warnings.push({
+          vehicleId: null, vehicleName: names, plate: null, driverName: null,
+          severity: 'avertissement', anomaly: true, reglement: true,
+          item: VEHICLE_CHECK_BY_CODE[code].label, foundOn: names, date: null,
+          detail: `${VEHICLE_CHECK_BY_CODE[code].label} « ${id} » relevé(e) à bord de plusieurs véhicules (${names}). Un même document ne peut être présent que dans un seul véhicule : vérifiez sa localisation.`,
+        });
+      }
+    }
+  }
+  // Tri : avertissements (règlement) d'abord.
+  warnings.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'avertissement' ? -1 : 1));
+  return warnings;
+}
 
 // Kilométrage "effectif" d'un véhicule : le plus élevé connu entre la valeur
 // saisie, les signalements, les remplacements et les tours de véhicule.
@@ -1217,6 +1315,10 @@ app.get('/api/me/vehicle-reports', authRequired, (req, res) => {
 app.get('/api/staff/vehicles', authRequired, staffRequired, (req, res) => {
   const db = getData();
   const analysis = fleetAnalysis(db);
+  const team = db.users
+    .filter((u) => u.status === 'active' && !u.suspended)
+    .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId }))
+    .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
   res.json({
     analysis,
     vehicles: db.vehicles.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))),
@@ -1224,7 +1326,15 @@ app.get('/api/staff/vehicles', authRequired, staffRequired, (req, res) => {
     maint: db.vehicleMaint.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     inspections: db.vehicleInspections.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     consumables: db.settings.vehicleConsumables || [],
+    checksDef: VEHICLE_CHECKS,
+    team,
+    warnings: fleetWarnings(db),
   });
+});
+
+// Alertes de conformité de la flotte (pour la page d'accueil de l'encadrement).
+app.get('/api/staff/vehicle-warnings', authRequired, staffRequired, (req, res) => {
+  res.json({ warnings: fleetWarnings(getData()) });
 });
 
 // Flotte : ajout / modification / suppression (administrateur).
@@ -1326,26 +1436,49 @@ app.post('/api/staff/vehicles/:id/inspection', authRequired, staffRequired, asyn
   const db = getData();
   const v = db.vehicles.find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
-  const { km, date, impacts, note } = req.body || {};
+  const { km, date, impacts, note, driverId, checks } = req.body || {};
   const cleanImpacts = Array.isArray(impacts) ? impacts.map((i) => ({
     zone: String(i.zone || '').slice(0, 60),
     zoneLabel: String(i.zoneLabel || i.zone || '').slice(0, 80),
     type: String(i.type || '').slice(0, 60),
     note: String(i.note || '').trim().slice(0, 200),
   })).filter((i) => i.zone && i.type).slice(0, 60) : [];
-  if (!cleanImpacts.length) return res.status(400).json({ error: 'Indiquez au moins un point de contrôle (choc / dommage) sur le schéma.' });
+  // Points de contrôle (documents/équipements/propreté). Non conforme = ok:false.
+  const cleanChecks = {};
+  if (checks && typeof checks === 'object') {
+    for (const c of VEHICLE_CHECKS) {
+      const v0 = checks[c.code];
+      if (v0 === undefined) continue;
+      cleanChecks[c.code] = { ok: v0.ok !== false, id: c.hasId ? String(v0.id || '').trim().slice(0, 60) : '' };
+    }
+  }
+  if (!cleanImpacts.length && !Object.keys(cleanChecks).length) {
+    return res.status(400).json({ error: 'Renseignez les points de contrôle ou au moins un choc/dommage sur le schéma.' });
+  }
+  const driver = driverId ? db.users.find((u) => u.id === driverId) : null;
   const kmNum = intStr(km);
+  const inspDate = validDate(date) ? date : new Date().toISOString().slice(0, 10);
   const rec = {
     id: nextId('vinspect'),
     vehicleId: v.id,
     userId: req.user.id,
     userName: `${req.user.firstName} ${req.user.lastName}`,
+    driverId: driver ? driver.id : null,
+    driverName: driver ? `${driver.firstName} ${driver.lastName}` : null,
     km: kmNum != null ? kmNum : (Number(v.km) || 0),
-    date: validDate(date) ? date : new Date().toISOString().slice(0, 10),
+    date: inspDate,
     impacts: cleanImpacts,
+    checks: cleanChecks,
     note: String(note || '').trim(),
     createdAt: new Date().toISOString(),
   };
+  // Archive dans le dossier du véhicule le n°/nom des documents identifiés présents.
+  v.documents = v.documents || {};
+  for (const c of VEHICLE_CHECKS) {
+    if (!c.hasId) continue;
+    const ck = cleanChecks[c.code];
+    if (ck && ck.ok && ck.id) v.documents[c.code] = { id: ck.id, since: inspDate };
+  }
   if (kmNum != null && kmNum > (Number(v.km) || 0)) v.km = kmNum;
   db.vehicleInspections.push(rec);
   await save();
