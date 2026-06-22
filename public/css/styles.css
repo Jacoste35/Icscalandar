@@ -383,3 +383,47 @@ tr:last-child td { border-bottom: 0; }
 .attestation { font-size: .95rem; line-height: 1.6; }
 .attestation .att-head { display: flex; gap: 1rem; align-items: center; border-bottom: 2px solid var(--brand); padding-bottom: .8rem; }
 .attestation .att-logo { width: 56px; height: 56px; object-fit: contain; }
+
+/* ---------------- Véhicules ---------------- */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+.pill { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: .75rem; font-weight: 700; background: #eef2f7; color: var(--brand); white-space: nowrap; }
+.pill.ok { background: #dcfce7; color: #166534; }
+.pill.warn { background: #fef3c7; color: #92400e; }
+.pill.danger { background: #fee2e2; color: #991b1b; }
+.pill.muted { background: #e2e8f0; color: var(--muted); }
+
+.veh-issues { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem .9rem; }
+@media (max-width: 720px) { .veh-issues { grid-template-columns: 1fr; } }
+.veh-check { display: flex; align-items: flex-start; gap: .5rem; font-size: .9rem; cursor: pointer; }
+.veh-check input { width: auto; margin-top: .2rem; }
+
+.veh-report { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .9rem; margin-bottom: .7rem; }
+.veh-report.card { border: 1px solid var(--border); }
+.vr-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.vr-issues { margin: .4rem 0 0 1.1rem; }
+.vr-issues li { margin: .1rem 0; }
+.vr-actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-top: .6rem; }
+.vr-actions .vr-note { flex: 1 1 220px; }
+
+.veh-table { width: 100%; border-collapse: collapse; }
+.veh-table th, .veh-table td { padding: .45rem .5rem; border-bottom: 1px solid var(--border); text-align: left; font-size: .88rem; }
+.veh-table tr.lvl-overdue td { background: #fef2f2; }
+.veh-table tr.lvl-soon td { background: #fffbeb; }
+.veh-alert-list { margin: .6rem 0 0; padding-left: 1.1rem; }
+.veh-alert-list li { margin: .35rem 0; }
+
+/* Schéma véhicule (tour du véhicule) */
+.van-wrap { display: flex; justify-content: center; margin-top: .8rem; }
+.van-svg { width: 260px; max-width: 100%; height: auto; }
+.van-body { fill: #eef2f7; stroke: #94a3b8; stroke-width: 2; }
+.van-cap { fill: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+.van-zone { fill: #cbd5e1; stroke: #fff; stroke-width: 2; opacity: .55; cursor: pointer; transition: opacity .15s, fill .15s; }
+.van-zone:hover { opacity: .9; fill: var(--brand-2); }
+.van-zone.has-mark { fill: var(--accent); opacity: .35; }
+.van-mark circle { fill: var(--accent); }
+.van-mark text { fill: #fff; font-size: 12px; font-weight: 700; pointer-events: none; }
+
+.impact-row { display: flex; align-items: center; gap: .55rem; padding: .35rem 0; border-bottom: 1px solid var(--border); font-size: .9rem; }
+.impact-row .btn { margin-left: auto; }
+.impact-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); flex: none; }

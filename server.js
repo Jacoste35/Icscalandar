@@ -1101,6 +1101,264 @@ app.put('/api/admin/school-holidays', authRequired, adminRequired, async (req, r
   res.json({ schoolHolidays: db.settings.schoolHolidays });
 });
 
+// ---------------------------------------------------------------------------
+// Parc de véhicules (flotte) : signalements chauffeurs, suivi, entretien, tours
+// ---------------------------------------------------------------------------
+
+const VEHICLE_ALERT_KM = 3000; // marge d'alerte avant l'échéance d'un entretien
+
+function intStr(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
+
+// Kilométrage "effectif" d'un véhicule : le plus élevé connu entre la valeur
+// saisie, les signalements, les remplacements et les tours de véhicule.
+function effectiveKm(db, v) {
+  let km = Number(v.km) || 0;
+  const consider = (arr) => arr.filter((x) => x.vehicleId === v.id)
+    .forEach((x) => { const k = Number(x.km); if (Number.isFinite(k) && k > km) km = k; });
+  consider(db.vehicleReports);
+  consider(db.vehicleMaint);
+  consider(db.vehicleInspections);
+  return km;
+}
+
+// Analyse de durabilité des consommables et prévision des prochains entretiens.
+function fleetAnalysis(db) {
+  const consumables = db.settings.vehicleConsumables || [];
+  // Intervalle moyen par consommable : moyenne des écarts (km) entre deux
+  // remplacements successifs sur toute la flotte ; à défaut, valeur indicative.
+  const avgByPart = {};
+  for (const c of consumables) {
+    const gaps = [];
+    for (const v of db.vehicles) {
+      const recs = db.vehicleMaint
+        .filter((m) => m.vehicleId === v.id && m.part === c.code)
+        .map((m) => Number(m.km)).filter((k) => Number.isFinite(k)).sort((a, b) => a - b);
+      for (let i = 1; i < recs.length; i++) gaps.push(recs[i] - recs[i - 1]);
+    }
+    avgByPart[c.code] = gaps.length
+      ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)
+      : c.interval;
+  }
+  const vehicles = db.vehicles.map((v) => {
+    const curKm = effectiveKm(db, v);
+    const items = consumables.map((c) => {
+      const recs = db.vehicleMaint
+        .filter((m) => m.vehicleId === v.id && m.part === c.code)
+        .map((m) => Number(m.km)).filter((k) => Number.isFinite(k)).sort((a, b) => a - b);
+      const lastKm = recs.length ? recs[recs.length - 1] : null;
+      const interval = avgByPart[c.code];
+      const baseKm = lastKm != null ? lastKm : (Number(v.baseKm) || 0);
+      const dueKm = baseKm + interval;
+      const remaining = dueKm - curKm;
+      let level = 'ok';
+      if (remaining <= 0) level = 'overdue';
+      else if (remaining <= VEHICLE_ALERT_KM) level = 'soon';
+      return { code: c.code, label: c.label, interval, lastKm, dueKm, remaining, level, count: recs.length };
+    });
+    return { id: v.id, name: v.name, plate: v.plate, model: v.model, active: v.active !== false, km: Number(v.km) || 0, curKm, items };
+  });
+  return { vehicles, avgByPart, consumables, alertKm: VEHICLE_ALERT_KM };
+}
+
+function vehicleName(db, id) { const v = db.vehicles.find((x) => x.id === id); return v ? v.name : 'Véhicule'; }
+
+// --- Côté salarié : liste de la flotte + signalement d'usure -----------------
+app.get('/api/vehicles', authRequired, (req, res) => {
+  const list = getData().vehicles
+    .filter((v) => v.active !== false)
+    .map((v) => ({ id: v.id, name: v.name, plate: v.plate, model: v.model, km: Number(v.km) || 0 }));
+  res.json({ vehicles: list });
+});
+
+app.post('/api/vehicles/report', authRequired, async (req, res) => {
+  const db = getData();
+  const { vehicleId, plate, km, issues, note } = req.body || {};
+  const v = db.vehicles.find((x) => x.id === vehicleId);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable — sélectionnez votre véhicule dans la liste.' });
+  const plateClean = String(plate || '').trim().toUpperCase();
+  if (!plateClean) return res.status(400).json({ error: 'La plaque d’immatriculation est obligatoire.' });
+  const kmNum = intStr(km);
+  if (kmNum == null || kmNum < 0) return res.status(400).json({ error: 'Le kilométrage est obligatoire (nombre).' });
+  const issueList = Array.isArray(issues) ? issues.map((s) => String(s).trim()).filter(Boolean).slice(0, 40) : [];
+  if (!issueList.length && !String(note || '').trim()) {
+    return res.status(400).json({ error: 'Indiquez au moins une usure constatée ou une précision.' });
+  }
+  const report = {
+    id: nextId('vreport'),
+    vehicleId: v.id,
+    vehicleName: v.name,
+    plate: plateClean,
+    km: kmNum,
+    userId: req.user.id,
+    userName: `${req.user.firstName} ${req.user.lastName}`,
+    issues: issueList,
+    note: String(note || '').trim(),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+    decidedAt: null,
+    decidedBy: null,
+    adminNote: '',
+  };
+  // Le kilométrage le plus récent fait progresser le compteur du véhicule.
+  if (kmNum > (Number(v.km) || 0)) v.km = kmNum;
+  db.vehicleReports.push(report);
+  await save();
+  res.json({ report });
+});
+
+app.get('/api/me/vehicle-reports', authRequired, (req, res) => {
+  const mine = getData().vehicleReports
+    .filter((r) => r.userId === req.user.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  res.json({ reports: mine });
+});
+
+// --- Côté encadrement : suivi complet de la flotte ---------------------------
+app.get('/api/staff/vehicles', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  const analysis = fleetAnalysis(db);
+  res.json({
+    analysis,
+    vehicles: db.vehicles.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    reports: db.vehicleReports.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    maint: db.vehicleMaint.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    inspections: db.vehicleInspections.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    consumables: db.settings.vehicleConsumables || [],
+  });
+});
+
+// Flotte : ajout / modification / suppression (administrateur).
+app.post('/api/admin/vehicles', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { name, plate, model, km, baseKm } = req.body || {};
+  if (!String(name || '').trim()) return res.status(400).json({ error: 'Nom du véhicule obligatoire' });
+  const vehicle = {
+    id: nextId('vehicle'),
+    name: String(name).trim(),
+    plate: String(plate || '').trim().toUpperCase() || null,
+    model: String(model || '').trim() || null,
+    km: intStr(km) || 0,
+    baseKm: intStr(baseKm) != null ? intStr(baseKm) : (intStr(km) || 0),
+    active: true,
+    createdAt: new Date().toISOString(),
+  };
+  db.vehicles.push(vehicle);
+  await save();
+  res.json({ vehicle });
+});
+
+app.put('/api/admin/vehicles/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  const { name, plate, model, km, baseKm, active } = req.body || {};
+  if (name !== undefined && String(name).trim()) v.name = String(name).trim();
+  if (plate !== undefined) v.plate = String(plate || '').trim().toUpperCase() || null;
+  if (model !== undefined) v.model = String(model || '').trim() || null;
+  if (km !== undefined && intStr(km) != null) v.km = intStr(km);
+  if (baseKm !== undefined && intStr(baseKm) != null) v.baseKm = intStr(baseKm);
+  if (active !== undefined) v.active = Boolean(active);
+  await save();
+  res.json({ vehicle: v });
+});
+
+app.delete('/api/admin/vehicles/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  if (!db.vehicles.some((v) => v.id === req.params.id)) return res.status(404).json({ error: 'Véhicule introuvable' });
+  db.vehicles = db.vehicles.filter((v) => v.id !== req.params.id);
+  db.vehicleReports = db.vehicleReports.filter((r) => r.vehicleId !== req.params.id);
+  db.vehicleMaint = db.vehicleMaint.filter((m) => m.vehicleId !== req.params.id);
+  db.vehicleInspections = db.vehicleInspections.filter((i) => i.vehicleId !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+
+// Enregistrer le remplacement d'une pièce (kilométrage pris en compte).
+app.post('/api/admin/vehicles/:id/maint', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  const { part, km, date, note } = req.body || {};
+  const consumables = db.settings.vehicleConsumables || [];
+  if (!consumables.some((c) => c.code === part)) return res.status(400).json({ error: 'Pièce / consommable invalide' });
+  const kmNum = intStr(km);
+  if (kmNum == null || kmNum < 0) return res.status(400).json({ error: 'Kilométrage du remplacement obligatoire' });
+  const rec = {
+    id: nextId('vmaint'),
+    vehicleId: v.id,
+    part,
+    km: kmNum,
+    date: validDate(date) ? date : new Date().toISOString().slice(0, 10),
+    note: String(note || '').trim(),
+    createdBy: req.user.id,
+    createdAt: new Date().toISOString(),
+  };
+  if (kmNum > (Number(v.km) || 0)) v.km = kmNum;
+  db.vehicleMaint.push(rec);
+  await save();
+  res.json({ maint: rec, analysis: fleetAnalysis(db) });
+});
+
+app.delete('/api/admin/vehicles/maint/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.vehicleMaint = db.vehicleMaint.filter((m) => m.id !== req.params.id);
+  await save();
+  res.json({ ok: true, analysis: fleetAnalysis(db) });
+});
+
+// Décision sur un signalement véhicule (examiné / clôturé) — administrateur.
+app.post('/api/admin/vehicle-reports/:id/decide', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const r = db.vehicleReports.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Signalement introuvable' });
+  const { decision, adminNote } = req.body || {};
+  if (!['reviewed', 'closed', 'pending'].includes(decision)) return res.status(400).json({ error: 'Décision invalide' });
+  r.status = decision;
+  r.adminNote = String(adminNote || '').trim();
+  r.decidedAt = new Date().toISOString();
+  r.decidedBy = req.user.id;
+  await save();
+  res.json({ report: r });
+});
+
+// Tour du véhicule : relevé des chocs / dommages (encadrement).
+app.post('/api/staff/vehicles/:id/inspection', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const v = db.vehicles.find((x) => x.id === req.params.id);
+  if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
+  const { km, date, impacts, note } = req.body || {};
+  const cleanImpacts = Array.isArray(impacts) ? impacts.map((i) => ({
+    zone: String(i.zone || '').slice(0, 60),
+    zoneLabel: String(i.zoneLabel || i.zone || '').slice(0, 80),
+    type: String(i.type || '').slice(0, 60),
+    note: String(i.note || '').trim().slice(0, 200),
+  })).filter((i) => i.zone && i.type).slice(0, 60) : [];
+  if (!cleanImpacts.length) return res.status(400).json({ error: 'Indiquez au moins un point de contrôle (choc / dommage) sur le schéma.' });
+  const kmNum = intStr(km);
+  const rec = {
+    id: nextId('vinspect'),
+    vehicleId: v.id,
+    userId: req.user.id,
+    userName: `${req.user.firstName} ${req.user.lastName}`,
+    km: kmNum != null ? kmNum : (Number(v.km) || 0),
+    date: validDate(date) ? date : new Date().toISOString().slice(0, 10),
+    impacts: cleanImpacts,
+    note: String(note || '').trim(),
+    createdAt: new Date().toISOString(),
+  };
+  if (kmNum != null && kmNum > (Number(v.km) || 0)) v.km = kmNum;
+  db.vehicleInspections.push(rec);
+  await save();
+  res.json({ inspection: rec });
+});
+
+app.delete('/api/staff/vehicles/inspection/:id', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  db.vehicleInspections = db.vehicleInspections.filter((i) => i.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
