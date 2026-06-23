@@ -2250,6 +2250,46 @@ app.put('/api/admin/tender', authRequired, adminRequired, async (req, res) => {
   res.json({ params: p });
 });
 
+// Contrats donneurs d'ordre (administrateur).
+const CONTRACT_FIELDS = ['name', 'startDate', 'endDate', 'sector', 'vehicles', 'daysPerMonth',
+  'priceDelivery', 'pricePickup', 'dailyFlat', 'vehicleFlat', 'fuelFlat',
+  'bonusQuality', 'bonusPerf', 'bonusProd', 'deliveries', 'pickups', 'monthlyCost',
+  'penFailedDelivery', 'penLate', 'penAbsence', 'penClaim', 'penQuality',
+  'fuelRef', 'fuelCurrent', 'fuelSharePct', 'marginTargetPct'];
+function cleanContract(body, base) {
+  const c = Object.assign({}, base || {});
+  for (const f of CONTRACT_FIELDS) {
+    if (body[f] === undefined) continue;
+    if (['name', 'sector', 'startDate', 'endDate'].includes(f)) c[f] = String(body[f] || '').trim();
+    else c[f] = Number(body[f]) || 0;
+  }
+  return c;
+}
+app.get('/api/admin/contracts', authRequired, adminRequired, (req, res) => {
+  res.json({ contracts: getData().contracts.slice() });
+});
+app.post('/api/admin/contracts', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const body = req.body || {};
+  if (!String(body.name || '').trim()) return res.status(400).json({ error: 'Nom du contrat obligatoire' });
+  const c = cleanContract(body, { id: nextId('contract'), createdAt: new Date().toISOString() });
+  if (!c.daysPerMonth) c.daysPerMonth = 21;
+  if (!c.vehicles) c.vehicles = 1;
+  db.contracts.push(c); await save(); res.json({ contract: c });
+});
+app.put('/api/admin/contracts/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const c = db.contracts.find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contrat introuvable' });
+  Object.assign(c, cleanContract(req.body || {}, c));
+  await save(); res.json({ contract: c });
+});
+app.delete('/api/admin/contracts/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.contracts = db.contracts.filter((x) => x.id !== req.params.id);
+  await save(); res.json({ ok: true });
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
