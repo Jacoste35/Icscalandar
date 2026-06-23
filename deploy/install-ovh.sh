@@ -48,9 +48,15 @@ npm install --omit=dev
 if [ ! -f "$APP_DIR/.env" ]; then
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
   SECRET="$(node -e "console.log(require('crypto').randomBytes(48).toString('hex'))")"
+  ENCKEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
   sed -i "s|^JWT_SECRET=.*|JWT_SECRET=${SECRET}|" "$APP_DIR/.env"
+  sed -i "s|^DATA_ENCRYPTION_KEY=.*|DATA_ENCRYPTION_KEY=${ENCKEY}|" "$APP_DIR/.env"
   sed -i "s|^DATA_DIR=.*|DATA_DIR=${APP_DIR}/data|" "$APP_DIR/.env"
-  echo "==> Fichier .env créé (JWT_SECRET généré automatiquement)."
+  # Production : active HSTS / avertissements de sécurité.
+  grep -q '^NODE_ENV=' "$APP_DIR/.env" || echo 'NODE_ENV=production' >> "$APP_DIR/.env"
+  chmod 600 "$APP_DIR/.env"
+  echo "==> Fichier .env créé (JWT_SECRET + DATA_ENCRYPTION_KEY générés, chiffrement des données ACTIVÉ)."
+  echo "    ⚠️  Sauvegardez la clé DATA_ENCRYPTION_KEY : sans elle, les données chiffrées sont irrécupérables."
 fi
 
 # 5. Dossier data + permissions
