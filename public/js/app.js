@@ -704,6 +704,7 @@ function bindDashboardActions(scope) {
     try { await api('POST', '/staff/vehicle-warnings/ack', { key: b.dataset.warnack }); renderDashboard(document.getElementById('main')); }
     catch (e) { toast(e.message, 'err'); }
   });
+  scope.querySelectorAll('[data-sanction]').forEach((b) => b.onclick = () => sanctionModal(b.dataset.sanction, b.dataset.name));
 }
 
 function messageReadsModal(r) {
@@ -1940,8 +1941,10 @@ async function renderAbsenceManagement(main) {
     <div class="alert info">${isAdmin
       ? "Vos saisies sont <strong>directement ajoutées au calendrier</strong>."
       : "Vos saisies sont <strong>envoyées à l'administrateur pour validation</strong> avant d'apparaître au planning."}</div>
-    <div id="abs-list" class="empty">Chargement…</div>`;
+    <div id="abs-list" class="empty">Chargement…</div>
+    <div id="abs-sanctions"></div>`;
   document.getElementById('abs-new').onclick = () => adminAssignModal();
+  renderSanctionsArchive(document.getElementById('abs-sanctions'));
   try {
     const { team } = await api('GET', '/team');
     const el = document.getElementById('abs-list'); el.className = '';
@@ -1978,6 +1981,23 @@ async function renderAbsenceManagement(main) {
     el.innerHTML = sections + staffSection;
     el.querySelectorAll('[data-abs]').forEach((b) => b.onclick = () => adminAssignModal(null, b.dataset.abs));
   } catch (e) { document.getElementById('abs-list').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+}
+
+// Historique des avertissements & sanctions (archivé).
+async function renderSanctionsArchive(el) {
+  if (!el) return;
+  let sanctions = [];
+  try { sanctions = (await api('GET', '/staff/sanctions')).sanctions; } catch (e) { return; }
+  const isAdmin = State.user.role === 'admin';
+  el.innerHTML = `<div class="card"><h3>📁 Historique des avertissements & sanctions</h3>
+    ${sanctions.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Salarié</th><th>Type</th><th>Motif</th><th>Par</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+      <tbody>${sanctions.map((s) => `<tr><td>${fmtDate(s.date)}</td><td><strong>${esc(s.userName)}</strong></td><td><span class="pill ${/licenciement|pied/i.test(s.type) ? 'danger' : 'warn'}">${esc(s.type)}</span></td><td>${esc(s.motif || '—')}</td><td class="help">${esc(s.createdByName || '')}</td>
+        ${isAdmin ? `<td style="white-space:nowrap"><button class="btn ghost sm" data-reopendisc="${s.userId}" title="Ré-afficher le rappel">↩</button> <button class="btn ghost sm" data-delsanction="${s.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`
+    : '<p class="help">Aucune sanction archivée.</p>'}</div>`;
+  if (isAdmin) {
+    el.querySelectorAll('[data-delsanction]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette entrée d\'historique ?')) return; try { await api('DELETE', '/admin/sanctions/' + b.dataset.delsanction); renderSanctionsArchive(el); } catch (e) { toast(e.message, 'err'); } });
+    el.querySelectorAll('[data-reopendisc]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/discipline/' + b.dataset.reopendisc + '/reopen'); toast('Rappel ré-affiché sur l\'accueil.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  }
 }
 
 /* =========================================================================
@@ -2096,9 +2116,30 @@ function disciplineHTML(items) {
     <p class="help" style="margin:0 0 .6rem">Sur les 12 derniers mois. À apprécier selon le contexte avant toute mesure.</p>
     <ul class="veh-alert-list veh-warn-list">${items.map((u) => `<li>
       <strong>${esc(u.name)}</strong> <span class="help">(${esc(u.groupName)})</span>
+      <button class="btn ghost sm" data-sanction="${u.userId}" data-name="${esc(u.name)}" style="margin-left:.4rem">Avertir / sanctionner & clôturer</button>
       ${u.items.map((it) => `<div class="help">• ${esc(it.label)} ×${it.count} — ${esc(it.reproach)}</div>`).join('')}
     </li>`).join('')}</ul>
   </div>`;
+}
+
+// Enregistrer un avertissement / une sanction (et clôturer le rappel d'accueil).
+const SANCTION_TYPES_CLIENT = ['Rappel à l\'ordre', 'Avertissement', 'Mise à pied conservatoire', 'Mise à pied disciplinaire', 'Convocation entretien préalable', 'Procédure de licenciement', 'Autre'];
+function sanctionModal(userId, name) {
+  modal({
+    title: 'Avertissement / sanction — ' + name,
+    bodyHTML: `<div class="grid2">
+        <div><label>Date</label><input id="sn-date" type="date" value="${iso(new Date())}"></div>
+        <div><label>Type</label><select id="sn-type">${SANCTION_TYPES_CLIENT.map((t) => `<option>${esc(t)}</option>`).join('')}</select></div>
+      </div>
+      <label style="margin-top:.6rem">Motif / commentaire</label>
+      <textarea id="sn-motif" style="min-height:90px" placeholder="Faits reprochés, contexte, suite donnée…"></textarea>
+      <p class="help">En enregistrant, le rappel est clôturé et archivé dans « Gestion des absences ».</p>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="sn-save">Enregistrer & clôturer</button>`,
+    onMount: (ov) => { ov.querySelector('#sn-save').onclick = async () => {
+      try { await api('POST', '/admin/sanctions', { userId, date: ov.querySelector('#sn-date').value, type: ov.querySelector('#sn-type').value, motif: ov.querySelector('#sn-motif').value }); closeModal(); toast('Sanction archivée, rappel clôturé.', 'ok'); renderDashboard(document.getElementById('main')); }
+      catch (e) { toast(e.message, 'err'); }
+    }; },
+  });
 }
 
 function vehLabel(v) { return `${v.name}${v.plate ? ' — ' + v.plate : ''}`; }
@@ -3211,10 +3252,13 @@ async function renderFinance(main) {
     <p>Pilotez l'équilibre financier : recettes, charges, TVA, rentabilité par client et projections.</p></div></div>
     <div class="view-switch" id="fin-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-ftab="resume" class="active">Résumé & graphiques</button>
+      <button data-ftab="import">Import bancaire</button>
+      <button data-ftab="treso">Trésorerie & indicateurs</button>
+      <button data-ftab="rules">Règles de catégorisation</button>
       <button data-ftab="flash">Flash comptable & TVA</button>
       <button data-ftab="clients">Rentabilité clients</button>
       <button data-ftab="projection">Projection</button>
-      <button data-ftab="saisie">Saisie</button>
+      <button data-ftab="saisie">Saisie manuelle</button>
     </div>
     <div id="fin-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#fin-tabs');
@@ -3228,10 +3272,129 @@ async function loadFinance() { _fin = await api('GET', '/admin/finance'); }
 function finTab(tab) {
   const body = document.getElementById('fin-body'); if (!body) return; body.className = '';
   if (tab === 'resume') return finResume(body);
+  if (tab === 'import') return finImport(body);
+  if (tab === 'treso') return finTreso(body);
+  if (tab === 'rules') return finRules(body);
   if (tab === 'flash') return finFlash(body);
   if (tab === 'clients') return finClients(body);
   if (tab === 'projection') return finProjection(body);
   if (tab === 'saisie') return finSaisie(body);
+}
+
+/* --- Gestion Financière : import bancaire, trésorerie, indicateurs --------- */
+let _finMeta = null, _importPreview = null;
+async function finMeta() { if (!_finMeta) _finMeta = await api('GET', '/admin/finance-meta'); return _finMeta; }
+
+async function finImport(body) {
+  const meta = await finMeta();
+  body.innerHTML = `
+    <div class="card">
+      <h3>Importer un relevé bancaire</h3>
+      <p class="help">Collez le contenu d'un relevé (CSV exporté de votre banque, ou lignes copiées) ou chargez un fichier <strong>.csv / .txt</strong>. Le système reconnaît les colonnes Date / Libellé / Débit / Crédit (ou Montant), catégorise automatiquement et détecte les doublons.</p>
+      <div class="grid2">
+        <div><label>Banque</label><select id="im-bank"><option value="auto">Détection automatique</option>${meta.banks.map((b) => `<option>${esc(b)}</option>`).join('')}</select></div>
+        <div><label>Fichier (.csv / .txt)</label><input id="im-file" type="file" accept=".csv,.txt,text/csv,text/plain"></div>
+      </div>
+      <label style="margin-top:.5rem">Ou collez le relevé ici</label>
+      <textarea id="im-text" style="min-height:140px;font-family:monospace;font-size:.82rem" placeholder="Date;Libellé;Débit;Crédit&#10;02/03/2026;VIR SEPA FEDEX;;40193,99&#10;05/03/2026;PRVL AXA ASSURANCES;394,38;"></textarea>
+      <div style="margin-top:.6rem"><button class="btn accent" id="im-analyze">Analyser</button></div>
+    </div>
+    <div id="im-preview"></div>
+    <div class="card"><h3>Relevés importés</h3><div id="im-docs"></div></div>
+    <div class="alert info">📷 L'import de <strong>PDF scannés / photos (OCR)</strong> nécessite un moteur OCR serveur (Tesseract) — non activé ici. Pour un PDF natif, copiez-collez son texte. Le CSV reste le plus fiable.</div>`;
+  document.getElementById('im-file').onchange = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader(); r.onload = () => { document.getElementById('im-text').value = r.result; }; r.readAsText(f, 'utf-8');
+  };
+  document.getElementById('im-analyze').onclick = async () => {
+    const text = document.getElementById('im-text').value;
+    if (!text.trim()) { toast('Collez un relevé ou chargez un fichier.', 'err'); return; }
+    try { _importPreview = await api('POST', '/admin/bank-import', { text, bank: document.getElementById('im-bank').value }); renderImportPreview(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  // Documents déjà importés.
+  try { const { docs } = await api('GET', '/admin/bank-tx'); const el = document.getElementById('im-docs');
+    el.innerHTML = docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Banque</th><th>Lignes</th><th>Importé le</th></tr></thead><tbody>${docs.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.bank)}</td><td>${d.lines}</td><td>${fmtDateTime(d.importedAt)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun relevé importé.</p>';
+  } catch (e) {}
+}
+
+function renderImportPreview() {
+  const p = _importPreview; const el = document.getElementById('im-preview');
+  const meta = _finMeta;
+  const catSel = (val, i) => `<select data-imrow="${i}">${['', ...meta.categories].map((c) => `<option ${c === val ? 'selected' : ''}>${esc(c || '— à vérifier —')}</option>`).join('')}</select>`;
+  el.innerHTML = `<div class="card">
+    <h3>Validation de l'import — ${p.bank}</h3>
+    <div class="grid cols-4">
+      <div class="stat"><div class="value" style="font-size:1.4rem">${p.detected}</div><div class="label">Lignes détectées</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${p.classified}</div><div class="label">Classées auto</div></div>
+      <div class="stat ${p.toVerify ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${p.toVerify}</div><div class="label">À vérifier</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${p.duplicates}</div><div class="label">Doublons</div></div>
+    </div>
+    <div class="table-wrap" style="max-height:50vh;overflow:auto;margin-top:.6rem"><table class="veh-table"><thead><tr><th>Date</th><th>Libellé</th><th>Montant</th><th>Catégorie</th></tr></thead>
+      <tbody>${p.transactions.map((t, i) => `<tr class="${t.dupe ? 'lvl-overdue' : ''}"><td>${fmtDate(t.opDate)}</td><td>${esc(t.label)}${t.dupe ? ' <span class="pill danger">doublon</span>' : ''}</td><td class="${t.amount >= 0 ? 'pos' : 'neg'}">${eur(t.amount)}</td><td>${t.dupe ? '<span class="help">ignoré</span>' : catSel(t.category, i)}</td></tr>`).join('')}</tbody></table></div>
+    <div style="margin-top:.7rem"><button class="btn accent" id="im-confirm">Confirmer l'import (${p.detected - p.duplicates} écritures)</button></div>
+  </div>`;
+  el.querySelectorAll('[data-imrow]').forEach((s) => s.onchange = () => { const i = +s.dataset.imrow; p.transactions[i].category = s.value.startsWith('—') ? '' : s.value; });
+  document.getElementById('im-confirm').onclick = async () => {
+    try { const r = await api('POST', '/admin/bank-confirm', { transactions: p.transactions, bank: p.bank, docName: 'Relevé ' + p.bank + ' ' + iso(new Date()) }); toast(r.added + ' écritures importées.', 'ok'); _importPreview = null; finTab('treso'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+async function finTreso(body) {
+  let ov;
+  try { ov = await api('GET', '/admin/finance-overview'); } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const meta = await finMeta();
+  if (!ov.txCount) { body.innerHTML = `<div class="alert info">Aucune écriture bancaire. Importez un relevé dans l'onglet « Import bancaire ».</div>`; return; }
+  const ind = ov.indicators;
+  const feuT = (cond) => cond === 'ok' ? 'green' : cond === 'warn' ? 'orange' : 'red';
+  const indCard = (lbl, val, lvl) => `<div class="tnd-ind"><div class="tnd-ind-top">${feu(lvl)}<span>${lbl}</span></div><div class="tnd-ind-val">${val}</div></div>`;
+  body.innerHTML = `
+    <div class="card"><h3>Tableau de bord financier</h3>
+      <div class="tnd-grid">
+        ${indCard('Solde / trésorerie', eur(ind.soldeActuel), ind.soldeActuel < 0 ? 'red' : 'green')}
+        ${indCard('Résultat cumulé', eur(ind.resultat), ind.resultat >= 0 ? 'green' : 'red')}
+        ${indCard('Taux de charges', ind.tauxCharges + ' %', ind.tauxCharges < 90 ? 'green' : 'orange')}
+        ${indCard('Taux de marge', ind.tauxMarge + ' %', ind.tauxMarge >= 10 ? 'green' : ind.tauxMarge >= 0 ? 'orange' : 'red')}
+        ${indCard('Masse salariale / CA', ind.masseSalarialePct + ' %', ind.masseSalarialePct < 50 ? 'green' : 'orange')}
+        ${indCard('Carburant / CA', ind.carburantPct + ' %', ind.carburantPct < 15 ? 'green' : 'orange')}
+        ${indCard('Péages / CA', ind.peagesPct + ' %', 'green')}
+      </div>
+    </div>
+    <div class="card"><h3>Analyse automatique</h3><ul class="veh-alert-list">${ov.alerts.map((a) => `<li>${feu(a.lvl)} ${esc(a.txt)}</li>`).join('')}</ul></div>
+    <div class="card"><h3>Solde de trésorerie de départ</h3>
+      <div style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap"><div><label>Solde initial (€)</label><input id="tr-start" type="number" step="0.01" value="${meta.startBalance}"></div><button class="btn ghost" id="tr-start-save">Enregistrer</button></div>
+    </div>
+    <div class="card"><h3>Tableau de trésorerie mensuel</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Solde début</th><th>Recettes</th><th>Dépenses</th><th>Résultat</th><th>Solde fin</th></tr></thead>
+      <tbody>${ov.treasury.map((t) => `<tr><td>${esc(t.ym)}</td><td>${eur(t.start)}</td><td class="pos">${eur(t.revenue)}</td><td class="neg">${eur(t.expense)}</td><td class="${t.result >= 0 ? 'pos' : 'neg'}">${eur(t.result)}</td><td><strong>${eur(t.end)}</strong></td></tr>`).join('')}</tbody></table></div>
+    </div>
+    <div class="card"><h3>Évolution du résultat mensuel</h3>${barChart(ov.months.map((m) => ({ ym: m.ym, result: m.result })), 'result', 'ym')}</div>
+    <div class="card"><h3>Répartition des dépenses</h3>
+      <div class="table-wrap"><table class="veh-table"><tbody>${ov.expenseByCat.map((e) => `<tr><td>${esc(e.cat)}</td><td>${eur(e.v)}</td><td>${ov.totals.expense > 0 ? (e.v / ov.totals.expense * 100).toFixed(1) : 0} %</td></tr>`).join('')}</tbody></table></div>
+    </div>`;
+  document.getElementById('tr-start-save').onclick = async () => {
+    try { await api('PUT', '/admin/treasury-start', { balance: document.getElementById('tr-start').value }); _finMeta = null; toast('Solde enregistré.', 'ok'); finTab('treso'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+async function finRules(body) {
+  const meta = await finMeta(); _finMeta = null; // force refresh next
+  const m2 = await api('GET', '/admin/finance-meta'); _finMeta = m2;
+  let rules = m2.rules.slice();
+  const render = () => {
+    body.innerHTML = `<div class="card"><h3>Règles de catégorisation automatique</h3>
+      <p class="help">Si un libellé contient le mot-clé, l'écriture reçoit la catégorie. Les corrections que vous faites sur les écritures sont aussi mémorisées (apprentissage).</p>
+      <div id="rl-list">${rules.map((r, i) => `<div class="kit-line"><input data-rkw="${i}" value="${esc(r.kw)}" placeholder="mot-clé"><select data-rcat="${i}">${m2.categories.map((c) => `<option ${c === r.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="btn ghost sm" data-rdel="${i}">✕</button></div>`).join('')}</div>
+      <div style="display:flex;gap:.4rem;margin-top:.5rem"><button class="btn ghost sm" id="rl-add">+ Ajouter une règle</button><button class="btn accent sm" id="rl-save">Enregistrer</button></div>
+    </div>`;
+    const collect = () => Array.from(body.querySelectorAll('[data-rkw]')).map((inp, i) => ({ kw: inp.value.trim(), cat: body.querySelector(`[data-rcat="${i}"]`).value })).filter((r) => r.kw);
+    body.querySelector('#rl-add').onclick = () => { rules = collect().concat({ kw: '', cat: m2.categories[0] }); render(); };
+    body.querySelectorAll('[data-rdel]').forEach((b) => b.onclick = () => { rules = collect().filter((_, i) => i !== +b.dataset.rdel); render(); });
+    body.querySelector('#rl-save').onclick = async () => { try { await api('PUT', '/admin/cat-rules', { rules: collect() }); toast('Règles enregistrées.', 'ok'); } catch (e) { toast(e.message, 'err'); } };
+  };
+  render();
 }
 
 // Agrège des mois en périodes (trimestre/semestre/année).
