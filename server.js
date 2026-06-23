@@ -2296,7 +2296,10 @@ const CONTRACT_FIELDS = ['name', 'startDate', 'endDate', 'sector', 'vehicles', '
   'priceDelivery', 'pricePickup', 'dailyFlat', 'vehicleFlat', 'fuelFlat',
   'bonusQuality', 'bonusPerf', 'bonusProd', 'deliveries', 'pickups', 'monthlyCost',
   'penFailedDelivery', 'penLate', 'penAbsence', 'penClaim', 'penQuality',
-  'fuelRef', 'fuelCurrent', 'fuelSharePct', 'marginTargetPct'];
+  'fuelRef', 'fuelCurrent', 'fuelSharePct', 'marginTargetPct',
+  // Tarif dégressif (livraison / enlèvement) + rémunérations flocage & tenues.
+  'degressiveDelivery', 'deliveryThreshold', 'priceDeliveryDeg',
+  'degressivePickup', 'pickupThreshold', 'pricePickupDeg', 'flocage', 'tenues'];
 function cleanContract(body, base) {
   const c = Object.assign({}, base || {});
   for (const f of CONTRACT_FIELDS) {
