@@ -19,9 +19,41 @@ const ROLES = ['admin', 'responsable', 'employee'];
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'inter-colis-services-dev-secret-change-me';
+if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'inter-colis-services-dev-secret-change-me') {
+  console.warn('⚠️  JWT_SECRET non défini — définissez-le dans .env pour la production.');
+}
 
-app.use(express.json());
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // derrière nginx (IP réelle pour le rate-limit)
+
+// En-têtes de sécurité (sans dépendance externe). La CSP autorise les
+// gestionnaires d'évènements inline utilisés par l'application.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'");
+  next();
+});
+
+app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Anti-bruteforce simple sur l'authentification (par IP, fenêtre glissante).
+const _authHits = new Map();
+function loginRateLimit(req, res, next) {
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const rec = _authHits.get(ip) || { count: 0, reset: now + 15 * 60000 };
+  if (now > rec.reset) { rec.count = 0; rec.reset = now + 15 * 60000; }
+  rec.count += 1; _authHits.set(ip, rec);
+  if (_authHits.size > 5000) _authHits.clear(); // garde-fou mémoire
+  if (rec.count > 20) return res.status(429).json({ error: 'Trop de tentatives. Réessayez dans quelques minutes.' });
+  next();
+}
 
 // Charge la base avant chaque requête API (indispensable en serverless, où la
 // mémoire n'est pas partagée entre les invocations).
@@ -190,7 +222,7 @@ function makeUsername(db, firstName, lastName) {
   return candidate;
 }
 
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', loginRateLimit, async (req, res) => {
   const { firstName, lastName, email, password, phone, hireDate } = req.body || {};
   if (!firstName || !lastName || !email || !password) {
     return res.status(400).json({ error: 'Tous les champs sont obligatoires' });
@@ -245,7 +277,7 @@ app.post('/api/register', async (req, res) => {
   });
 });
 
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', loginRateLimit, async (req, res) => {
   const { email, login, password } = req.body || {};
   const db = getData();
   // Accepte l'email OU le nom de compte (username), insensible à la casse.
@@ -2569,7 +2601,7 @@ function computeHours(start, end, breakMin) {
   return { amplitude: Math.round((amp / 60) * 100) / 100, worked: Math.round((worked / 60) * 100) / 100 };
 }
 
-app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
+app.get('/api/staff/work-hours', authRequired, adminRequired, (req, res) => {
   const db = getData();
   const since = req.query.from || new Date(Date.now() - 70 * 86400000).toISOString().slice(0, 10);
   const list = db.workHours.filter((h) => h.date >= since).sort((a, b) => b.date.localeCompare(a.date));
@@ -2579,7 +2611,7 @@ app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
   res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX });
 });
 
-app.post('/api/staff/work-hours', authRequired, staffRequired, async (req, res) => {
+app.post('/api/staff/work-hours', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const { userId, date, start, end, breakMin } = req.body || {};
   const u = db.users.find((x) => x.id === userId);
@@ -2595,7 +2627,7 @@ app.post('/api/staff/work-hours', authRequired, staffRequired, async (req, res) 
   res.json({ entry: rec });
 });
 
-app.delete('/api/staff/work-hours/:id', authRequired, staffRequired, async (req, res) => {
+app.delete('/api/staff/work-hours/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   db.workHours = db.workHours.filter((h) => h.id !== req.params.id);
   await save();

@@ -4150,7 +4150,7 @@ function hFmt(h) { const n = Number(h) || 0; const hh = Math.floor(n); const mm 
 function isoWeekStart(d) { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x; }
 
 async function renderHours(main) {
-  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des heures</h1>
     <p>Suivi des amplitudes et du temps de travail des chauffeurs.</p></div></div>
     <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
@@ -4389,6 +4389,7 @@ function editReglementModal(main) {
    ADMINISTRATION
    ========================================================================= */
 async function renderAdmin(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
   // Compteurs de notifications à traiter.
   let nbPending = 0, nbReqs = 0;
   try {
