@@ -3991,11 +3991,19 @@ const CONTRACT_DONNEURS = ['GLS', 'FedEx', 'DPD', 'Chronopost', 'UPS', 'Ciblex',
 
 // Calcul de rentabilité d'un contrat (côté client).
 function contractCompute(k) {
-  const caLivraison = (k.deliveries || 0) * (k.priceDelivery || 0);
-  const caEnlevement = (k.pickups || 0) * (k.pricePickup || 0);
+  // C.A. livraison (avec éventuel tarif dégressif au-delà d'un seuil de points).
+  const dThr = k.deliveryThreshold || 0, dDeg = k.priceDeliveryDeg || 0;
+  const caLivraison = (k.degressiveDelivery && dThr > 0 && (k.deliveries || 0) > dThr)
+    ? dThr * (k.priceDelivery || 0) + ((k.deliveries || 0) - dThr) * dDeg
+    : (k.deliveries || 0) * (k.priceDelivery || 0);
+  const pThr = k.pickupThreshold || 0, pDeg = k.pricePickupDeg || 0;
+  const caEnlevement = (k.degressivePickup && pThr > 0 && (k.pickups || 0) > pThr)
+    ? pThr * (k.pricePickup || 0) + ((k.pickups || 0) - pThr) * pDeg
+    : (k.pickups || 0) * (k.pricePickup || 0);
   const caForfait = (k.dailyFlat || 0) * (k.daysPerMonth || 21) + (k.vehicleFlat || 0) * (k.vehicles || 1) + (k.fuelFlat || 0);
   const caPrimes = (k.bonusQuality || 0) + (k.bonusPerf || 0) + (k.bonusProd || 0);
-  const caTotal = caLivraison + caEnlevement + caForfait + caPrimes;
+  const caEquip = (k.flocage || 0) + (k.tenues || 0); // flocage camion + tenues chauffeurs
+  const caTotal = caLivraison + caEnlevement + caForfait + caPrimes + caEquip;
   const penalites = (k.penFailedDelivery || 0) + (k.penLate || 0) + (k.penAbsence || 0) + (k.penClaim || 0) + (k.penQuality || 0);
   const resultBrut = caTotal - (k.monthlyCost || 0);
   const resultNet = resultBrut - penalites;
@@ -4015,7 +4023,7 @@ function contractCompute(k) {
   const prixRecommande = mt < 1 ? coutReelPoint / (1 - mt) : coutReelPoint;
   const ecart = prixRecommande - (k.priceDelivery || 0);
   const gainAnnuel = ecart * (k.deliveries || 0) * 12;
-  return { caLivraison, caEnlevement, caForfait, caPrimes, caTotal, penalites, resultBrut, resultNet, marginPct, totalPoints, coutReelPoint, resultParVehicule, variationPct, indexPct, cnrPerPoint, cnrDaily, cnrMonthly, cnrYearly, prixRecommande, ecart, gainAnnuel };
+  return { caLivraison, caEnlevement, caForfait, caPrimes, caEquip, caTotal, penalites, resultBrut, resultNet, marginPct, totalPoints, coutReelPoint, resultParVehicule, variationPct, indexPct, cnrPerPoint, cnrDaily, cnrMonthly, cnrYearly, prixRecommande, ecart, gainAnnuel };
 }
 
 let _contracts = [];
@@ -4071,6 +4079,7 @@ function contractDetailModal(k) {
         <tr><td>C.A. enlèvement</td><td>${eur(c.caEnlevement)}</td></tr>
         <tr><td>C.A. forfaits</td><td>${eur(c.caForfait)}</td></tr>
         <tr><td>C.A. primes</td><td>${eur(c.caPrimes)}</td></tr>
+        ${c.caEquip ? `<tr><td>C.A. flocage & tenues</td><td>${eur(c.caEquip)}</td></tr>` : ''}
         <tr><td><strong>C.A. total</strong></td><td><strong>${eur(c.caTotal)}</strong></td></tr>
         <tr><td>Coût d'exploitation</td><td>${eur(k.monthlyCost || 0)}</td></tr>
         <tr><td>Résultat brut</td><td>${eur(c.resultBrut)}</td></tr>
@@ -4109,6 +4118,12 @@ function contractModal(k) {
         ${f('k-ff', 'Forfait carburant (€)', e.fuelFlat, 0.01)}
         ${f('k-bq', 'Prime qualité (€)', e.bonusQuality, 0.01)}${f('k-bp', 'Prime performance (€)', e.bonusPerf, 0.01)}${f('k-bpr', 'Prime productivité (€)', e.bonusProd, 0.01)}
       </div>
+      <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="k-degd" ${e.degressiveDelivery ? 'checked' : ''}> Tarif <strong>dégressif livraison</strong> (au-delà d'un seuil de points)</label>
+      <div class="grid2">${f('k-dthr', 'Seuil livraison (points au tarif normal)', e.deliveryThreshold, 1)}${f('k-pddeg', 'Prix livraison dégressif au-delà (€)', e.priceDeliveryDeg, 0.01)}</div>
+      <label class="veh-check" style="margin-top:.4rem"><input type="checkbox" id="k-degp" ${e.degressivePickup ? 'checked' : ''}> Tarif <strong>dégressif enlèvement</strong></label>
+      <div class="grid2">${f('k-pthr', 'Seuil enlèvement (points au tarif normal)', e.pickupThreshold, 1)}${f('k-ppdeg', 'Prix enlèvement dégressif au-delà (€)', e.pricePickupDeg, 0.01)}</div>
+      <h4 style="margin:.7rem 0 .3rem">Rémunérations complémentaires (€ / mois)</h4>
+      <div class="grid2">${f('k-flocage', 'Flocage camion', e.flocage, 0.01)}${f('k-tenues', 'Tenues chauffeurs', e.tenues, 0.01)}</div>
       <h4 style="margin:.7rem 0 .3rem">Pénalités mensuelles (€)</h4>
       <div class="grid2">${f('k-p1', 'Échec de livraison', e.penFailedDelivery, 0.01)}${f('k-p2', 'Retard', e.penLate, 0.01)}${f('k-p3', 'Absence chauffeur', e.penAbsence, 0.01)}${f('k-p4', 'Réclamation client', e.penClaim, 0.01)}${f('k-p5', 'Non-respect qualité', e.penQuality, 0.01)}</div>
       <h4 style="margin:.7rem 0 .3rem">Indexation CNR & objectif</h4>
@@ -4116,7 +4131,10 @@ function contractModal(k) {
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="k-save">${k ? 'Enregistrer' : 'Créer'}</button>`,
     onMount: (ov) => { ov.querySelector('#k-save').onclick = async () => {
       const g = (s) => ov.querySelector(s).value;
-      const payload = { name: g('#k-name'), sector: g('#k-sector'), startDate: g('#k-start'), endDate: g('#k-end'), vehicles: g('#k-vehicles'), daysPerMonth: g('#k-days'), deliveries: g('#k-deliveries'), pickups: g('#k-pickups'), monthlyCost: g('#k-cost'), priceDelivery: g('#k-pd'), pricePickup: g('#k-pp'), dailyFlat: g('#k-fd'), vehicleFlat: g('#k-fv'), fuelFlat: g('#k-ff'), bonusQuality: g('#k-bq'), bonusPerf: g('#k-bp'), bonusProd: g('#k-bpr'), penFailedDelivery: g('#k-p1'), penLate: g('#k-p2'), penAbsence: g('#k-p3'), penClaim: g('#k-p4'), penQuality: g('#k-p5'), fuelRef: g('#k-fref'), fuelCurrent: g('#k-fcur'), fuelSharePct: g('#k-fs'), marginTargetPct: g('#k-mt') };
+      const payload = { name: g('#k-name'), sector: g('#k-sector'), startDate: g('#k-start'), endDate: g('#k-end'), vehicles: g('#k-vehicles'), daysPerMonth: g('#k-days'), deliveries: g('#k-deliveries'), pickups: g('#k-pickups'), monthlyCost: g('#k-cost'), priceDelivery: g('#k-pd'), pricePickup: g('#k-pp'), dailyFlat: g('#k-fd'), vehicleFlat: g('#k-fv'), fuelFlat: g('#k-ff'), bonusQuality: g('#k-bq'), bonusPerf: g('#k-bp'), bonusProd: g('#k-bpr'), penFailedDelivery: g('#k-p1'), penLate: g('#k-p2'), penAbsence: g('#k-p3'), penClaim: g('#k-p4'), penQuality: g('#k-p5'), fuelRef: g('#k-fref'), fuelCurrent: g('#k-fcur'), fuelSharePct: g('#k-fs'), marginTargetPct: g('#k-mt'),
+        degressiveDelivery: ov.querySelector('#k-degd').checked ? 1 : 0, deliveryThreshold: g('#k-dthr'), priceDeliveryDeg: g('#k-pddeg'),
+        degressivePickup: ov.querySelector('#k-degp').checked ? 1 : 0, pickupThreshold: g('#k-pthr'), pricePickupDeg: g('#k-ppdeg'),
+        flocage: g('#k-flocage'), tenues: g('#k-tenues') };
       if (!payload.name.trim()) { toast('Nom du contrat obligatoire.', 'err'); return; }
       try { await api(k ? 'PUT' : 'POST', '/admin/contracts' + (k ? '/' + k.id : ''), payload); closeModal(); loadContracts(); toast('Enregistré.', 'ok'); }
       catch (err) { toast(err.message, 'err'); }
