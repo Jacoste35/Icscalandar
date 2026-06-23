@@ -3414,25 +3414,49 @@ function editFinanceModal(e) {
 let _tender = null;
 async function loadTender() { _tender = (await api('GET', '/admin/tender')).params; }
 
-// Calcul complet à partir des paramètres.
+// Calcul de contrôle de gestion complet à partir des paramètres.
 function tenderCompute(p) {
+  const drivers = Math.max(1, p.nbDrivers || 1);
   const fuelDay = p.kmPerDay * (p.consumption / 100) * p.fuelPrice;
-  const fuelMonthly = fuelDay * p.daysPerMonth;
-  const directMonthly = p.driverCost + p.vehicleCost + p.tyresPerMonth + fuelMonthly;
-  const pointsMonth = p.pointsPerDay * p.daysPerMonth;
-  const costPerPoint = pointsMonth > 0 ? directMonthly / pointsMonth : 0;
-  const fullCostPerPoint = costPerPoint * (1 + p.overheadPct / 100);
-  const cnr = p.cnrRef > 0 ? p.cnrCurrent / p.cnrRef : 1;
-  const pricePerPoint = fullCostPerPoint * (1 + p.marginPct / 100) * cnr;
-  const revenueMonth = pricePerPoint * pointsMonth;
-  const fullCostMonthly = directMonthly * (1 + p.overheadPct / 100);
-  const resultMonth = revenueMonth - fullCostMonthly;
-  const fixedMonthly = (p.driverCost + p.vehicleCost + p.tyresPerMonth) * (1 + p.overheadPct / 100);
-  const varPerPoint = pointsMonth > 0 ? (fuelMonthly * (1 + p.overheadPct / 100)) / pointsMonth : 0;
+  const fuelMonthlyPerDriver = fuelDay * p.daysPerMonth;
+  // Coûts mensuels par poste (flotte entière).
+  const salairesChauffeurs = p.driverCost * drivers;
+  const salairesResp = (p.nbResponsables || 0) * p.responsableCost;
+  const salaireSecr = (p.nbSecretaires || 0) * p.secretaireCost;
+  const vehiculesM = p.vehicleCost * drivers;
+  const pneusM = p.tyresPerMonth * drivers;
+  const fraisGen = p.fraisGeneraux || 0;
+  const carburantM = fuelMonthlyPerDriver * drivers;
+  const directMonthly = salairesChauffeurs + vehiculesM + pneusM + carburantM;
+  const structureMonthly = salairesResp + salaireSecr + fraisGen;
+  const totalCostMonthly = directMonthly + structureMonthly;
+  // Volumes.
+  const pointsPerDriverMonth = p.pointsPerDay * p.daysPerMonth;
+  const pointsMonth = pointsPerDriverMonth * drivers;
+  // Ramassage (volume + recette complémentaire qui allège le prix de livraison).
+  const rama = p.ramassage ? 1 : 0;
+  const ramaPointsMonth = rama ? (p.ramassagePerDay * p.daysPerMonth * drivers) : 0;
+  const ramaRevenue = rama ? ramaPointsMonth * p.ramassagePrice : 0;
+  // Prix de livraison au point (le ramassage couvre une part des coûts).
+  const costPerPoint = pointsMonth > 0 ? (totalCostMonthly - ramaRevenue) / pointsMonth : 0;
+  const basePrice = costPerPoint * (1 + p.marginPct / 100);
+  // Indexation partielle « part gasoil » sur l'indice CNR (base 100, M-1).
+  const pg = (p.fuelSurchargePct || 0) / 100;
+  const cnrRatio = p.cnrRef > 0 ? p.cnrCurrent / p.cnrRef : 1;
+  const cnrAdj = (1 - pg) + pg * cnrRatio;
+  const pricePerPoint = basePrice * cnrAdj;
+  const deliveryRevenue = pricePerPoint * pointsMonth;
+  const caMonthly = deliveryRevenue + ramaRevenue;
+  const caPerDriver = caMonthly / drivers;
+  const resultMonth = caMonthly - totalCostMonthly;
+  // Seuil de rentabilité (carburant = seule charge variable).
+  const fixedMonthly = salairesChauffeurs + salairesResp + salaireSecr + vehiculesM + pneusM + fraisGen;
+  const varPerPoint = pointsMonth > 0 ? carburantM / pointsMonth : 0;
   const contribPerPoint = pricePerPoint - varPerPoint;
-  const breakEvenPoints = contribPerPoint > 0 ? fixedMonthly / contribPerPoint : null;
-  const breakEvenPerDay = breakEvenPoints != null ? breakEvenPoints / p.daysPerMonth : null;
-  return { fuelDay, fuelMonthly, directMonthly, pointsMonth, costPerPoint, fullCostPerPoint, cnr, pricePerPoint, revenueMonth, fullCostMonthly, resultMonth, fixedMonthly, varPerPoint, contribPerPoint, breakEvenPoints, breakEvenPerDay };
+  const breakEvenPoints = contribPerPoint > 0 ? (fixedMonthly - ramaRevenue) / contribPerPoint : null;
+  const breakEvenPerDay = breakEvenPoints != null ? breakEvenPoints / (p.daysPerMonth * drivers) : null;
+  const driverHourly = p.hoursPerWeek > 0 ? p.driverCost / (p.hoursPerWeek * 4.333) : 0;
+  return { drivers, fuelDay, fuelMonthlyPerDriver, carburantM, salairesChauffeurs, salairesResp, salaireSecr, vehiculesM, pneusM, fraisGen, directMonthly, structureMonthly, totalCostMonthly, pointsPerDriverMonth, pointsMonth, rama, ramaPointsMonth, ramaRevenue, costPerPoint, basePrice, cnrAdj, pricePerPoint, deliveryRevenue, caMonthly, caPerDriver, resultMonth, fixedMonthly, varPerPoint, contribPerPoint, breakEvenPoints, breakEvenPerDay, driverHourly };
 }
 const eur3 = (n) => (Math.round((Number(n) || 0) * 1000) / 1000).toLocaleString('fr-FR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' €';
 
@@ -3464,52 +3488,64 @@ function tndResume(body) {
   const p = _tender, c = tenderCompute(p);
   const kpi = (lbl, val, cls) => `<div class="stat ${cls || ''}"><div class="value" style="font-size:1.4rem">${val}</div><div class="label">${lbl}</div></div>`;
   body.innerHTML = `
-    <div class="grid cols-3">
+    <div class="grid cols-4">
       ${kpi('Prix proposé / point', eur3(c.pricePerPoint), '')}
-      ${kpi('Coût de revient / point', eur3(c.fullCostPerPoint), '')}
+      ${kpi('C.A. mensuel global', eur(c.caMonthly), '')}
+      ${kpi('C.A. par chauffeur', eur(c.caPerDriver), '')}
       ${kpi('Résultat mensuel estimé', eur(c.resultMonth), c.resultMonth >= 0 ? '' : 'alt')}
     </div>
-    <div class="card"><h3>Synthèse</h3>
+    <div class="card"><h3>Synthèse (${c.drivers} chauffeurs)</h3>
       <div class="table-wrap"><table class="veh-table"><tbody>
-        <tr><td>Points livrés / mois</td><td>${Math.round(c.pointsMonth)}</td></tr>
-        <tr><td>Coût direct mensuel</td><td>${eur(c.directMonthly)}</td></tr>
-        <tr><td>Frais de structure (${p.overheadPct}%)</td><td>${eur(c.fullCostMonthly - c.directMonthly)}</td></tr>
+        <tr><td>Points livrés / mois (flotte)</td><td>${Math.round(c.pointsMonth).toLocaleString('fr-FR')}</td></tr>
+        ${c.rama ? `<tr><td>Points de ramassage / mois</td><td>${Math.round(c.ramaPointsMonth).toLocaleString('fr-FR')} · recette ${eur(c.ramaRevenue)}</td></tr>` : ''}
+        <tr><td>Coût de revient / point</td><td>${eur3(c.costPerPoint)}</td></tr>
         <tr><td>Marge cible</td><td>${p.marginPct}%</td></tr>
-        <tr><td>Ajustement CNR (M-1)</td><td>×${c.cnr.toFixed(3)} (indice ${p.cnrCurrent} / réf ${p.cnrRef})</td></tr>
-        <tr><td><strong>Chiffre d'affaires mensuel estimé</strong></td><td><strong>${eur(c.revenueMonth)}</strong></td></tr>
-        <tr><td><strong>Point mort</strong></td><td><strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints) + ' points/mois (' + Math.ceil(c.breakEvenPerDay) + '/jour)' : '—'}</strong></td></tr>
+        <tr><td>Part gasoil indexée</td><td>${p.fuelSurchargePct}% · ajustement ×${c.cnrAdj.toFixed(3)} (indice ${p.cnrCurrent}/${p.cnrRef})</td></tr>
+        <tr><td>Coût total mensuel</td><td>${eur(c.totalCostMonthly)}</td></tr>
+        <tr><td><strong>Chiffre d'affaires mensuel global</strong></td><td><strong>${eur(c.caMonthly)}</strong></td></tr>
+        <tr><td><strong>Point mort</strong></td><td><strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints).toLocaleString('fr-FR') + ' points/mois (' + Math.ceil(c.breakEvenPerDay) + '/jour/chauffeur)' : '—'}</strong></td></tr>
       </tbody></table></div>
       <div style="margin-top:.8rem"><button class="btn accent" id="tnd-pdf">📄 Générer la proposition tarifaire (en-tête entreprise)</button></div>
     </div>
-    <div class="alert info">Renseignez vos paramètres réels dans l'onglet « Paramètres » pour fiabiliser le prix. L'ajustement CNR se base sur l'indice M-1 (base 100) relevé sur cnr.fr.</div>`;
+    <div class="alert info">Réglez vos paramètres réels dans « Paramètres ». L'ajustement « part gasoil » réindexe la part fuel du prix sur l'indice CNR (base 100, M-1, cnr.fr). Le ramassage allège le prix de livraison pour rester compétitif.</div>`;
   body.querySelector('#tnd-pdf').onclick = () => tenderProposalPDF(p, c);
 }
 
 function tndCalc(body) {
   const p = _tender;
   const f = (id, lbl, val, step) => `<div><label>${lbl}</label><input id="${id}" type="number" step="${step || 1}" value="${val}"></div>`;
-  body.innerHTML = `<div class="card"><h3>Paramètres de la tournée</h3>
+  const pgOpts = [6, 8, 10, 12].map((x) => `<option value="${x}" ${p.fuelSurchargePct === x ? 'selected' : ''}>${x} %</option>`).join('');
+  body.innerHTML = `<div class="card"><h3>Paramètres de l'offre</h3>
     <div class="grid2">
-      ${f('tc-points', 'Points livrés / jour', p.pointsPerDay)}
-      ${f('tc-km', 'Km / jour', p.kmPerDay)}
+      ${f('tc-drivers', 'Nombre de chauffeurs', p.nbDrivers)}
+      ${f('tc-points', 'Points livrés / jour / chauffeur', p.pointsPerDay)}
+      ${f('tc-km', 'Km / jour / chauffeur', p.kmPerDay)}
       ${f('tc-days', 'Jours travaillés / mois', p.daysPerMonth)}
       ${f('tc-margin', 'Marge cible (%)', p.marginPct, 0.5)}
-      ${f('tc-cnr', 'Indice CNR actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
+      <div><label>Part gasoil indexée</label><select id="tc-pg">${pgOpts}</select></div>
+      ${f('tc-cnr', 'Indice CNR gasoil actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
     </div>
-    <p class="help">Les coûts (chauffeur, véhicule, carburant…) se règlent dans « Paramètres ».</p>
+    <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="tc-rama" ${p.ramassage ? 'checked' : ''}> L'offre inclut aussi le <strong>ramassage</strong></label>
+    <div class="grid2" id="tc-rama-box" style="${p.ramassage ? '' : 'display:none'}">
+      ${f('tc-ramaday', 'Points de ramassage / jour / chauffeur', p.ramassagePerDay)}
+      ${f('tc-ramaprice', 'Prix par point de ramassage (€)', p.ramassagePrice, 0.01)}
+    </div>
+    <p class="help">Les coûts (chauffeur, structure, véhicule…) se règlent dans « Paramètres ».</p>
     <div style="margin-top:.6rem"><button class="btn accent" id="tc-calc">Calculer</button> <button class="btn ghost" id="tc-save">Enregistrer ces valeurs</button></div>
   </div>
   <div id="tc-result"></div>`;
-  const read = () => ({ ...p, pointsPerDay: +val('#tc-points'), kmPerDay: +val('#tc-km'), daysPerMonth: +val('#tc-days'), marginPct: +val('#tc-margin'), cnrCurrent: +val('#tc-cnr') });
+  document.getElementById('tc-rama').onchange = (e) => { document.getElementById('tc-rama-box').style.display = e.target.checked ? '' : 'none'; };
+  const read = () => ({ ...p, nbDrivers: +val('#tc-drivers'), pointsPerDay: +val('#tc-points'), kmPerDay: +val('#tc-km'), daysPerMonth: +val('#tc-days'), marginPct: +val('#tc-margin'), fuelSurchargePct: +val('#tc-pg'), cnrCurrent: +val('#tc-cnr'), ramassage: document.getElementById('tc-rama').checked ? 1 : 0, ramassagePerDay: +val('#tc-ramaday'), ramassagePrice: +val('#tc-ramaprice') });
   const show = (pp) => {
     const c = tenderCompute(pp);
     document.getElementById('tc-result').innerHTML = `<div class="card"><h3>Résultat</h3>
-      <div class="grid cols-3">
+      <div class="grid cols-4">
         <div class="stat"><div class="value" style="font-size:1.4rem">${eur3(c.pricePerPoint)}</div><div class="label">Prix / point</div></div>
-        <div class="stat"><div class="value" style="font-size:1.4rem">${eur3(c.fullCostPerPoint)}</div><div class="label">Coût de revient / point</div></div>
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur(c.caMonthly)}</div><div class="label">C.A. global / mois</div></div>
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur(c.caPerDriver)}</div><div class="label">C.A. / chauffeur</div></div>
         <div class="stat ${c.resultMonth >= 0 ? '' : 'alt'}"><div class="value" style="font-size:1.4rem">${eur(c.resultMonth)}</div><div class="label">Résultat / mois</div></div>
       </div>
-      <p class="help" style="margin-top:.6rem">${Math.round(c.pointsMonth)} points/mois · CA ${eur(c.revenueMonth)} · point mort ${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints) + ' pts/mois' : '—'}</p></div>`;
+      <p class="help" style="margin-top:.6rem">${Math.round(c.pointsMonth).toLocaleString('fr-FR')} points/mois · coût de revient ${eur3(c.costPerPoint)}/point · point mort ${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints).toLocaleString('fr-FR') + ' pts/mois' : '—'}</p></div>`;
   };
   document.getElementById('tc-calc').onclick = () => show(read());
   document.getElementById('tc-save').onclick = async () => { try { await api('PUT', '/admin/tender', read()); await loadTender(); toast('Enregistré.', 'ok'); tndTab('resume'); } catch (e) { toast(e.message, 'err'); } };
@@ -3521,18 +3557,34 @@ function tndMarge(body) {
   const p = _tender, c = tenderCompute(p);
   const low = tenderCompute({ ...p, pointsPerDay: p.pointsPerDay * 0.9, marginPct: p.marginPct - 3 });
   const high = tenderCompute({ ...p, pointsPerDay: p.pointsPerDay * 1.1, marginPct: p.marginPct + 3 });
-  // Projection 12 mois (cumul du résultat mensuel).
   const months = Array.from({ length: 12 }, (_, i) => ({ ym: 'M+' + (i + 1), result: c.resultMonth * (i + 1) }));
+  const fixedRows = [
+    ['Salaires chauffeurs (' + c.drivers + ')', c.salairesChauffeurs],
+    ['Salaires responsables (' + (p.nbResponsables || 0) + ')', c.salairesResp],
+    ['Secrétariat (' + (p.nbSecretaires || 0) + ')', c.salaireSecr],
+    ['Véhicules (leasing/assur./entretien × ' + c.drivers + ')', c.vehiculesM],
+    ['Pneumatiques', c.pneusM],
+    ['Frais généraux (loyer, télécom, assur. structure…)', c.fraisGen],
+  ];
   body.innerHTML = `
+    <div class="card"><h3>Détail des charges fixes mensuelles</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Poste</th><th>Montant / mois</th></tr></thead><tbody>
+        ${fixedRows.map((r) => `<tr><td>${esc(r[0])}</td><td>${eur(r[1])}</td></tr>`).join('')}
+        <tr><td><strong>Total charges fixes</strong></td><td><strong>${eur(c.fixedMonthly)}</strong></td></tr>
+        <tr><td>Carburant (variable)</td><td>${eur(c.carburantM)}</td></tr>
+        <tr><td><strong>Coût total mensuel</strong></td><td><strong>${eur(c.totalCostMonthly)}</strong></td></tr>
+      </tbody></table></div>
+      <p class="help">Coût horaire chauffeur indicatif : ${eur(c.driverHourly)}/h (base ${p.hoursPerWeek} h/sem, 8 h/jour).</p>
+    </div>
     <div class="card"><h3>Point mort (seuil de rentabilité)</h3>
-      <p>Vous couvrez vos charges à partir de <strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints) : '—'} points/mois</strong> (soit ~${c.breakEvenPerDay != null ? Math.ceil(c.breakEvenPerDay) : '—'} points/jour), pour un prix de ${eur3(c.pricePerPoint)}/point.</p>
-      <p class="help">Marge de contribution par point : ${eur3(c.contribPerPoint)} · charges fixes mensuelles : ${eur(c.fixedMonthly)}.</p>
+      <p>Vous couvrez vos charges à partir de <strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints).toLocaleString('fr-FR') : '—'} points/mois</strong> (~${c.breakEvenPerDay != null ? Math.ceil(c.breakEvenPerDay) : '—'} points/jour/chauffeur), au prix de ${eur3(c.pricePerPoint)}/point.</p>
+      <p class="help">Marge de contribution / point : ${eur3(c.contribPerPoint)} · charge variable / point : ${eur3(c.varPerPoint)}${c.rama ? ' · le ramassage couvre ' + eur(c.ramaRevenue) + '/mois' : ''}.</p>
     </div>
     <div class="card"><h3>Tendances</h3>
-      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Scénario</th><th>Prix / point</th><th>Résultat / mois</th><th>Résultat / an</th></tr></thead><tbody>
-        <tr><td>📉 Tendance basse (−10% volume, −3 pts marge)</td><td>${eur3(low.pricePerPoint)}</td><td class="${low.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(low.resultMonth)}</td><td class="${low.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(low.resultMonth * 12)}</td></tr>
-        <tr><td>➡️ Tendance centrale</td><td>${eur3(c.pricePerPoint)}</td><td class="${c.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(c.resultMonth)}</td><td class="${c.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(c.resultMonth * 12)}</td></tr>
-        <tr><td>📈 Tendance haute (+10% volume, +3 pts marge)</td><td>${eur3(high.pricePerPoint)}</td><td class="${high.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(high.resultMonth)}</td><td class="${high.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(high.resultMonth * 12)}</td></tr>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Scénario</th><th>Prix / point</th><th>C.A. / mois</th><th>Résultat / mois</th><th>Résultat / an</th></tr></thead><tbody>
+        <tr><td>📉 Basse (−10% volume, −3 pts marge)</td><td>${eur3(low.pricePerPoint)}</td><td>${eur(low.caMonthly)}</td><td class="${low.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(low.resultMonth)}</td><td class="${low.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(low.resultMonth * 12)}</td></tr>
+        <tr><td>➡️ Centrale</td><td>${eur3(c.pricePerPoint)}</td><td>${eur(c.caMonthly)}</td><td class="${c.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(c.resultMonth)}</td><td class="${c.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(c.resultMonth * 12)}</td></tr>
+        <tr><td>📈 Haute (+10% volume, +3 pts marge)</td><td>${eur3(high.pricePerPoint)}</td><td>${eur(high.caMonthly)}</td><td class="${high.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(high.resultMonth)}</td><td class="${high.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(high.resultMonth * 12)}</td></tr>
       </tbody></table></div>
     </div>
     <div class="card"><h3>Projection du résultat cumulé sur 12 mois</h3>${barChart(months, 'result', 'ym')}</div>`;
@@ -3541,26 +3593,57 @@ function tndMarge(body) {
 function tndParams(body) {
   const p = _tender;
   const f = (id, lbl, val, step) => `<div><label>${lbl}</label><input id="${id}" type="number" step="${step || 1}" value="${val}"></div>`;
-  body.innerHTML = `<div class="card"><h3>Paramètres de coût (optimaux par défaut, à ajuster)</h3>
-    <div class="grid2">
-      ${f('tp-driver', 'Coût chauffeur mensuel chargé (€)', p.driverCost)}
-      ${f('tp-vehicle', 'Coût véhicule mensuel (leasing+assurance+entretien) (€)', p.vehicleCost)}
-      ${f('tp-tyres', 'Pneumatiques amortis / mois (€)', p.tyresPerMonth)}
-      ${f('tp-cons', 'Consommation (L/100 km)', p.consumption, 0.1)}
-      ${f('tp-fuel', 'Prix du gasoil (€/L)', p.fuelPrice, 0.01)}
-      ${f('tp-days', 'Jours travaillés / mois', p.daysPerMonth)}
-      ${f('tp-overhead', 'Frais de structure (% du coût direct)', p.overheadPct, 0.5)}
-      ${f('tp-margin', 'Marge / bénéfice cible (%)', p.marginPct, 0.5)}
-      ${f('tp-points', 'Points livrés / jour', p.pointsPerDay)}
-      ${f('tp-km', 'Km / jour', p.kmPerDay)}
-      ${f('tp-cnrref', 'Indice CNR de référence (base 100)', p.cnrRef, 0.1)}
-      ${f('tp-cnrcur', 'Indice CNR actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
+  const pgOpts = [6, 8, 10, 12].map((x) => `<option value="${x}" ${p.fuelSurchargePct === x ? 'selected' : ''}>${x} %</option>`).join('');
+  body.innerHTML = `
+    <div class="card"><h3>Effectif & temps de travail</h3>
+      <div class="grid2">
+        ${f('tp-nbd', 'Nombre de chauffeurs', p.nbDrivers)}
+        ${f('tp-nbr', 'Nombre de responsables', p.nbResponsables)}
+        ${f('tp-nbs', 'Nombre de secrétaires', p.nbSecretaires)}
+        ${f('tp-hd', 'Heures / jour', p.hoursPerDay)}
+        ${f('tp-hw', 'Heures / semaine', p.hoursPerWeek)}
+        ${f('tp-days', 'Jours travaillés / mois', p.daysPerMonth)}
+      </div>
     </div>
-    <p class="help" style="margin-top:.5rem">📈 Ajustement CNR : relevez l'indice du mois M-1 (base 100) sur <a href="https://www.cnr.fr/espaces/13/indicateurs/26" target="_blank" rel="noopener">cnr.fr (indicateurs)</a> et reportez-le ci-dessus. Le prix est multiplié par indice actuel / indice de référence.</p>
-    <div style="margin-top:.6rem"><button class="btn accent" id="tp-save">Enregistrer les paramètres</button></div>
-  </div>`;
+    <div class="card"><h3>Coûts mensuels chargés</h3>
+      <div class="grid2">
+        ${f('tp-driver', 'Coût chauffeur (€)', p.driverCost)}
+        ${f('tp-resp', 'Coût responsable (€)', p.responsableCost)}
+        ${f('tp-secr', 'Coût secrétaire (€)', p.secretaireCost)}
+        ${f('tp-fg', 'Frais généraux / mois (loyer, télécom…) (€)', p.fraisGeneraux)}
+        ${f('tp-vehicle', 'Coût véhicule / mois (leasing+assur.+entretien) (€)', p.vehicleCost)}
+        ${f('tp-tyres', 'Pneumatiques amortis / mois / véhicule (€)', p.tyresPerMonth)}
+        ${f('tp-cons', 'Consommation (L/100 km)', p.consumption, 0.1)}
+        ${f('tp-fuel', 'Prix du gasoil (€/L)', p.fuelPrice, 0.01)}
+      </div>
+    </div>
+    <div class="card"><h3>Activité & tarif</h3>
+      <div class="grid2">
+        ${f('tp-points', 'Points livrés / jour / chauffeur', p.pointsPerDay)}
+        ${f('tp-km', 'Km / jour / chauffeur', p.kmPerDay)}
+        ${f('tp-margin', 'Marge / bénéfice cible (%)', p.marginPct, 0.5)}
+        <div><label>Part gasoil indexée</label><select id="tp-pg">${pgOpts}</select></div>
+        ${f('tp-cnrref', 'Indice CNR gasoil de référence (base 100)', p.cnrRef, 0.1)}
+        ${f('tp-cnrcur', 'Indice CNR gasoil actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
+      </div>
+      <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="tp-rama" ${p.ramassage ? 'checked' : ''}> Offre incluant le ramassage</label>
+      <div class="grid2">
+        ${f('tp-ramaday', 'Points de ramassage / jour / chauffeur', p.ramassagePerDay)}
+        ${f('tp-ramaprice', 'Prix par point de ramassage (€)', p.ramassagePrice, 0.01)}
+      </div>
+      <p class="help" style="margin-top:.5rem">📈 Part gasoil : relevez l'indice gasoil M-1 (base 100) sur <a href="https://www.cnr.fr/espaces/13/indicateurs/26" target="_blank" rel="noopener">cnr.fr</a>. Seule la part gasoil du prix est réindexée (indice actuel / référence).</p>
+    </div>
+    <button class="btn accent" id="tp-save">Enregistrer tous les paramètres</button>`;
   document.getElementById('tp-save').onclick = async () => {
-    const payload = { driverCost: v('#tp-driver'), vehicleCost: v('#tp-vehicle'), tyresPerMonth: v('#tp-tyres'), consumption: v('#tp-cons'), fuelPrice: v('#tp-fuel'), daysPerMonth: v('#tp-days'), overheadPct: v('#tp-overhead'), marginPct: v('#tp-margin'), pointsPerDay: v('#tp-points'), kmPerDay: v('#tp-km'), cnrRef: v('#tp-cnrref'), cnrCurrent: v('#tp-cnrcur') };
+    const payload = {
+      nbDrivers: v('#tp-nbd'), nbResponsables: v('#tp-nbr'), nbSecretaires: v('#tp-nbs'),
+      hoursPerDay: v('#tp-hd'), hoursPerWeek: v('#tp-hw'), daysPerMonth: v('#tp-days'),
+      driverCost: v('#tp-driver'), responsableCost: v('#tp-resp'), secretaireCost: v('#tp-secr'), fraisGeneraux: v('#tp-fg'),
+      vehicleCost: v('#tp-vehicle'), tyresPerMonth: v('#tp-tyres'), consumption: v('#tp-cons'), fuelPrice: v('#tp-fuel'),
+      pointsPerDay: v('#tp-points'), kmPerDay: v('#tp-km'), marginPct: v('#tp-margin'), fuelSurchargePct: v('#tp-pg'),
+      cnrRef: v('#tp-cnrref'), cnrCurrent: v('#tp-cnrcur'),
+      ramassage: document.getElementById('tp-rama').checked ? 1 : 0, ramassagePerDay: v('#tp-ramaday'), ramassagePrice: v('#tp-ramaprice'),
+    };
     try { await api('PUT', '/admin/tender', payload); await loadTender(); toast('Paramètres enregistrés.', 'ok'); tndTab('resume'); } catch (e) { toast(e.message, 'err'); }
   };
   function v(s) { return document.querySelector(s).value; }
@@ -3584,9 +3667,10 @@ function tenderProposalPDF(p, c) {
       <p>Madame, Monsieur,<br>Suite à votre consultation, veuillez trouver notre proposition tarifaire pour la prestation de livraison de colis.</p>
       <table><tbody>
         <tr><th>Prix par point livré (HT)</th><td class="big">${eur3(c.pricePerPoint)}</td></tr>
-        <tr><th>Volume estimé</th><td>${p.pointsPerDay} points/jour · ${Math.round(c.pointsMonth)} points/mois</td></tr>
-        <tr><th>Chiffre d'affaires mensuel estimé (HT)</th><td>${eur(c.revenueMonth)}</td></tr>
-        <tr><th>Révision tarifaire</th><td>Indexation sur l'indice CNR (base 100, mois M-1) — cnr.fr</td></tr>
+        ${c.rama ? `<tr><th>Prix par point de ramassage (HT)</th><td>${eur3(p.ramassagePrice)}</td></tr>` : ''}
+        <tr><th>Volume estimé</th><td>${p.pointsPerDay} points/jour/chauffeur · ${c.drivers} chauffeurs · ${Math.round(c.pointsMonth).toLocaleString('fr-FR')} points/mois</td></tr>
+        <tr><th>Chiffre d'affaires mensuel estimé (HT)</th><td>${eur(c.caMonthly)}</td></tr>
+        <tr><th>Révision tarifaire</th><td>Indexation gasoil (part ${p.fuelSurchargePct}%) sur l'indice CNR (base 100, mois M-1) — cnr.fr</td></tr>
       </tbody></table>
       <p class="foot">Prix hors taxes, hors péages et hors prestations annexes. Proposition valable 30 jours. Conditions de règlement : 30 jours date de facture. Document non contractuel établi à titre indicatif.</p>
       <p class="foot">Pour INTER COLIS SERVICES — La Direction</p>
@@ -3954,7 +4038,11 @@ async function adminUsers(body) {
   const byGroup = {};
   active.forEach((u) => { const k = u.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(u); });
 
-  const numCell = (u, f) => `<td><input type="number" step="0.5" data-uid="${u.id}" data-bal="${f}" value="${u.balances[f]}" style="width:72px"></td>`;
+  // CP plafonnés à 30 j (pas de report) → menu déroulant 0 à 30 (pas de 0,5).
+  function cpOptions(sel) { let o = ''; for (let i = 0; i <= 30; i += 0.5) o += `<option value="${i}" ${Number(sel) === i ? 'selected' : ''}>${i}</option>`; return o; }
+  const numCell = (u, f) => (f === 'congesN' || f === 'congesN1')
+    ? `<td><select data-uid="${u.id}" data-bal="${f}" style="width:74px">${cpOptions(u.balances[f])}</select></td>`
+    : `<td><input type="number" step="0.5" data-uid="${u.id}" data-bal="${f}" value="${u.balances[f]}" style="width:72px"></td>`;
   function userRow(u) {
     return `<tr>
       <td>${esc(u.firstName)} ${esc(u.lastName)}${u.suspended?' <span class="tag rejected">suspendu</span>':''}
@@ -3962,8 +4050,8 @@ async function adminUsers(body) {
         <div class="help">Ancienneté : ${u.hireDate?ancienneteText(u.hireDate):'—'}</div>
         ${u.taken?`<div class="help" style="color:var(--brand)">Total déjà pris : CP ${u.taken.cp} j · RCC ${u.taken.rcc} h · Récup ${u.taken.rcp} h</div>`:''}
         <div class="taken-base"><span class="help">Déjà pris (saisi) :</span>
-          <label>CP N<input type="number" step="0.5" data-tb="${u.id}" data-tbk="congesN" value="${(u.takenBaseline&&u.takenBaseline.congesN)||0}"></label>
-          <label>CP N-1<input type="number" step="0.5" data-tb="${u.id}" data-tbk="congesN1" value="${(u.takenBaseline&&u.takenBaseline.congesN1)||0}"></label>
+          <label>CP N<select data-tb="${u.id}" data-tbk="congesN">${cpOptions((u.takenBaseline&&u.takenBaseline.congesN)||0)}</select></label>
+          <label>CP N-1<select data-tb="${u.id}" data-tbk="congesN1">${cpOptions((u.takenBaseline&&u.takenBaseline.congesN1)||0)}</select></label>
           <label>RCC<input type="number" step="0.5" data-tb="${u.id}" data-tbk="rcc" value="${(u.takenBaseline&&u.takenBaseline.rcc)||0}"></label>
           <label>HSUP<input type="number" step="0.5" data-tb="${u.id}" data-tbk="heuresSupp" value="${(u.takenBaseline&&u.takenBaseline.heuresSupp)||0}"></label>
         </div>
