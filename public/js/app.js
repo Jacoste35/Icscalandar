@@ -396,6 +396,7 @@ function navSections() {
       { id: 'stocks', icon: '📦', label: 'Gestion des stocks' },
       { id: 'finance', icon: '💶', label: 'Contrôle financier' },
       { id: 'tender', icon: '📐', label: 'Estimation appel d\'offre' },
+      { id: 'contracts', icon: '📑', label: 'Contrats donneurs d\'ordre' },
     ] });
   }
   sections.push({ title: 'Informations', items: [{ id: 'info', icon: 'ℹ️', label: 'Droits & devoirs' }] });
@@ -551,6 +552,7 @@ function renderView() {
   if (v === 'fleet') return renderFleet(main);
   if (v === 'finance') return renderFinance(main);
   if (v === 'tender') return renderTender(main);
+  if (v === 'contracts') return renderContracts(main);
 }
 
 /* =========================================================================
@@ -3414,12 +3416,12 @@ function editFinanceModal(e) {
 let _tender = null;
 async function loadTender() { _tender = (await api('GET', '/admin/tender')).params; }
 
-// Calcul de contrôle de gestion complet à partir des paramètres.
+// Moteur de contrôle de gestion : coûts, prix, CNR, productivité, point mort.
 function tenderCompute(p) {
   const drivers = Math.max(1, p.nbDrivers || 1);
   const fuelDay = p.kmPerDay * (p.consumption / 100) * p.fuelPrice;
   const fuelMonthlyPerDriver = fuelDay * p.daysPerMonth;
-  // Coûts mensuels par poste (flotte entière).
+  // Postes de coût mensuels (flotte entière).
   const salairesChauffeurs = p.driverCost * drivers;
   const salairesResp = (p.nbResponsables || 0) * p.responsableCost;
   const salaireSecr = (p.nbSecretaires || 0) * p.secretaireCost;
@@ -3427,36 +3429,85 @@ function tenderCompute(p) {
   const pneusM = p.tyresPerMonth * drivers;
   const fraisGen = p.fraisGeneraux || 0;
   const carburantM = fuelMonthlyPerDriver * drivers;
-  const directMonthly = salairesChauffeurs + vehiculesM + pneusM + carburantM;
-  const structureMonthly = salairesResp + salaireSecr + fraisGen;
-  const totalCostMonthly = directMonthly + structureMonthly;
-  // Volumes.
-  const pointsPerDriverMonth = p.pointsPerDay * p.daysPerMonth;
-  const pointsMonth = pointsPerDriverMonth * drivers;
-  // Ramassage (volume + recette complémentaire qui allège le prix de livraison).
+  const fixedMonthly = salairesChauffeurs + salairesResp + salaireSecr + vehiculesM + pneusM + fraisGen;
+  const variableMonthly = carburantM;
+  const totalCostMonthly = fixedMonthly + variableMonthly;
+  // Volumes : livraisons + enlèvements (= total points).
+  const deliveryPoints = p.pointsPerDay * p.daysPerMonth * drivers;
   const rama = p.ramassage ? 1 : 0;
-  const ramaPointsMonth = rama ? (p.ramassagePerDay * p.daysPerMonth * drivers) : 0;
-  const ramaRevenue = rama ? ramaPointsMonth * p.ramassagePrice : 0;
-  // Prix de livraison au point (le ramassage couvre une part des coûts).
-  const costPerPoint = pointsMonth > 0 ? (totalCostMonthly - ramaRevenue) / pointsMonth : 0;
-  const basePrice = costPerPoint * (1 + p.marginPct / 100);
-  // Indexation partielle « part gasoil » sur l'indice CNR (base 100, M-1).
-  const pg = (p.fuelSurchargePct || 0) / 100;
-  const cnrRatio = p.cnrRef > 0 ? p.cnrCurrent / p.cnrRef : 1;
-  const cnrAdj = (1 - pg) + pg * cnrRatio;
-  const pricePerPoint = basePrice * cnrAdj;
-  const deliveryRevenue = pricePerPoint * pointsMonth;
-  const caMonthly = deliveryRevenue + ramaRevenue;
+  const pickupPoints = rama ? (p.ramassagePerDay * p.daysPerMonth * drivers) : 0;
+  const totalPoints = deliveryPoints + pickupPoints;
+  const kmTotal = p.kmPerDay * p.daysPerMonth * drivers;
+  const hoursMonth = (p.hoursPerDay || 8) * p.daysPerMonth * drivers;
+  // Coûts unitaires.
+  const coutReelPoint = totalPoints > 0 ? totalCostMonthly / totalPoints : 0;
+  const coutKm = kmTotal > 0 ? totalCostMonthly / kmTotal : 0;
+  const coutHoraire = hoursMonth > 0 ? totalCostMonthly / hoursMonth : 0;
+  // Prix (marge en % du CA).
+  const m = (p.marginPct || 0) / 100, mp = (p.marginPremiumPct || 0) / 100;
+  const prixMin = coutReelPoint;
+  const prixCible = m < 1 ? coutReelPoint / (1 - m) : coutReelPoint;
+  const prixPremium = mp < 1 ? coutReelPoint / (1 - mp) : coutReelPoint;
+  // CNR : variation gazole × part carburant.
+  const variationPct = p.cnrRef > 0 ? ((p.cnrCurrent - p.cnrRef) / p.cnrRef) * 100 : 0;
+  const coefAjustPct = variationPct * ((p.fuelSurchargePct || 0) / 100);
+  const suppPerPoint = prixCible * (coefAjustPct / 100);
+  const suppPerTour = suppPerPoint * (p.pointsPerDay + (rama ? p.ramassagePerDay : 0));
+  const suppMonthly = suppPerPoint * totalPoints;
+  const prixCibleCNR = prixCible + suppPerPoint;
+  const prixPremiumCNR = prixPremium + prixPremium * (coefAjustPct / 100);
+  // Auto-équilibrage : CA cible couvert par livraisons + enlèvements ; le
+  // ramassage allège le prix de livraison sans gonfler le CA.
+  const caTarget = m < 1 ? totalCostMonthly / (1 - m) : totalCostMonthly;
+  const ratio = p.ramassageMode ? (p.ramassageRatio || 0.7) : null;
+  let deliveryPrice, pickupPrice;
+  if (rama && p.ramassageMode) {
+    deliveryPrice = (deliveryPoints + pickupPoints * ratio) > 0 ? caTarget / (deliveryPoints + pickupPoints * ratio) : prixCible;
+    pickupPrice = deliveryPrice * ratio;
+  } else if (rama) {
+    pickupPrice = p.ramassagePrice || 0;
+    deliveryPrice = deliveryPoints > 0 ? (caTarget - pickupPoints * pickupPrice) / deliveryPoints : prixCible;
+  } else {
+    deliveryPrice = prixCible; pickupPrice = 0;
+  }
+  const ramaRevenue = pickupPoints * pickupPrice;
+  const caMonthly = deliveryPrice * deliveryPoints + ramaRevenue;
   const caPerDriver = caMonthly / drivers;
   const resultMonth = caMonthly - totalCostMonthly;
-  // Seuil de rentabilité (carburant = seule charge variable).
-  const fixedMonthly = salairesChauffeurs + salairesResp + salaireSecr + vehiculesM + pneusM + fraisGen;
-  const varPerPoint = pointsMonth > 0 ? carburantM / pointsMonth : 0;
-  const contribPerPoint = pricePerPoint - varPerPoint;
-  const breakEvenPoints = contribPerPoint > 0 ? (fixedMonthly - ramaRevenue) / contribPerPoint : null;
-  const breakEvenPerDay = breakEvenPoints != null ? breakEvenPoints / (p.daysPerMonth * drivers) : null;
-  const driverHourly = p.hoursPerWeek > 0 ? p.driverCost / (p.hoursPerWeek * 4.333) : 0;
-  return { drivers, fuelDay, fuelMonthlyPerDriver, carburantM, salairesChauffeurs, salairesResp, salaireSecr, vehiculesM, pneusM, fraisGen, directMonthly, structureMonthly, totalCostMonthly, pointsPerDriverMonth, pointsMonth, rama, ramaPointsMonth, ramaRevenue, costPerPoint, basePrice, cnrAdj, pricePerPoint, deliveryRevenue, caMonthly, caPerDriver, resultMonth, fixedMonthly, varPerPoint, contribPerPoint, breakEvenPoints, breakEvenPerDay, driverHourly };
+  const marginRealisedPct = caMonthly > 0 ? (resultMonth / caMonthly) * 100 : 0;
+  // Point mort (formule simple : coût total / prix facturé du point).
+  const pointMort = deliveryPrice > 0 ? totalCostMonthly / deliveryPrice : null;
+  const pointMortPct = (pointMort != null && totalPoints > 0) ? (pointMort / totalPoints) * 100 : null;
+  const margeSecurite = pointMort != null ? totalPoints - pointMort : null;
+  // Productivité.
+  const ptsPerHour = hoursMonth > 0 ? totalPoints / hoursMonth : 0;
+  const ptsPerVehicle = totalPoints / drivers;
+  const kmPerPoint = totalPoints > 0 ? kmTotal / totalPoints : 0;
+  const coutChauffeurPerPoint = totalPoints > 0 ? salairesChauffeurs / totalPoints : 0;
+  const coutChauffeurPerHour = hoursMonth > 0 ? salairesChauffeurs / hoursMonth : 0;
+  const tph = p.targetPtsPerHour || 15;
+  let prodLevel = 'Faible';
+  if (ptsPerHour >= tph * 1.15) prodLevel = 'Excellent';
+  else if (ptsPerHour >= tph) prodLevel = 'Bon';
+  else if (ptsPerHour >= tph * 0.8) prodLevel = 'Moyen';
+  // Recommandations automatiques.
+  const reco = [];
+  if (marginRealisedPct < 15) reco.push({ lvl: 'orange', txt: 'Marge inférieure à 15 % : négociation tarifaire recommandée.' });
+  if (coutReelPoint > deliveryPrice) reco.push({ lvl: 'red', txt: 'Coût du point supérieur au prix : tournée déficitaire.' });
+  if (kmPerPoint > (p.maxKmPerPoint || 2)) reco.push({ lvl: 'orange', txt: 'Km/point élevé : densité de tournée insuffisante.' });
+  if (Math.abs(coefAjustPct) >= 2) reco.push({ lvl: 'orange', txt: 'Impact carburant significatif : prévoir une révision tarifaire liée au gazole.' });
+  if (prodLevel === 'Faible' || prodLevel === 'Moyen') reco.push({ lvl: 'orange', txt: 'Productivité perfectible : optimisation de tournée recommandée.' });
+  if (!reco.length) reco.push({ lvl: 'green', txt: 'Indicateurs conformes : activité rentable et productive.' });
+  return {
+    drivers, fuelDay, fuelMonthlyPerDriver, carburantM, salairesChauffeurs, salairesResp, salaireSecr, vehiculesM, pneusM, fraisGen,
+    fixedMonthly, variableMonthly, totalCostMonthly, deliveryPoints, pickupPoints, totalPoints, kmTotal, hoursMonth,
+    coutReelPoint, coutKm, coutHoraire, prixMin, prixCible, prixPremium, prixCibleCNR, prixPremiumCNR,
+    variationPct, coefAjustPct, suppPerPoint, suppPerTour, suppMonthly,
+    rama, ratio, deliveryPrice, pickupPrice, ramaRevenue, caMonthly, caPerDriver, resultMonth, marginRealisedPct,
+    pointMort, pointMortPct, margeSecurite, ptsPerHour, ptsPerVehicle, kmPerPoint, coutChauffeurPerPoint, coutChauffeurPerHour, prodLevel, reco,
+    // compat anciens champs
+    pricePerPoint: deliveryPrice, pointsMonth: deliveryPoints, breakEvenPoints: pointMort, breakEvenPerDay: pointMort != null ? pointMort / (p.daysPerMonth * drivers) : null, contribPerPoint: deliveryPrice, varPerPoint: totalPoints > 0 ? variableMonthly / totalPoints : 0, driverHourly: p.hoursPerWeek > 0 ? p.driverCost / (p.hoursPerWeek * 4.333) : 0,
+  };
 }
 const eur3 = (n) => (Math.round((Number(n) || 0) * 1000) / 1000).toLocaleString('fr-FR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' €';
 
@@ -3465,50 +3516,124 @@ async function renderTender(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Estimation appel d'offre</h1>
     <p>Calculez un prix de livraison au point couvrant vos charges et votre marge.</p></div></div>
     <div class="view-switch" id="tnd-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-ttab="resume" class="active">Résumé</button>
+      <button data-ttab="dashboard" class="active">Tableau de bord</button>
       <button data-ttab="calc">Estimation</button>
-      <button data-ttab="marge">Marge & Bénéfice</button>
+      <button data-ttab="prod">Productivité & point mort</button>
+      <button data-ttab="nego">Négociation</button>
       <button data-ttab="params">Paramètres</button>
     </div>
     <div id="tnd-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#tnd-tabs');
   tabs.querySelectorAll('[data-ttab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); tndTab(b.dataset.ttab); });
   await loadTender();
-  tndTab('resume');
+  tndTab('dashboard');
 }
+// Feu tricolore : vert conforme, orange vigilance, rouge critique.
+function feu(level) { return `<span class="feu feu-${level}"></span>`; }
 function tndTab(tab) {
   const body = document.getElementById('tnd-body'); if (!body) return; body.className = '';
-  if (tab === 'resume') return tndResume(body);
+  if (tab === 'dashboard') return tndResume(body);
   if (tab === 'calc') return tndCalc(body);
-  if (tab === 'marge') return tndMarge(body);
+  if (tab === 'prod') return tndMarge(body);
+  if (tab === 'nego') return tndNego(body);
   if (tab === 'params') return tndParams(body);
 }
 
 function tndResume(body) {
   const p = _tender, c = tenderCompute(p);
-  const kpi = (lbl, val, cls) => `<div class="stat ${cls || ''}"><div class="value" style="font-size:1.4rem">${val}</div><div class="label">${lbl}</div></div>`;
+  const lvlMargin = c.marginRealisedPct >= 15 ? 'green' : c.marginRealisedPct >= 8 ? 'orange' : 'red';
+  const lvlResult = c.resultMonth > 0 ? 'green' : c.resultMonth === 0 ? 'orange' : 'red';
+  const lvlProd = c.prodLevel === 'Excellent' || c.prodLevel === 'Bon' ? 'green' : c.prodLevel === 'Moyen' ? 'orange' : 'red';
+  const lvlCnr = Math.abs(c.coefAjustPct) < 2 ? 'green' : Math.abs(c.coefAjustPct) < 4 ? 'orange' : 'red';
+  const card = (feuLvl, lbl, val, sub) => `<div class="tnd-ind"><div class="tnd-ind-top">${feu(feuLvl)}<span>${lbl}</span></div><div class="tnd-ind-val">${val}</div>${sub ? `<div class="help">${sub}</div>` : ''}</div>`;
   body.innerHTML = `
-    <div class="grid cols-4">
-      ${kpi('Prix proposé / point', eur3(c.pricePerPoint), '')}
-      ${kpi('C.A. mensuel global', eur(c.caMonthly), '')}
-      ${kpi('C.A. par chauffeur', eur(c.caPerDriver), '')}
-      ${kpi('Résultat mensuel estimé', eur(c.resultMonth), c.resultMonth >= 0 ? '' : 'alt')}
-    </div>
-    <div class="card"><h3>Synthèse (${c.drivers} chauffeurs)</h3>
-      <div class="table-wrap"><table class="veh-table"><tbody>
-        <tr><td>Points livrés / mois (flotte)</td><td>${Math.round(c.pointsMonth).toLocaleString('fr-FR')}</td></tr>
-        ${c.rama ? `<tr><td>Points de ramassage / mois</td><td>${Math.round(c.ramaPointsMonth).toLocaleString('fr-FR')} · recette ${eur(c.ramaRevenue)}</td></tr>` : ''}
-        <tr><td>Coût de revient / point</td><td>${eur3(c.costPerPoint)}</td></tr>
-        <tr><td>Marge cible</td><td>${p.marginPct}%</td></tr>
-        <tr><td>Part gasoil indexée</td><td>${p.fuelSurchargePct}% · ajustement ×${c.cnrAdj.toFixed(3)} (indice ${p.cnrCurrent}/${p.cnrRef})</td></tr>
-        <tr><td>Coût total mensuel</td><td>${eur(c.totalCostMonthly)}</td></tr>
-        <tr><td><strong>Chiffre d'affaires mensuel global</strong></td><td><strong>${eur(c.caMonthly)}</strong></td></tr>
-        <tr><td><strong>Point mort</strong></td><td><strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints).toLocaleString('fr-FR') + ' points/mois (' + Math.ceil(c.breakEvenPerDay) + '/jour/chauffeur)' : '—'}</strong></td></tr>
-      </tbody></table></div>
+    <div class="card"><h3>Tableau de bord — indicateurs</h3>
+      <div class="tnd-grid">
+        ${card('green', 'Coût réel / point', eur3(c.coutReelPoint), eur3(c.coutKm) + '/km · ' + eur(c.coutHoraire) + '/h')}
+        ${card('green', 'Prix proposé / point', eur3(c.deliveryPrice), 'cible ' + eur3(c.prixCible))}
+        ${card('green', 'Prix ajusté CNR', eur3(c.prixCibleCNR), 'supplément ' + eur3(c.suppPerPoint) + '/pt')}
+        ${card(lvlMargin, 'Marge réalisée', c.marginRealisedPct.toFixed(1) + ' %', 'cible ' + p.marginPct + ' %')}
+        ${card('green', 'Point mort', c.pointMort != null ? Math.ceil(c.pointMort).toLocaleString('fr-FR') + ' pts' : '—', c.pointMortPct != null ? c.pointMortPct.toFixed(0) + ' % du volume' : '')}
+        ${card(lvlResult, 'Résultat / mois', eur(c.resultMonth), 'CA ' + eur(c.caMonthly))}
+        ${card(lvlProd, 'Productivité', c.prodLevel, c.ptsPerHour.toFixed(1) + ' pts/h')}
+        ${card(lvlCnr, 'Supplément CNR / mois', eur(c.suppMonthly), 'variation gazole ' + c.variationPct.toFixed(1) + ' %')}
+      </div>
       <div style="margin-top:.8rem"><button class="btn accent" id="tnd-pdf">📄 Générer la proposition tarifaire (en-tête entreprise)</button></div>
     </div>
-    <div class="alert info">Réglez vos paramètres réels dans « Paramètres ». L'ajustement « part gasoil » réindexe la part fuel du prix sur l'indice CNR (base 100, M-1, cnr.fr). Le ramassage allège le prix de livraison pour rester compétitif.</div>`;
+    <div class="card"><h3>Analyse & recommandations</h3>
+      <ul class="veh-alert-list">${c.reco.map((r) => `<li>${feu(r.lvl)} ${esc(r.txt)}</li>`).join('')}</ul>
+    </div>
+    <div class="card"><h3>Réponses clés</h3>
+      <div class="table-wrap"><table class="veh-table"><tbody>
+        <tr><td>1. Coût réel d'un point livré</td><td><strong>${eur3(c.coutReelPoint)}</strong></td></tr>
+        <tr><td>2. Prix minimum rentable</td><td><strong>${eur3(c.prixMin)}</strong></td></tr>
+        <tr><td>3. Prix pour la marge cible (${p.marginPct} %)</td><td><strong>${eur3(c.prixCible)}</strong> (premium ${eur3(c.prixPremium)})</td></tr>
+        <tr><td>4. Impact CNR sur la rentabilité</td><td>${c.coefAjustPct.toFixed(2)} % → ${eur(c.suppMonthly)}/mois · ${eur3(c.suppPerPoint)}/pt</td></tr>
+        <tr><td>5. Points à produire (seuil de rentabilité)</td><td><strong>${c.pointMort != null ? Math.ceil(c.pointMort).toLocaleString('fr-FR') + ' pts/mois' : '—'}</strong> · marge de sécurité ${c.margeSecurite != null ? Math.round(c.margeSecurite).toLocaleString('fr-FR') + ' pts' : '—'}</td></tr>
+        <tr><td>6. Tarif à négocier (marge maintenue)</td><td><strong>${eur3(c.prixCibleCNR)}</strong> (cible + CNR)</td></tr>
+      </tbody></table></div>
+    </div>
+    ${c.rama ? `<div class="alert info">Ramassage ${p.ramassageMode ? 'auto-équilibré' : 'manuel'} : prix livraison ${eur3(c.deliveryPrice)} · prix enlèvement ${eur3(c.pickupPrice)}. Le ramassage complète le C.A. (${eur(c.ramaRevenue)}/mois) et abaisse le prix de livraison sans gonfler le C.A.</div>` : ''}`;
   body.querySelector('#tnd-pdf').onclick = () => tenderProposalPDF(p, c);
+}
+
+// Onglet Négociation : scénarios de prix.
+function tndNego(body) {
+  const p = _tender, base = tenderCompute(p);
+  const scenarios = [2.50, 2.75, 3.00, 3.25, 3.50, 3.75, 4.00];
+  const row = (price) => {
+    const ca = price * base.deliveryPoints + base.ramaRevenue;
+    const result = ca - base.totalCostMonthly;
+    const marge = ca > 0 ? (result / ca) * 100 : 0;
+    const pm = price > 0 ? base.totalCostMonthly / price : 0;
+    const cnrImpact = price * (base.coefAjustPct / 100);
+    const lvl = result < 0 ? 'red' : marge < 15 ? 'orange' : 'green';
+    return `<tr><td>${feu(lvl)} ${eur3(price)}</td><td>${eur(ca)}</td><td class="${result >= 0 ? 'pos' : 'neg'}">${eur(result)}</td><td>${marge.toFixed(1)} %</td><td>${Math.ceil(pm).toLocaleString('fr-FR')} pts</td><td>${eur3(cnrImpact)}/pt</td></tr>`;
+  };
+  body.innerHTML = `
+    <div class="card"><h3>Simulateur de négociation (prix du point)</h3>
+      <p class="help">Prix de revient ${eur3(base.coutReelPoint)} · prix cible ${eur3(base.prixCible)}. Repérez le prix minimal acceptable (feu vert = marge ≥ 15 %).</p>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Prix / point</th><th>C.A. / mois</th><th>Résultat</th><th>Marge</th><th>Point mort</th><th>Impact CNR</th></tr></thead>
+      <tbody>${scenarios.map(row).join('')}</tbody></table></div>
+      <div class="grid2" style="margin-top:.8rem">
+        <div><label>Prix libre à tester (€)</label><input id="ng-price" type="number" step="0.01" value="${base.prixCible.toFixed(3)}"></div>
+        <div style="align-self:end"><button class="btn accent" id="ng-go">Tester</button></div>
+      </div>
+      <div id="ng-result"></div>
+    </div>
+    <div class="card"><h3>Tarif à négocier en cas de hausse des coûts</h3>
+      <div class="grid2">
+        <div><label>Hausse carburant (%)</label><input id="ng-fuel" type="number" step="0.5" value="0"></div>
+        <div><label>Hausse salariale (%)</label><input id="ng-sal" type="number" step="0.5" value="0"></div>
+        <div><label>Hausse entretien/assurance (%)</label><input id="ng-ent" type="number" step="0.5" value="0"></div>
+        <div><label>Inflation autres charges (%)</label><input id="ng-inf" type="number" step="0.5" value="0"></div>
+      </div>
+      <div style="margin-top:.6rem"><button class="btn" id="ng-reneg">Calculer le prix recommandé</button></div>
+      <div id="ng-reneg-result"></div>
+    </div>`;
+  document.getElementById('ng-go').onclick = () => {
+    const price = Number(document.getElementById('ng-price').value) || 0;
+    const ca = price * base.deliveryPoints + base.ramaRevenue, result = ca - base.totalCostMonthly, marge = ca > 0 ? result / ca * 100 : 0;
+    document.getElementById('ng-result').innerHTML = `<p style="margin:.6rem 0 0">À ${eur3(price)} : C.A. ${eur(ca)} · résultat <strong class="${result >= 0 ? 'pos' : 'neg'}">${eur(result)}</strong> · marge ${marge.toFixed(1)} % · point mort ${Math.ceil(base.totalCostMonthly / price).toLocaleString('fr-FR')} pts.</p>`;
+  };
+  document.getElementById('ng-reneg').onclick = () => {
+    const fuel = +document.getElementById('ng-fuel').value, sal = +document.getElementById('ng-sal').value, ent = +document.getElementById('ng-ent').value, inf = +document.getElementById('ng-inf').value;
+    const newFixed = base.salairesChauffeurs * (1 + sal / 100) + base.salairesResp * (1 + sal / 100) + base.salaireSecr * (1 + sal / 100) + (base.vehiculesM + base.pneusM) * (1 + ent / 100) + base.fraisGen * (1 + inf / 100);
+    const newVar = base.variableMonthly * (1 + fuel / 100);
+    const newTotal = newFixed + newVar;
+    const newCoutPoint = base.totalPoints > 0 ? newTotal / base.totalPoints : 0;
+    const m = (p.marginPct || 0) / 100;
+    const recommended = m < 1 ? newCoutPoint / (1 - m) : newCoutPoint;
+    const ecart = recommended - base.prixCible;
+    const gainAn = ecart * base.deliveryPoints * 12;
+    document.getElementById('ng-reneg-result').innerHTML = `<div class="table-wrap" style="margin-top:.6rem"><table class="veh-table"><tbody>
+      <tr><td>Prix actuel (cible)</td><td>${eur3(base.prixCible)}</td></tr>
+      <tr><td>Coût réel actualisé / point</td><td>${eur3(newCoutPoint)}</td></tr>
+      <tr><td><strong>Prix recommandé</strong></td><td><strong>${eur3(recommended)}</strong></td></tr>
+      <tr><td>Écart à négocier</td><td class="${ecart >= 0 ? 'neg' : 'pos'}">${ecart >= 0 ? '+' : ''}${eur3(ecart)}/pt (${(base.prixCible > 0 ? ecart / base.prixCible * 100 : 0).toFixed(1)} %)</td></tr>
+      <tr><td>Gain annuel estimé si obtenu</td><td>${eur(gainAn)}</td></tr>
+    </tbody></table></div>`;
+  };
 }
 
 function tndCalc(body) {
@@ -3548,7 +3673,7 @@ function tndCalc(body) {
       <p class="help" style="margin-top:.6rem">${Math.round(c.pointsMonth).toLocaleString('fr-FR')} points/mois · coût de revient ${eur3(c.costPerPoint)}/point · point mort ${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints).toLocaleString('fr-FR') + ' pts/mois' : '—'}</p></div>`;
   };
   document.getElementById('tc-calc').onclick = () => show(read());
-  document.getElementById('tc-save').onclick = async () => { try { await api('PUT', '/admin/tender', read()); await loadTender(); toast('Enregistré.', 'ok'); tndTab('resume'); } catch (e) { toast(e.message, 'err'); } };
+  document.getElementById('tc-save').onclick = async () => { try { await api('PUT', '/admin/tender', read()); await loadTender(); toast('Enregistré.', 'ok'); tndTab('dashboard'); } catch (e) { toast(e.message, 'err'); } };
   show(p);
   function val(s) { return document.querySelector(s).value; }
 }
@@ -3576,9 +3701,19 @@ function tndMarge(body) {
       </tbody></table></div>
       <p class="help">Coût horaire chauffeur indicatif : ${eur(c.driverHourly)}/h (base ${p.hoursPerWeek} h/sem, 8 h/jour).</p>
     </div>
+    <div class="card"><h3>Productivité</h3>
+      <div class="table-wrap"><table class="veh-table"><tbody>
+        <tr><td>Niveau global</td><td><span class="pill ${c.prodLevel === 'Excellent' || c.prodLevel === 'Bon' ? 'ok' : c.prodLevel === 'Moyen' ? 'warn' : 'danger'}">${esc(c.prodLevel)}</span></td></tr>
+        <tr><td>Points par heure</td><td>${c.ptsPerHour.toFixed(1)} (cible ${p.targetPtsPerHour})</td></tr>
+        <tr><td>Points par véhicule / mois</td><td>${Math.round(c.ptsPerVehicle).toLocaleString('fr-FR')}</td></tr>
+        <tr><td>Km par point</td><td>${c.kmPerPoint.toFixed(2)} km (seuil ${p.maxKmPerPoint})</td></tr>
+        <tr><td>Coût chauffeur / point</td><td>${eur3(c.coutChauffeurPerPoint)}</td></tr>
+        <tr><td>Coût chauffeur / heure</td><td>${eur(c.coutChauffeurPerHour)}</td></tr>
+      </tbody></table></div>
+    </div>
     <div class="card"><h3>Point mort (seuil de rentabilité)</h3>
-      <p>Vous couvrez vos charges à partir de <strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints).toLocaleString('fr-FR') : '—'} points/mois</strong> (~${c.breakEvenPerDay != null ? Math.ceil(c.breakEvenPerDay) : '—'} points/jour/chauffeur), au prix de ${eur3(c.pricePerPoint)}/point.</p>
-      <p class="help">Marge de contribution / point : ${eur3(c.contribPerPoint)} · charge variable / point : ${eur3(c.varPerPoint)}${c.rama ? ' · le ramassage couvre ' + eur(c.ramaRevenue) + '/mois' : ''}.</p>
+      <p>Vous couvrez vos charges à partir de <strong>${c.pointMort != null ? Math.ceil(c.pointMort).toLocaleString('fr-FR') : '—'} points/mois</strong> au prix de ${eur3(c.deliveryPrice)}/point.</p>
+      <p class="help">Soit ${c.pointMortPct != null ? c.pointMortPct.toFixed(0) + ' % du volume' : '—'} · marge de sécurité ${c.margeSecurite != null ? Math.round(c.margeSecurite).toLocaleString('fr-FR') + ' points' : '—'}${c.rama ? ' · le ramassage apporte ' + eur(c.ramaRevenue) + '/mois' : ''}.</p>
     </div>
     <div class="card"><h3>Tendances</h3>
       <div class="table-wrap"><table class="veh-table"><thead><tr><th>Scénario</th><th>Prix / point</th><th>C.A. / mois</th><th>Résultat / mois</th><th>Résultat / an</th></tr></thead><tbody>
@@ -3622,14 +3757,19 @@ function tndParams(body) {
         ${f('tp-points', 'Points livrés / jour / chauffeur', p.pointsPerDay)}
         ${f('tp-km', 'Km / jour / chauffeur', p.kmPerDay)}
         ${f('tp-margin', 'Marge / bénéfice cible (%)', p.marginPct, 0.5)}
+        ${f('tp-marginp', 'Marge premium (%)', p.marginPremiumPct, 0.5)}
         <div><label>Part gasoil indexée</label><select id="tp-pg">${pgOpts}</select></div>
         ${f('tp-cnrref', 'Indice CNR gasoil de référence (base 100)', p.cnrRef, 0.1)}
         ${f('tp-cnrcur', 'Indice CNR gasoil actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
+        ${f('tp-tph', 'Seuil productivité « bon » (points/heure)', p.targetPtsPerHour, 0.5)}
+        ${f('tp-kpp', 'Seuil densité (km/point max)', p.maxKmPerPoint, 0.1)}
       </div>
       <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="tp-rama" ${p.ramassage ? 'checked' : ''}> Offre incluant le ramassage</label>
+      <label class="veh-check"><input type="checkbox" id="tp-ramamode" ${p.ramassageMode ? 'checked' : ''}> Ramassage <strong>auto-équilibré</strong> (le prix d'enlèvement abaisse le prix de livraison)</label>
       <div class="grid2">
-        ${f('tp-ramaday', 'Points de ramassage / jour / chauffeur', p.ramassagePerDay)}
-        ${f('tp-ramaprice', 'Prix par point de ramassage (€)', p.ramassagePrice, 0.01)}
+        ${f('tp-ramaday', 'Enlèvements / jour / chauffeur', p.ramassagePerDay)}
+        ${f('tp-ramaprice', 'Prix par enlèvement (€) — mode manuel', p.ramassagePrice, 0.01)}
+        ${f('tp-ramaratio', 'Ratio prix enlèvement / livraison (mode auto)', p.ramassageRatio, 0.05)}
       </div>
       <p class="help" style="margin-top:.5rem">📈 Part gasoil : relevez l'indice gasoil M-1 (base 100) sur <a href="https://www.cnr.fr/espaces/13/indicateurs/26" target="_blank" rel="noopener">cnr.fr</a>. Seule la part gasoil du prix est réindexée (indice actuel / référence).</p>
     </div>
@@ -3640,11 +3780,11 @@ function tndParams(body) {
       hoursPerDay: v('#tp-hd'), hoursPerWeek: v('#tp-hw'), daysPerMonth: v('#tp-days'),
       driverCost: v('#tp-driver'), responsableCost: v('#tp-resp'), secretaireCost: v('#tp-secr'), fraisGeneraux: v('#tp-fg'),
       vehicleCost: v('#tp-vehicle'), tyresPerMonth: v('#tp-tyres'), consumption: v('#tp-cons'), fuelPrice: v('#tp-fuel'),
-      pointsPerDay: v('#tp-points'), kmPerDay: v('#tp-km'), marginPct: v('#tp-margin'), fuelSurchargePct: v('#tp-pg'),
-      cnrRef: v('#tp-cnrref'), cnrCurrent: v('#tp-cnrcur'),
-      ramassage: document.getElementById('tp-rama').checked ? 1 : 0, ramassagePerDay: v('#tp-ramaday'), ramassagePrice: v('#tp-ramaprice'),
+      pointsPerDay: v('#tp-points'), kmPerDay: v('#tp-km'), marginPct: v('#tp-margin'), marginPremiumPct: v('#tp-marginp'), fuelSurchargePct: v('#tp-pg'),
+      cnrRef: v('#tp-cnrref'), cnrCurrent: v('#tp-cnrcur'), targetPtsPerHour: v('#tp-tph'), maxKmPerPoint: v('#tp-kpp'),
+      ramassage: document.getElementById('tp-rama').checked ? 1 : 0, ramassageMode: document.getElementById('tp-ramamode').checked ? 1 : 0, ramassagePerDay: v('#tp-ramaday'), ramassagePrice: v('#tp-ramaprice'), ramassageRatio: v('#tp-ramaratio'),
     };
-    try { await api('PUT', '/admin/tender', payload); await loadTender(); toast('Paramètres enregistrés.', 'ok'); tndTab('resume'); } catch (e) { toast(e.message, 'err'); }
+    try { await api('PUT', '/admin/tender', payload); await loadTender(); toast('Paramètres enregistrés.', 'ok'); tndTab('dashboard'); } catch (e) { toast(e.message, 'err'); }
   };
   function v(s) { return document.querySelector(s).value; }
 }
@@ -3677,6 +3817,146 @@ function tenderProposalPDF(p, c) {
     </body></html>`);
   w.document.close();
   setTimeout(() => { w.focus(); w.print(); }, 300);
+}
+
+/* =========================================================================
+   CONTRATS DONNEURS D'ORDRE (administrateur)
+   ========================================================================= */
+const CONTRACT_DONNEURS = ['GLS', 'FedEx', 'DPD', 'Chronopost', 'UPS', 'Ciblex', 'Autre'];
+
+// Calcul de rentabilité d'un contrat (côté client).
+function contractCompute(k) {
+  const caLivraison = (k.deliveries || 0) * (k.priceDelivery || 0);
+  const caEnlevement = (k.pickups || 0) * (k.pricePickup || 0);
+  const caForfait = (k.dailyFlat || 0) * (k.daysPerMonth || 21) + (k.vehicleFlat || 0) * (k.vehicles || 1) + (k.fuelFlat || 0);
+  const caPrimes = (k.bonusQuality || 0) + (k.bonusPerf || 0) + (k.bonusProd || 0);
+  const caTotal = caLivraison + caEnlevement + caForfait + caPrimes;
+  const penalites = (k.penFailedDelivery || 0) + (k.penLate || 0) + (k.penAbsence || 0) + (k.penClaim || 0) + (k.penQuality || 0);
+  const resultBrut = caTotal - (k.monthlyCost || 0);
+  const resultNet = resultBrut - penalites;
+  const marginPct = caTotal > 0 ? (resultNet / caTotal) * 100 : 0;
+  const totalPoints = (k.deliveries || 0) + (k.pickups || 0);
+  const coutReelPoint = totalPoints > 0 ? (k.monthlyCost || 0) / totalPoints : 0;
+  const resultParVehicule = (k.vehicles || 1) > 0 ? resultNet / (k.vehicles || 1) : resultNet;
+  // CNR : indexation gazole.
+  const variationPct = k.fuelRef > 0 ? ((k.fuelCurrent - k.fuelRef) / k.fuelRef) * 100 : 0;
+  const indexPct = variationPct * ((k.fuelSharePct || 0) / 100);
+  const cnrPerPoint = (k.priceDelivery || 0) * (indexPct / 100);
+  const cnrDaily = cnrPerPoint * ((k.deliveries || 0) / (k.daysPerMonth || 21));
+  const cnrMonthly = cnrPerPoint * (k.deliveries || 0);
+  const cnrYearly = cnrMonthly * 12;
+  // Renégociation : prix recommandé pour la marge cible.
+  const mt = (k.marginTargetPct || 12) / 100;
+  const prixRecommande = mt < 1 ? coutReelPoint / (1 - mt) : coutReelPoint;
+  const ecart = prixRecommande - (k.priceDelivery || 0);
+  const gainAnnuel = ecart * (k.deliveries || 0) * 12;
+  return { caLivraison, caEnlevement, caForfait, caPrimes, caTotal, penalites, resultBrut, resultNet, marginPct, totalPoints, coutReelPoint, resultParVehicule, variationPct, indexPct, cnrPerPoint, cnrDaily, cnrMonthly, cnrYearly, prixRecommande, ecart, gainAnnuel };
+}
+
+let _contracts = [];
+async function renderContracts(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Contrats donneurs d'ordre</h1>
+    <p>Rentabilité par contrat, indexation CNR et tarif à négocier.</p></div>
+    <button class="btn accent" id="ct-new">+ Nouveau contrat</button></div>
+    <div id="ct-body" class="empty">Chargement…</div>`;
+  document.getElementById('ct-new').onclick = () => contractModal(null);
+  await loadContracts();
+}
+async function loadContracts() {
+  try { _contracts = (await api('GET', '/admin/contracts')).contracts; } catch (e) { document.getElementById('ct-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const body = document.getElementById('ct-body'); body.className = '';
+  if (!_contracts.length) { body.innerHTML = `<div class="alert info">Aucun contrat. Cliquez sur « Nouveau contrat ».</div>`; return; }
+  const computed = _contracts.map((k) => ({ k, c: contractCompute(k) }));
+  // Tableau de bord direction : agrégats + classement.
+  const tot = computed.reduce((a, x) => ({ ca: a.ca + x.c.caTotal, res: a.res + x.c.resultNet }), { ca: 0, res: 0 });
+  const ranking = computed.slice().sort((a, b) => b.c.resultNet - a.c.resultNet);
+  body.innerHTML = `
+    <div class="grid cols-3">
+      <div class="stat"><div class="value" style="font-size:1.4rem">${eur(tot.ca)}</div><div class="label">C.A. mensuel (tous contrats)</div></div>
+      <div class="stat ${tot.res >= 0 ? '' : 'alt'}"><div class="value" style="font-size:1.4rem">${eur(tot.res)}</div><div class="label">Résultat net mensuel</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${tot.ca > 0 ? (tot.res / tot.ca * 100).toFixed(1) : 0} %</div><div class="label">Marge moyenne</div></div>
+    </div>
+    <div class="card"><h3>Classement des contrats par rentabilité</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Contrat</th><th>C.A.</th><th>Résultat net</th><th>Marge</th><th>Coût/pt</th><th>CNR/mois</th><th></th></tr></thead>
+      <tbody>${ranking.map(({ k, c }) => `<tr>
+        <td><strong>${esc(k.name)}</strong>${k.sector ? `<div class="help">${esc(k.sector)}</div>` : ''}</td>
+        <td>${eur(c.caTotal)}</td>
+        <td class="${c.resultNet >= 0 ? 'pos' : 'neg'}">${eur(c.resultNet)}</td>
+        <td>${c.marginPct.toFixed(1)} %</td>
+        <td>${eur3(c.coutReelPoint)}</td>
+        <td>${eur(c.cnrMonthly)}</td>
+        <td style="white-space:nowrap"><button class="btn ghost sm" data-ctview="${k.id}">Détail</button> <button class="btn ghost sm" data-ctedit="${k.id}">✎</button> <button class="btn ghost sm" data-ctdel="${k.id}">✕</button></td>
+      </tr>`).join('')}</tbody></table></div>
+    </div>`;
+  body.querySelectorAll('[data-ctview]').forEach((b) => b.onclick = () => contractDetailModal(_contracts.find((x) => x.id === b.dataset.ctview)));
+  body.querySelectorAll('[data-ctedit]').forEach((b) => b.onclick = () => contractModal(_contracts.find((x) => x.id === b.dataset.ctedit)));
+  body.querySelectorAll('[data-ctdel]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer ce contrat ?')) return; try { await api('DELETE', '/admin/contracts/' + b.dataset.ctdel); loadContracts(); } catch (e) { toast(e.message, 'err'); } });
+}
+
+function contractDetailModal(k) {
+  if (!k) return; const c = contractCompute(k);
+  const reneg = c.marginPct < (k.marginTargetPct || 12);
+  modal({
+    title: 'Contrat — ' + k.name,
+    bodyHTML: `
+      ${reneg ? `<div class="alert warn">⚠️ Marge (${c.marginPct.toFixed(1)} %) inférieure à l'objectif (${k.marginTargetPct || 12} %) : <strong>renégociation tarifaire recommandée</strong>. Prix recommandé ${eur3(c.prixRecommande)} (+${eur3(c.ecart)}/pt, gain annuel ${eur(c.gainAnnuel)}).</div>` : ''}
+      <div class="table-wrap"><table class="veh-table"><tbody>
+        <tr><td>C.A. livraison</td><td>${eur(c.caLivraison)}</td></tr>
+        <tr><td>C.A. enlèvement</td><td>${eur(c.caEnlevement)}</td></tr>
+        <tr><td>C.A. forfaits</td><td>${eur(c.caForfait)}</td></tr>
+        <tr><td>C.A. primes</td><td>${eur(c.caPrimes)}</td></tr>
+        <tr><td><strong>C.A. total</strong></td><td><strong>${eur(c.caTotal)}</strong></td></tr>
+        <tr><td>Coût d'exploitation</td><td>${eur(k.monthlyCost || 0)}</td></tr>
+        <tr><td>Résultat brut</td><td>${eur(c.resultBrut)}</td></tr>
+        <tr><td>Pénalités</td><td>${eur(c.penalites)}</td></tr>
+        <tr><td><strong>Résultat net</strong></td><td><strong class="${c.resultNet >= 0 ? 'pos' : 'neg'}">${eur(c.resultNet)}</strong> (${c.marginPct.toFixed(1)} %)</td></tr>
+        <tr><td>Résultat par véhicule</td><td>${eur(c.resultParVehicule)}</td></tr>
+        <tr><td>Coût réel du point</td><td>${eur3(c.coutReelPoint)}</td></tr>
+        <tr><td>Indexation CNR</td><td>${c.indexPct.toFixed(2)} % → ${eur3(c.cnrPerPoint)}/pt · ${eur(c.cnrMonthly)}/mois · ${eur(c.cnrYearly)}/an</td></tr>
+        <tr><td>Tarif à négocier</td><td><strong>${eur3(c.prixRecommande)}</strong> (actuel ${eur3(k.priceDelivery || 0)})</td></tr>
+      </tbody></table></div>`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+  });
+}
+
+function contractModal(k) {
+  const e = k || {};
+  const f = (id, lbl, val, step) => `<div><label>${lbl}</label><input id="${id}" type="number" step="${step || 1}" value="${val != null ? val : ''}"></div>`;
+  const donneurOpts = CONTRACT_DONNEURS.map((d) => `<option ${e.name === d ? 'selected' : ''}>${d}</option>`).join('');
+  modal({
+    title: k ? 'Modifier le contrat' : 'Nouveau contrat',
+    bodyHTML: `
+      <div class="grid2">
+        <div><label>Nom du contrat</label><input id="k-name" list="k-donneurs" value="${esc(e.name || '')}" placeholder="GLS, FedEx, DPD…"><datalist id="k-donneurs">${donneurOpts}</datalist></div>
+        <div><label>Secteur</label><input id="k-sector" value="${esc(e.sector || '')}"></div>
+        <div><label>Date de début</label><input id="k-start" type="date" value="${esc(e.startDate || '')}"></div>
+        <div><label>Date de fin</label><input id="k-end" type="date" value="${esc(e.endDate || '')}"></div>
+        ${f('k-vehicles', 'Véhicules affectés', e.vehicles, 1)}
+        ${f('k-days', 'Jours / mois', e.daysPerMonth != null ? e.daysPerMonth : 21, 1)}
+      </div>
+      <h4 style="margin:.7rem 0 .3rem">Volumes mensuels</h4>
+      <div class="grid2">${f('k-deliveries', 'Livraisons / mois', e.deliveries, 1)}${f('k-pickups', 'Enlèvements / mois', e.pickups, 1)}${f('k-cost', "Coût d'exploitation / mois (€)", e.monthlyCost, 1)}</div>
+      <h4 style="margin:.7rem 0 .3rem">Tarification</h4>
+      <div class="grid2">
+        ${f('k-pd', 'Prix point livraison (€)', e.priceDelivery, 0.01)}${f('k-pp', 'Prix point enlèvement (€)', e.pricePickup, 0.01)}
+        ${f('k-fd', 'Forfait journalier (€)', e.dailyFlat, 0.01)}${f('k-fv', 'Forfait véhicule (€)', e.vehicleFlat, 0.01)}
+        ${f('k-ff', 'Forfait carburant (€)', e.fuelFlat, 0.01)}
+        ${f('k-bq', 'Prime qualité (€)', e.bonusQuality, 0.01)}${f('k-bp', 'Prime performance (€)', e.bonusPerf, 0.01)}${f('k-bpr', 'Prime productivité (€)', e.bonusProd, 0.01)}
+      </div>
+      <h4 style="margin:.7rem 0 .3rem">Pénalités mensuelles (€)</h4>
+      <div class="grid2">${f('k-p1', 'Échec de livraison', e.penFailedDelivery, 0.01)}${f('k-p2', 'Retard', e.penLate, 0.01)}${f('k-p3', 'Absence chauffeur', e.penAbsence, 0.01)}${f('k-p4', 'Réclamation client', e.penClaim, 0.01)}${f('k-p5', 'Non-respect qualité', e.penQuality, 0.01)}</div>
+      <h4 style="margin:.7rem 0 .3rem">Indexation CNR & objectif</h4>
+      <div class="grid2">${f('k-fref', 'Gazole référence (€/L)', e.fuelRef != null ? e.fuelRef : 1.5, 0.01)}${f('k-fcur', 'Gazole actuel (€/L)', e.fuelCurrent != null ? e.fuelCurrent : 1.5, 0.01)}${f('k-fs', 'Part carburant (%)', e.fuelSharePct != null ? e.fuelSharePct : 10, 1)}${f('k-mt', 'Marge cible (%)', e.marginTargetPct != null ? e.marginTargetPct : 12, 0.5)}</div>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="k-save">${k ? 'Enregistrer' : 'Créer'}</button>`,
+    onMount: (ov) => { ov.querySelector('#k-save').onclick = async () => {
+      const g = (s) => ov.querySelector(s).value;
+      const payload = { name: g('#k-name'), sector: g('#k-sector'), startDate: g('#k-start'), endDate: g('#k-end'), vehicles: g('#k-vehicles'), daysPerMonth: g('#k-days'), deliveries: g('#k-deliveries'), pickups: g('#k-pickups'), monthlyCost: g('#k-cost'), priceDelivery: g('#k-pd'), pricePickup: g('#k-pp'), dailyFlat: g('#k-fd'), vehicleFlat: g('#k-fv'), fuelFlat: g('#k-ff'), bonusQuality: g('#k-bq'), bonusPerf: g('#k-bp'), bonusProd: g('#k-bpr'), penFailedDelivery: g('#k-p1'), penLate: g('#k-p2'), penAbsence: g('#k-p3'), penClaim: g('#k-p4'), penQuality: g('#k-p5'), fuelRef: g('#k-fref'), fuelCurrent: g('#k-fcur'), fuelSharePct: g('#k-fs'), marginTargetPct: g('#k-mt') };
+      if (!payload.name.trim()) { toast('Nom du contrat obligatoire.', 'err'); return; }
+      try { await api(k ? 'PUT' : 'POST', '/admin/contracts' + (k ? '/' + k.id : ''), payload); closeModal(); loadContracts(); toast('Enregistré.', 'ok'); }
+      catch (err) { toast(err.message, 'err'); }
+    }; },
+  });
 }
 
 /* =========================================================================

@@ -495,6 +495,16 @@ tr:last-child td { border-bottom: 0; }
 .ro-checkup { grid-template-columns: 1fr 1fr; }
 @media (max-width: 600px) { .ro-checkup { grid-template-columns: 1fr; } }
 
+/* Tableau de bord estimation : indicateurs & feux tricolores */
+.tnd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .7rem; }
+.tnd-ind { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .8rem; }
+.tnd-ind-top { display: flex; align-items: center; gap: .4rem; font-size: .82rem; color: var(--muted); font-weight: 600; }
+.tnd-ind-val { font-size: 1.3rem; font-weight: 800; color: var(--brand); margin-top: .2rem; }
+.feu { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: none; }
+.feu-green { background: var(--ok); }
+.feu-orange { background: var(--warn); }
+.feu-red { background: var(--danger); }
+
 /* Plan de comptes (financière) */
 .acct { border: 1px solid var(--border); border-radius: 8px; margin-bottom: .45rem; }
 .acct-head { display: flex; align-items: center; gap: .5rem; padding: .55rem .7rem; cursor: pointer; }
