@@ -2021,7 +2021,7 @@ app.get('/api/admin/service-kit', authRequired, adminRequired, (req, res) => {
 app.get('/api/admin/stock-alerts', authRequired, adminRequired, (req, res) => {
   const db = getData();
   const low = db.parts.filter((p) => p.qty <= 3).map((p) => ({
-    id: p.id, name: p.name, category: p.category, qty: p.qty, unit: p.unit,
+    id: p.id, name: p.name, category: p.category, qty: p.qty, unit: p.unit, fits: p.fits || null,
     level: p.qty <= 1 ? 'red' : p.qty === 2 ? 'yellow' : 'green',
   })).sort((a, b) => a.qty - b.qty);
   res.json({ alerts: low });
@@ -2061,22 +2061,23 @@ app.put('/api/admin/part-categories', authRequired, adminRequired, async (req, r
 });
 app.post('/api/admin/parts', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { name, ref, category, unitPrice, qty, unit } = req.body || {};
+  const { name, ref, category, unitPrice, qty, unit, fits } = req.body || {};
   if (!String(name || '').trim()) return res.status(400).json({ error: 'Nom de la pièce obligatoire' });
-  const part = { id: nextId('part'), name: String(name).trim(), ref: String(ref || '').trim() || null, category: String(category || 'piece').trim(), unitPrice: num(unitPrice), qty: num(qty), unit: String(unit || 'u').trim() };
+  const part = { id: nextId('part'), name: String(name).trim(), ref: String(ref || '').trim() || null, category: String(category || 'piece').trim(), unitPrice: num(unitPrice), qty: num(qty), unit: String(unit || 'u').trim(), fits: String(fits || '').trim() || null };
   db.parts.push(part); await save(); res.json({ part });
 });
 app.put('/api/admin/parts/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const p = db.parts.find((x) => x.id === req.params.id);
   if (!p) return res.status(404).json({ error: 'Pièce introuvable' });
-  const { name, ref, category, unitPrice, qty, unit } = req.body || {};
+  const { name, ref, category, unitPrice, qty, unit, fits } = req.body || {};
   if (name !== undefined) p.name = String(name).trim() || p.name;
   if (ref !== undefined) p.ref = String(ref || '').trim() || null;
   if (category !== undefined) p.category = String(category || 'piece').trim();
   if (unitPrice !== undefined) p.unitPrice = num(unitPrice);
   if (qty !== undefined) p.qty = num(qty);
   if (unit !== undefined) p.unit = String(unit || 'u').trim();
+  if (fits !== undefined) p.fits = String(fits || '').trim() || null;
   await save(); res.json({ part: p });
 });
 app.delete('/api/admin/parts/:id', authRequired, adminRequired, async (req, res) => {
@@ -2234,6 +2235,19 @@ app.delete('/api/admin/finance/:id', authRequired, adminRequired, async (req, re
   const db = getData();
   db.finance.entries = db.finance.entries.filter((e) => e.id !== req.params.id);
   await save(); res.json({ ok: true, summary: financeSummary(db) });
+});
+
+// Estimation d'appel d'offre : paramètres (administrateur).
+app.get('/api/admin/tender', authRequired, adminRequired, (req, res) => {
+  res.json({ params: getData().settings.tenderParams });
+});
+app.put('/api/admin/tender', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const p = db.settings.tenderParams;
+  const body = req.body || {};
+  for (const k of Object.keys(p)) { if (body[k] !== undefined && body[k] !== '' && !isNaN(Number(body[k]))) p[k] = Number(body[k]); }
+  await save();
+  res.json({ params: p });
 });
 
 // SPA fallback

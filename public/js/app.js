@@ -368,6 +368,7 @@ function bindRegister() {
    ========================================================================= */
 // Menu organisé en catégories propres. "Droits & devoirs" est placé en bas.
 function navSections() {
+  const admin = State.user.role === 'admin';
   const sections = [
     { title: '', items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
     { title: 'Planning', items: [
@@ -379,17 +380,22 @@ function navSections() {
       { id: 'requests', icon: '📝', label: 'Mes événements' },
       { id: 'team', icon: '👥', label: 'Mon équipe' },
       { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
-      ...(isStaff() ? [
+      // Pour les responsables (non admin) : la gestion reste dans « Mon espace ».
+      ...(isStaff() && !admin ? [
         { id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' },
         { id: 'vehmgmt', icon: '🔧', label: 'Gestion des véhicules' },
       ] : []),
     ] },
   ];
-  if (State.user.role === 'admin') {
-    sections.push({ title: 'Gestion', items: [
+  if (admin) {
+    sections.push({ title: 'Contrôle & gestion', items: [
       { id: 'admin', icon: '⚙️', label: 'Administration' },
-      { id: 'stocks', icon: '📦', label: 'Stocks & flotte' },
-      { id: 'finance', icon: '💶', label: 'Financière' },
+      { id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' },
+      { id: 'vehmgmt', icon: '🔧', label: 'Gestion des véhicules' },
+      { id: 'fleet', icon: '🚚', label: 'Gestion de la flotte' },
+      { id: 'stocks', icon: '📦', label: 'Gestion des stocks' },
+      { id: 'finance', icon: '💶', label: 'Contrôle financier' },
+      { id: 'tender', icon: '📐', label: 'Estimation appel d\'offre' },
     ] });
   }
   sections.push({ title: 'Informations', items: [{ id: 'info', icon: 'ℹ️', label: 'Droits & devoirs' }] });
@@ -542,7 +548,9 @@ function renderView() {
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
   if (v === 'stocks') return renderStocks(main);
+  if (v === 'fleet') return renderFleet(main);
   if (v === 'finance') return renderFinance(main);
+  if (v === 'tender') return renderTender(main);
 }
 
 /* =========================================================================
@@ -2051,7 +2059,7 @@ function dashVehiclePendingHTML(reports) {
 function stockAlertHTML(alerts) {
   if (!alerts || !alerts.length) return '';
   const reds = alerts.filter((a) => a.level === 'red'), yel = alerts.filter((a) => a.level === 'yellow'), grn = alerts.filter((a) => a.level === 'green');
-  const line = (a) => `<li><span class="pill ${a.level === 'red' ? 'danger' : a.level === 'yellow' ? 'warn' : 'ok'}">${a.qty} ${esc(a.unit)}</span> <strong>${esc(a.name)}</strong> <span class="help">(${esc(a.category)})</span>${a.level === 'red' ? ' — <strong style="color:var(--danger)">à commander d\'urgence</strong>' : a.level === 'yellow' ? ' — à commander bientôt' : ''}</li>`;
+  const line = (a) => `<li><span class="pill ${a.level === 'red' ? 'danger' : a.level === 'yellow' ? 'warn' : 'ok'}">${a.qty} ${esc(a.unit)}</span> <strong>${esc(a.name)}</strong> <span class="help">(${esc(a.category)}${a.fits ? ' · 🚐 ' + esc(a.fits) : ''})</span>${a.level === 'red' ? ' — <strong style="color:var(--danger)">à commander d\'urgence</strong>' : a.level === 'yellow' ? ' — à commander bientôt' : ''}</li>`;
   return `<div class="card" style="border-left:5px solid ${reds.length ? 'var(--danger)' : yel.length ? 'var(--warn)' : 'var(--ok)'}">
     <h3 style="margin:0 0 .4rem">📦 Stock à réapprovisionner</h3>
     <ul class="veh-alert-list">${reds.map(line).join('')}${yel.map(line).join('')}${grn.map(line).join('')}</ul>
@@ -2255,8 +2263,9 @@ function vehTab(tab) {
 
 // Rafraîchit la vue véhicule active selon le contexte (Gestion des véhicules
 // ou module Stocks & flotte).
-let _stockTab = 'fleet';
+let _stockTab = 'costs';
 function vehRefresh() {
+  if (document.getElementById('flt-body')) return vehTabFleet(document.getElementById('flt-body'));
   if (document.getElementById('stk-body')) return stockTab(_stockTab);
   if (document.getElementById('veh-body')) return vehTab('suivi');
 }
@@ -3008,13 +3017,12 @@ const eur = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('fr
 
 async function renderStocks(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>Stocks & flotte</h1>
-    <p>Gérez la flotte, le stock de pièces et de consommables, et le coût réel d'exploitation des véhicules.</p></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des stocks</h1>
+    <p>Stock de pièces et consommables, et coût réel d'exploitation des véhicules.</p></div></div>
     <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-stab="costs" class="active">Coûts par véhicule</button>
       <button data-stab="parts">Stock de pièces & consommables</button>
       <button data-stab="categories">Catégories de pièces</button>
-      <button data-stab="fleet">Flotte (création & gestion)</button>
     </div>
     <div id="stk-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#stk-tabs');
@@ -3029,10 +3037,19 @@ async function renderStocks(main) {
 function stockTab(tab) {
   _stockTab = tab;
   const body = document.getElementById('stk-body'); if (!body) return; body.className = '';
-  if (tab === 'fleet') return vehTabFleet(body);
   if (tab === 'parts') return stockParts(body);
   if (tab === 'categories') return stockCategories(body);
   if (tab === 'costs') return stockCosts(body);
+}
+
+// Nouveau menu « Gestion de la flotte » (création & gestion des véhicules).
+async function renderFleet(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion de la flotte</h1>
+    <p>Créez, modifiez et gérez vos véhicules (modèle, plaque, contrôle technique, carnet…).</p></div></div>
+    <div id="flt-body" class="empty">Chargement…</div>`;
+  await loadFleet();
+  vehTabFleet(document.getElementById('flt-body'));
 }
 
 async function stockCategories(body) {
@@ -3073,6 +3090,7 @@ async function stockParts(body) {
         <div><label>Prix unitaire (€)</label><input id="pt-price" type="number" step="0.01" min="0"></div>
         <div><label>Quantité en stock</label><select id="pt-qty">${qtyOptions}</select></div>
         <div><label>Unité</label><select id="pt-unit">${unitOptions}</select></div>
+        <div><label>Pour quel véhicule / modèle</label><input id="pt-fits" placeholder="ex. Sprinter 12/14m³, Citan, tous"></div>
       </div>
       <p class="help" style="margin-top:.4rem">Gérez les catégories et unités dans l'onglet « Catégories de pièces ».</p>
       <div style="margin-top:.7rem"><button class="btn accent" id="pt-add">Ajouter au stock</button></div>
@@ -3081,7 +3099,7 @@ async function stockParts(body) {
       ${parts.length ? stockByCategory(parts) : '<p class="help">Aucune pièce en stock.</p>'}
     </div>`;
   document.getElementById('pt-add').onclick = async () => {
-    const payload = { name: v('#pt-name'), ref: v('#pt-ref'), category: v('#pt-cat'), unitPrice: v('#pt-price'), qty: v('#pt-qty'), unit: v('#pt-unit') };
+    const payload = { name: v('#pt-name'), ref: v('#pt-ref'), category: v('#pt-cat'), unitPrice: v('#pt-price'), qty: v('#pt-qty'), unit: v('#pt-unit'), fits: v('#pt-fits') };
     if (!payload.name.trim()) { toast('Désignation obligatoire.', 'err'); return; }
     try { await api('POST', '/admin/parts', payload); toast('Ajouté au stock.', 'ok'); stockParts(body); } catch (e) { toast(e.message, 'err'); }
   };
@@ -3099,8 +3117,8 @@ function stockByCategory(parts) {
     const list = byCat[cat].slice().sort((a, b) => a.name.localeCompare(b.name));
     const val = list.reduce((s, p) => s + p.unitPrice * p.qty, 0);
     return `<h4 style="margin:1rem 0 .3rem">${esc(cat)} <span class="help">${list.length} réf. · ${eur(val)}</span></h4>
-      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Désignation</th><th>Réf.</th><th>Prix U.</th><th>Qté</th><th>Valeur</th><th></th></tr></thead>
-      <tbody>${list.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.ref || '—')}</td><td>${eur(p.unitPrice)}</td><td>${p.qty} ${esc(p.unit)} ${lvlPill(p.qty)}</td><td>${eur(p.unitPrice * p.qty)}</td>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Désignation</th><th>Réf.</th><th>Véhicule</th><th>Prix U.</th><th>Qté</th><th>Valeur</th><th></th></tr></thead>
+      <tbody>${list.map((p) => `<tr><td>${esc(p.name)}</td><td>${esc(p.ref || '—')}</td><td>${esc(p.fits || '—')}</td><td>${eur(p.unitPrice)}</td><td>${p.qty} ${esc(p.unit)} ${lvlPill(p.qty)}</td><td>${eur(p.unitPrice * p.qty)}</td>
         <td style="white-space:nowrap"><button class="btn ghost sm" data-editp="${p.id}">✎</button> <button class="btn ghost sm" data-delp="${p.id}">✕</button></td></tr>`).join('')}</tbody></table></div>`;
   }).join('');
 }
@@ -3115,10 +3133,11 @@ function editPartModal(p, body) {
       <div><label>Prix unitaire (€)</label><input id="ep-price" type="number" step="0.01" value="${p.unitPrice}"></div>
       <div><label>Quantité</label><input id="ep-qty" type="number" step="0.01" value="${p.qty}"></div>
       <div><label>Unité</label><input id="ep-unit" value="${esc(p.unit)}"></div>
+      <div><label>Pour quel véhicule / modèle</label><input id="ep-fits" value="${esc(p.fits || '')}"></div>
     </div>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ep-save">Enregistrer</button>`,
     onMount: (ov) => { ov.querySelector('#ep-save').onclick = async () => {
-      try { await api('PUT', '/admin/parts/' + p.id, { name: ov.querySelector('#ep-name').value, ref: ov.querySelector('#ep-ref').value, category: ov.querySelector('#ep-cat').value, unitPrice: ov.querySelector('#ep-price').value, qty: ov.querySelector('#ep-qty').value, unit: ov.querySelector('#ep-unit').value }); closeModal(); stockParts(body); toast('Modifié.', 'ok'); }
+      try { await api('PUT', '/admin/parts/' + p.id, { name: ov.querySelector('#ep-name').value, ref: ov.querySelector('#ep-ref').value, category: ov.querySelector('#ep-cat').value, unitPrice: ov.querySelector('#ep-price').value, qty: ov.querySelector('#ep-qty').value, unit: ov.querySelector('#ep-unit').value, fits: ov.querySelector('#ep-fits').value }); closeModal(); stockParts(body); toast('Modifié.', 'ok'); }
       catch (e) { toast(e.message, 'err'); }
     }; },
   });
@@ -3186,7 +3205,7 @@ function expenseListModal(row, body) {
    ========================================================================= */
 async function renderFinance(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>Financière</h1>
+  main.innerHTML = `<div class="page-head"><div><h1>Contrôle financier</h1>
     <p>Pilotez l'équilibre financier : recettes, charges, TVA, rentabilité par client et projections.</p></div></div>
     <div class="view-switch" id="fin-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-ftab="resume" class="active">Résumé & graphiques</button>
@@ -3387,6 +3406,193 @@ function editFinanceModal(e) {
       catch (err) { toast(err.message, 'err'); }
     }; },
   });
+}
+
+/* =========================================================================
+   ESTIMATION APPEL D'OFFRE (administrateur) : prix de livraison au point
+   ========================================================================= */
+let _tender = null;
+async function loadTender() { _tender = (await api('GET', '/admin/tender')).params; }
+
+// Calcul complet à partir des paramètres.
+function tenderCompute(p) {
+  const fuelDay = p.kmPerDay * (p.consumption / 100) * p.fuelPrice;
+  const fuelMonthly = fuelDay * p.daysPerMonth;
+  const directMonthly = p.driverCost + p.vehicleCost + p.tyresPerMonth + fuelMonthly;
+  const pointsMonth = p.pointsPerDay * p.daysPerMonth;
+  const costPerPoint = pointsMonth > 0 ? directMonthly / pointsMonth : 0;
+  const fullCostPerPoint = costPerPoint * (1 + p.overheadPct / 100);
+  const cnr = p.cnrRef > 0 ? p.cnrCurrent / p.cnrRef : 1;
+  const pricePerPoint = fullCostPerPoint * (1 + p.marginPct / 100) * cnr;
+  const revenueMonth = pricePerPoint * pointsMonth;
+  const fullCostMonthly = directMonthly * (1 + p.overheadPct / 100);
+  const resultMonth = revenueMonth - fullCostMonthly;
+  const fixedMonthly = (p.driverCost + p.vehicleCost + p.tyresPerMonth) * (1 + p.overheadPct / 100);
+  const varPerPoint = pointsMonth > 0 ? (fuelMonthly * (1 + p.overheadPct / 100)) / pointsMonth : 0;
+  const contribPerPoint = pricePerPoint - varPerPoint;
+  const breakEvenPoints = contribPerPoint > 0 ? fixedMonthly / contribPerPoint : null;
+  const breakEvenPerDay = breakEvenPoints != null ? breakEvenPoints / p.daysPerMonth : null;
+  return { fuelDay, fuelMonthly, directMonthly, pointsMonth, costPerPoint, fullCostPerPoint, cnr, pricePerPoint, revenueMonth, fullCostMonthly, resultMonth, fixedMonthly, varPerPoint, contribPerPoint, breakEvenPoints, breakEvenPerDay };
+}
+const eur3 = (n) => (Math.round((Number(n) || 0) * 1000) / 1000).toLocaleString('fr-FR', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' €';
+
+async function renderTender(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Estimation appel d'offre</h1>
+    <p>Calculez un prix de livraison au point couvrant vos charges et votre marge.</p></div></div>
+    <div class="view-switch" id="tnd-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-ttab="resume" class="active">Résumé</button>
+      <button data-ttab="calc">Estimation</button>
+      <button data-ttab="marge">Marge & Bénéfice</button>
+      <button data-ttab="params">Paramètres</button>
+    </div>
+    <div id="tnd-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#tnd-tabs');
+  tabs.querySelectorAll('[data-ttab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); tndTab(b.dataset.ttab); });
+  await loadTender();
+  tndTab('resume');
+}
+function tndTab(tab) {
+  const body = document.getElementById('tnd-body'); if (!body) return; body.className = '';
+  if (tab === 'resume') return tndResume(body);
+  if (tab === 'calc') return tndCalc(body);
+  if (tab === 'marge') return tndMarge(body);
+  if (tab === 'params') return tndParams(body);
+}
+
+function tndResume(body) {
+  const p = _tender, c = tenderCompute(p);
+  const kpi = (lbl, val, cls) => `<div class="stat ${cls || ''}"><div class="value" style="font-size:1.4rem">${val}</div><div class="label">${lbl}</div></div>`;
+  body.innerHTML = `
+    <div class="grid cols-3">
+      ${kpi('Prix proposé / point', eur3(c.pricePerPoint), '')}
+      ${kpi('Coût de revient / point', eur3(c.fullCostPerPoint), '')}
+      ${kpi('Résultat mensuel estimé', eur(c.resultMonth), c.resultMonth >= 0 ? '' : 'alt')}
+    </div>
+    <div class="card"><h3>Synthèse</h3>
+      <div class="table-wrap"><table class="veh-table"><tbody>
+        <tr><td>Points livrés / mois</td><td>${Math.round(c.pointsMonth)}</td></tr>
+        <tr><td>Coût direct mensuel</td><td>${eur(c.directMonthly)}</td></tr>
+        <tr><td>Frais de structure (${p.overheadPct}%)</td><td>${eur(c.fullCostMonthly - c.directMonthly)}</td></tr>
+        <tr><td>Marge cible</td><td>${p.marginPct}%</td></tr>
+        <tr><td>Ajustement CNR (M-1)</td><td>×${c.cnr.toFixed(3)} (indice ${p.cnrCurrent} / réf ${p.cnrRef})</td></tr>
+        <tr><td><strong>Chiffre d'affaires mensuel estimé</strong></td><td><strong>${eur(c.revenueMonth)}</strong></td></tr>
+        <tr><td><strong>Point mort</strong></td><td><strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints) + ' points/mois (' + Math.ceil(c.breakEvenPerDay) + '/jour)' : '—'}</strong></td></tr>
+      </tbody></table></div>
+      <div style="margin-top:.8rem"><button class="btn accent" id="tnd-pdf">📄 Générer la proposition tarifaire (en-tête entreprise)</button></div>
+    </div>
+    <div class="alert info">Renseignez vos paramètres réels dans l'onglet « Paramètres » pour fiabiliser le prix. L'ajustement CNR se base sur l'indice M-1 (base 100) relevé sur cnr.fr.</div>`;
+  body.querySelector('#tnd-pdf').onclick = () => tenderProposalPDF(p, c);
+}
+
+function tndCalc(body) {
+  const p = _tender;
+  const f = (id, lbl, val, step) => `<div><label>${lbl}</label><input id="${id}" type="number" step="${step || 1}" value="${val}"></div>`;
+  body.innerHTML = `<div class="card"><h3>Paramètres de la tournée</h3>
+    <div class="grid2">
+      ${f('tc-points', 'Points livrés / jour', p.pointsPerDay)}
+      ${f('tc-km', 'Km / jour', p.kmPerDay)}
+      ${f('tc-days', 'Jours travaillés / mois', p.daysPerMonth)}
+      ${f('tc-margin', 'Marge cible (%)', p.marginPct, 0.5)}
+      ${f('tc-cnr', 'Indice CNR actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
+    </div>
+    <p class="help">Les coûts (chauffeur, véhicule, carburant…) se règlent dans « Paramètres ».</p>
+    <div style="margin-top:.6rem"><button class="btn accent" id="tc-calc">Calculer</button> <button class="btn ghost" id="tc-save">Enregistrer ces valeurs</button></div>
+  </div>
+  <div id="tc-result"></div>`;
+  const read = () => ({ ...p, pointsPerDay: +val('#tc-points'), kmPerDay: +val('#tc-km'), daysPerMonth: +val('#tc-days'), marginPct: +val('#tc-margin'), cnrCurrent: +val('#tc-cnr') });
+  const show = (pp) => {
+    const c = tenderCompute(pp);
+    document.getElementById('tc-result').innerHTML = `<div class="card"><h3>Résultat</h3>
+      <div class="grid cols-3">
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur3(c.pricePerPoint)}</div><div class="label">Prix / point</div></div>
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur3(c.fullCostPerPoint)}</div><div class="label">Coût de revient / point</div></div>
+        <div class="stat ${c.resultMonth >= 0 ? '' : 'alt'}"><div class="value" style="font-size:1.4rem">${eur(c.resultMonth)}</div><div class="label">Résultat / mois</div></div>
+      </div>
+      <p class="help" style="margin-top:.6rem">${Math.round(c.pointsMonth)} points/mois · CA ${eur(c.revenueMonth)} · point mort ${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints) + ' pts/mois' : '—'}</p></div>`;
+  };
+  document.getElementById('tc-calc').onclick = () => show(read());
+  document.getElementById('tc-save').onclick = async () => { try { await api('PUT', '/admin/tender', read()); await loadTender(); toast('Enregistré.', 'ok'); tndTab('resume'); } catch (e) { toast(e.message, 'err'); } };
+  show(p);
+  function val(s) { return document.querySelector(s).value; }
+}
+
+function tndMarge(body) {
+  const p = _tender, c = tenderCompute(p);
+  const low = tenderCompute({ ...p, pointsPerDay: p.pointsPerDay * 0.9, marginPct: p.marginPct - 3 });
+  const high = tenderCompute({ ...p, pointsPerDay: p.pointsPerDay * 1.1, marginPct: p.marginPct + 3 });
+  // Projection 12 mois (cumul du résultat mensuel).
+  const months = Array.from({ length: 12 }, (_, i) => ({ ym: 'M+' + (i + 1), result: c.resultMonth * (i + 1) }));
+  body.innerHTML = `
+    <div class="card"><h3>Point mort (seuil de rentabilité)</h3>
+      <p>Vous couvrez vos charges à partir de <strong>${c.breakEvenPoints != null ? Math.ceil(c.breakEvenPoints) : '—'} points/mois</strong> (soit ~${c.breakEvenPerDay != null ? Math.ceil(c.breakEvenPerDay) : '—'} points/jour), pour un prix de ${eur3(c.pricePerPoint)}/point.</p>
+      <p class="help">Marge de contribution par point : ${eur3(c.contribPerPoint)} · charges fixes mensuelles : ${eur(c.fixedMonthly)}.</p>
+    </div>
+    <div class="card"><h3>Tendances</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Scénario</th><th>Prix / point</th><th>Résultat / mois</th><th>Résultat / an</th></tr></thead><tbody>
+        <tr><td>📉 Tendance basse (−10% volume, −3 pts marge)</td><td>${eur3(low.pricePerPoint)}</td><td class="${low.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(low.resultMonth)}</td><td class="${low.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(low.resultMonth * 12)}</td></tr>
+        <tr><td>➡️ Tendance centrale</td><td>${eur3(c.pricePerPoint)}</td><td class="${c.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(c.resultMonth)}</td><td class="${c.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(c.resultMonth * 12)}</td></tr>
+        <tr><td>📈 Tendance haute (+10% volume, +3 pts marge)</td><td>${eur3(high.pricePerPoint)}</td><td class="${high.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(high.resultMonth)}</td><td class="${high.resultMonth >= 0 ? 'pos' : 'neg'}">${eur(high.resultMonth * 12)}</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card"><h3>Projection du résultat cumulé sur 12 mois</h3>${barChart(months, 'result', 'ym')}</div>`;
+}
+
+function tndParams(body) {
+  const p = _tender;
+  const f = (id, lbl, val, step) => `<div><label>${lbl}</label><input id="${id}" type="number" step="${step || 1}" value="${val}"></div>`;
+  body.innerHTML = `<div class="card"><h3>Paramètres de coût (optimaux par défaut, à ajuster)</h3>
+    <div class="grid2">
+      ${f('tp-driver', 'Coût chauffeur mensuel chargé (€)', p.driverCost)}
+      ${f('tp-vehicle', 'Coût véhicule mensuel (leasing+assurance+entretien) (€)', p.vehicleCost)}
+      ${f('tp-tyres', 'Pneumatiques amortis / mois (€)', p.tyresPerMonth)}
+      ${f('tp-cons', 'Consommation (L/100 km)', p.consumption, 0.1)}
+      ${f('tp-fuel', 'Prix du gasoil (€/L)', p.fuelPrice, 0.01)}
+      ${f('tp-days', 'Jours travaillés / mois', p.daysPerMonth)}
+      ${f('tp-overhead', 'Frais de structure (% du coût direct)', p.overheadPct, 0.5)}
+      ${f('tp-margin', 'Marge / bénéfice cible (%)', p.marginPct, 0.5)}
+      ${f('tp-points', 'Points livrés / jour', p.pointsPerDay)}
+      ${f('tp-km', 'Km / jour', p.kmPerDay)}
+      ${f('tp-cnrref', 'Indice CNR de référence (base 100)', p.cnrRef, 0.1)}
+      ${f('tp-cnrcur', 'Indice CNR actuel (M-1, base 100)', p.cnrCurrent, 0.1)}
+    </div>
+    <p class="help" style="margin-top:.5rem">📈 Ajustement CNR : relevez l'indice du mois M-1 (base 100) sur <a href="https://www.cnr.fr/espaces/13/indicateurs/26" target="_blank" rel="noopener">cnr.fr (indicateurs)</a> et reportez-le ci-dessus. Le prix est multiplié par indice actuel / indice de référence.</p>
+    <div style="margin-top:.6rem"><button class="btn accent" id="tp-save">Enregistrer les paramètres</button></div>
+  </div>`;
+  document.getElementById('tp-save').onclick = async () => {
+    const payload = { driverCost: v('#tp-driver'), vehicleCost: v('#tp-vehicle'), tyresPerMonth: v('#tp-tyres'), consumption: v('#tp-cons'), fuelPrice: v('#tp-fuel'), daysPerMonth: v('#tp-days'), overheadPct: v('#tp-overhead'), marginPct: v('#tp-margin'), pointsPerDay: v('#tp-points'), kmPerDay: v('#tp-km'), cnrRef: v('#tp-cnrref'), cnrCurrent: v('#tp-cnrcur') };
+    try { await api('PUT', '/admin/tender', payload); await loadTender(); toast('Paramètres enregistrés.', 'ok'); tndTab('resume'); } catch (e) { toast(e.message, 'err'); }
+  };
+  function v(s) { return document.querySelector(s).value; }
+}
+
+// Proposition tarifaire à en-tête de l'entreprise (impression / PDF).
+function tenderProposalPDF(p, c) {
+  const w = window.open('', '_blank');
+  if (!w) { toast('Autorisez les fenêtres pop-up pour générer le PDF.', 'err'); return; }
+  w.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Proposition tarifaire — INTER COLIS SERVICES</title>
+    <style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:32px;line-height:1.5}
+      .head{display:flex;justify-content:space-between;border-bottom:3px solid #14427e;padding-bottom:12px}
+      .head h1{color:#14427e;margin:0;font-size:20px}.head .co{font-size:12px;color:#475569}
+      h2{color:#14427e;font-size:15px;margin:1.4rem 0 .4rem}table{width:100%;border-collapse:collapse;margin:.5rem 0}
+      td,th{border:1px solid #cbd5e1;padding:7px 9px;font-size:13px;text-align:left}th{background:#eef2f7}
+      .big{font-size:22px;color:#14427e;font-weight:800}.foot{margin-top:2rem;font-size:12px;color:#475569}</style></head>
+    <body>
+      <div class="head"><div><h1>INTER COLIS SERVICES</h1><div class="co">12 rue des Écrottes — 14480 Sainte-Croix-sur-Mer<br>contact@inter-colis-services.com</div></div>
+        <div class="co" style="text-align:right">Proposition tarifaire<br>Éterville, le ${fmtDate(iso(new Date()))}</div></div>
+      <h2>Objet : proposition de prix de livraison au point</h2>
+      <p>Madame, Monsieur,<br>Suite à votre consultation, veuillez trouver notre proposition tarifaire pour la prestation de livraison de colis.</p>
+      <table><tbody>
+        <tr><th>Prix par point livré (HT)</th><td class="big">${eur3(c.pricePerPoint)}</td></tr>
+        <tr><th>Volume estimé</th><td>${p.pointsPerDay} points/jour · ${Math.round(c.pointsMonth)} points/mois</td></tr>
+        <tr><th>Chiffre d'affaires mensuel estimé (HT)</th><td>${eur(c.revenueMonth)}</td></tr>
+        <tr><th>Révision tarifaire</th><td>Indexation sur l'indice CNR (base 100, mois M-1) — cnr.fr</td></tr>
+      </tbody></table>
+      <p class="foot">Prix hors taxes, hors péages et hors prestations annexes. Proposition valable 30 jours. Conditions de règlement : 30 jours date de facture. Document non contractuel établi à titre indicatif.</p>
+      <p class="foot">Pour INTER COLIS SERVICES — La Direction</p>
+    </body></html>`);
+  w.document.close();
+  setTimeout(() => { w.focus(); w.print(); }, 300);
 }
 
 /* =========================================================================

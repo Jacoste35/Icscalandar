@@ -138,14 +138,19 @@ textarea { resize: vertical; min-height: 80px; }
 
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }
-  .sidebar { position: sticky; top: 0; z-index: 20; height: auto; flex-direction: column; }
-  .sidebar .brand { flex: 1; padding-left: 3.6rem; }
+  /* Barre supérieure repliée par défaut ; quand le menu est ouvert, la barre
+     latérale défile (logo + menu n'occupent plus tout l'écran). */
+  .sidebar { position: sticky; top: 0; z-index: 20; height: auto; max-height: 64px; overflow: hidden; flex-direction: column; }
+  .sidebar.nav-open { max-height: 100vh; overflow-y: auto; }
+  /* Le logo/marque garde une hauteur fixe (ne s'étire plus sur toute la page) */
+  .sidebar .brand { flex: 0 0 auto; min-height: 56px; padding-left: 4rem; }
+  .sidebar .brand .brand-logo { width: 34px; height: 34px; flex-basis: 34px; }
   .nav-toggle {
-    display: block; position: absolute; top: .7rem; left: .7rem; right: auto; z-index: 2;
-    background: rgba(255,255,255,.15); color: #fff; border: 0; border-radius: 8px;
-    padding: .45rem .65rem; font-weight: 700; font-size: 1.05rem; line-height: 1;
+    display: block; position: absolute; top: .6rem; left: .6rem; right: auto; z-index: 2;
+    background: rgba(255,255,255,.22); color: #fff; border: 0; border-radius: 10px;
+    padding: .55rem .8rem; font-weight: 700; font-size: 1.5rem; line-height: 1;
   }
-  /* Menu replié par défaut ; ouvert via .nav-open */
+  /* Menu replié par défaut ; ouvert via .nav-open (et défilable) */
   .sidebar nav { display: none; }
   .sidebar.nav-open nav { display: block; }
   .sidebar .userbox { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
