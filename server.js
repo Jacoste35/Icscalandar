@@ -1435,8 +1435,49 @@ function disciplineList(db) {
       ensure(u).items.push({ category: 'RET', label: 'Retards répétés', count: c.RET, reproach: `${c.RET} retards sur les 90 derniers jours — manquement à la ponctualité (règlement intérieur). Un rappel à l’ordre, voire un avertissement, peut être envisagé.` });
     }
   }
-  return Object.values(byUser).filter((x) => x.items.length);
+  // On masque de l'accueil les rappels déjà clôturés (sanction archivée).
+  const acks = db.settings.disciplineAcks || {};
+  return Object.values(byUser).filter((x) => x.items.length && !acks[x.userId]);
 }
+
+const SANCTION_TYPES = ['Rappel à l\'ordre', 'Avertissement', 'Mise à pied conservatoire', 'Mise à pied disciplinaire', 'Convocation entretien préalable', 'Procédure de licenciement', 'Autre'];
+
+// Liste des avertissements / sanctions archivés.
+app.get('/api/staff/sanctions', authRequired, staffRequired, (req, res) => {
+  res.json({ sanctions: getData().sanctions.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')), types: SANCTION_TYPES });
+});
+// Enregistrer une sanction (et clôturer le rappel sur l'accueil).
+app.post('/api/admin/sanctions', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, type, date, motif } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+  const s = {
+    id: nextId('sanction'), userId, userName: `${u.firstName} ${u.lastName}`,
+    type: SANCTION_TYPES.includes(type) ? type : 'Avertissement',
+    date: validDate(date) ? date : new Date().toISOString().slice(0, 10),
+    motif: String(motif || '').trim(),
+    createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`, createdAt: new Date().toISOString(),
+  };
+  db.sanctions.push(s);
+  db.settings.disciplineAcks = db.settings.disciplineAcks || {};
+  db.settings.disciplineAcks[userId] = true; // clôt le rappel d'accueil
+  await save();
+  res.json({ sanction: s });
+});
+app.delete('/api/admin/sanctions/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.sanctions = db.sanctions.filter((s) => s.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+// Rouvrir un rappel disciplinaire (le ré-afficher sur l'accueil).
+app.post('/api/admin/discipline/:userId/reopen', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  if (db.settings.disciplineAcks) delete db.settings.disciplineAcks[req.params.userId];
+  await save();
+  res.json({ ok: true });
+});
 
 // Un administrateur ne peut pas être remplaçant (sauf se désigner lui-même).
 function replacerNotAllowed(db, reqUser, replacerId) {
@@ -2288,6 +2329,228 @@ app.delete('/api/admin/contracts/:id', authRequired, adminRequired, async (req, 
   const db = getData();
   db.contracts = db.contracts.filter((x) => x.id !== req.params.id);
   await save(); res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Gestion Financière : import de relevés, catégorisation, trésorerie (admin)
+// ---------------------------------------------------------------------------
+const FIN_BANKS = ['Crédit Agricole', 'Crédit Mutuel', 'CIC', 'BNP Paribas', 'Société Générale', 'LCL', 'Banque Populaire', "Caisse d'Épargne", 'Qonto', 'Boursorama', 'Revolut', 'Hello Bank', 'Themis', 'Autre'];
+const FIN_CATEGORIES = ['Chiffre d\'affaires', 'Prestations', 'Salaires', 'Charges sociales', 'Carburant', 'Péages', 'Assurances', 'Entretien', 'Pneumatiques', 'Véhicules (leasing)', 'Téléphonie', 'Loyer', 'Frais bancaires', 'Administratif', 'Divers'];
+const FIN_REVENUE_CATS = ['Chiffre d\'affaires', 'Prestations'];
+
+function normLabel(s) { return String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[0-9]/g, '').replace(/[^A-Z &]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40); }
+function parseAmount(s) {
+  if (s == null || s === '') return NaN;
+  let x = String(s).replace(/\s| |€|EUR/gi, '');
+  const neg = /^\(.*\)$/.test(x) || x.trim().startsWith('-') || x.includes('-');
+  x = x.replace(/[()]/g, '').replace(/-/g, '');
+  if (x.includes(',') && x.includes('.')) x = x.replace(/\./g, '').replace(',', '.');
+  else if (x.includes(',')) x = x.replace(',', '.');
+  const n = parseFloat(x);
+  return isNaN(n) ? NaN : (neg ? -n : n);
+}
+function parseDateFin(s) {
+  if (!s) return null;
+  let m = String(s).match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+  if (m) { let [_, d, mo, y] = m; if (y.length === 2) y = '20' + y; return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`; }
+  m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return null;
+}
+function guessDelim(lines) {
+  for (const d of [';', '\t', ',']) { if (lines.slice(0, 5).every((l) => (l.split(d).length >= 3))) return d; }
+  return null;
+}
+function detectBank(text) {
+  const T = text.toUpperCase();
+  for (const b of FIN_BANKS) { if (T.includes(b.toUpperCase().replace("'", '')) || T.includes(b.toUpperCase())) return b; }
+  if (T.includes('THEMIS')) return 'Themis';
+  return null;
+}
+function categorizeFin(db, label) {
+  const L = String(label || '').toUpperCase();
+  const learn = db.settings.catLearn || {};
+  const n = normLabel(label);
+  if (n && learn[n]) return learn[n];
+  for (const r of (db.settings.catRules || [])) { if (r.kw && L.includes(String(r.kw).toUpperCase())) return r.cat; }
+  return null;
+}
+function txHash(t) { return `${t.opDate}|${Math.round(t.amount * 100)}|${normLabel(t.label)}`; }
+
+// Analyse d'un texte de relevé (CSV ou copié-collé) -> écritures.
+function parseBankText(text) {
+  const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const delim = guessDelim(lines);
+  let header = null, idx = {};
+  if (delim) {
+    const c0 = lines[0].split(delim).map((c) => c.trim().toLowerCase());
+    if (c0.some((c) => c.includes('date')) && c0.some((c) => /libell|montant|debit|débit|credit|crédit/.test(c))) {
+      header = c0;
+      idx.date = c0.findIndex((c) => c.includes('date'));
+      idx.label = c0.findIndex((c) => /libell|operation|opération|nature|motif|détail|detail/.test(c));
+      idx.debit = c0.findIndex((c) => /debit|débit/.test(c));
+      idx.credit = c0.findIndex((c) => /credit|crédit/.test(c));
+      idx.amount = c0.findIndex((c) => /montant/.test(c));
+    }
+  }
+  const out = [];
+  for (let i = header ? 1 : 0; i < lines.length; i++) {
+    const line = lines[i]; let date, label, amount;
+    if (delim) {
+      const cells = line.split(delim).map((c) => c.trim());
+      date = parseDateFin(cells[idx.date >= 0 ? idx.date : 0]);
+      label = idx.label >= 0 ? cells[idx.label] : cells.filter((c, j) => j !== idx.date && isNaN(parseAmount(c))).join(' ');
+      if (idx.amount >= 0 && cells[idx.amount]) amount = parseAmount(cells[idx.amount]);
+      else { const d = idx.debit >= 0 ? (parseAmount(cells[idx.debit]) || 0) : 0; const cr = idx.credit >= 0 ? (parseAmount(cells[idx.credit]) || 0) : 0; amount = Math.abs(cr) - Math.abs(d); }
+    } else {
+      const dm = line.match(/(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/);
+      if (!dm) continue;
+      date = parseDateFin(dm[1]);
+      const nums = line.match(/-?\d[\d  .]*,\d{2}/g) || line.match(/-?\d+\.\d{2}/g);
+      if (!nums) continue;
+      amount = parseAmount(nums[nums.length - 1]);
+      label = line.replace(dm[1], '').replace(nums[nums.length - 1], '').trim();
+    }
+    if (!date || !Number.isFinite(amount) || amount === 0) continue;
+    out.push({ opDate: date, label: String(label || '').replace(/\s+/g, ' ').trim().slice(0, 140), amount: Math.round(amount * 100) / 100 });
+  }
+  return out;
+}
+
+app.get('/api/admin/finance-meta', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  res.json({ banks: FIN_BANKS, categories: FIN_CATEGORIES, rules: db.settings.catRules || [], startBalance: db.settings.treasuryStartBalance || 0 });
+});
+app.put('/api/admin/cat-rules', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { rules } = req.body || {};
+  if (Array.isArray(rules)) db.settings.catRules = rules.filter((r) => r && r.kw && r.cat).map((r) => ({ kw: String(r.kw).trim(), cat: String(r.cat).trim() }));
+  await save();
+  res.json({ rules: db.settings.catRules });
+});
+app.put('/api/admin/treasury-start', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.settings.treasuryStartBalance = num((req.body || {}).balance);
+  await save();
+  res.json({ startBalance: db.settings.treasuryStartBalance });
+});
+
+// Aperçu d'import (non persistant) : parse + catégorise + détecte les doublons.
+app.post('/api/admin/bank-import', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const { text } = req.body || {};
+  let bank = (req.body || {}).bank;
+  if (!bank || bank === 'auto') bank = detectBank(text) || 'Autre';
+  const parsed = parseBankText(text);
+  const existing = new Set(db.bankTx.map(txHash));
+  const seen = new Set();
+  const transactions = parsed.map((t) => {
+    const h = txHash(t);
+    const dupe = existing.has(h) || seen.has(h);
+    seen.add(h);
+    const category = categorizeFin(db, t.label);
+    return { opDate: t.opDate, label: t.label, amount: t.amount, debit: t.amount < 0 ? -t.amount : 0, credit: t.amount > 0 ? t.amount : 0, category: category || '', bank, dupe };
+  });
+  res.json({
+    transactions, bank,
+    detected: transactions.length,
+    classified: transactions.filter((t) => t.category).length,
+    toVerify: transactions.filter((t) => !t.category && !t.dupe).length,
+    duplicates: transactions.filter((t) => t.dupe).length,
+  });
+});
+
+// Confirmation d'import : persiste les écritures (hors doublons) + archive le doc.
+app.post('/api/admin/bank-confirm', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { transactions, bank, docName } = req.body || {};
+  if (!Array.isArray(transactions)) return res.status(400).json({ error: 'Aucune écriture' });
+  const existing = new Set(db.bankTx.map(txHash));
+  let added = 0;
+  for (const t of transactions) {
+    if (t.dupe) continue;
+    const amount = Math.round(num(t.amount) * 100) / 100;
+    const rec = { id: nextId('btx'), opDate: t.opDate, valDate: t.valDate || t.opDate, label: String(t.label || '').slice(0, 140), amount, debit: amount < 0 ? -amount : 0, credit: amount > 0 ? amount : 0, category: String(t.category || '').trim() || 'Divers', subCategory: '', bank: bank || t.bank || 'Autre', account: '', source: String(docName || 'import'), createdAt: new Date().toISOString() };
+    if (existing.has(txHash(rec))) continue;
+    existing.add(txHash(rec));
+    db.bankTx.push(rec); added++;
+  }
+  db.bankDocs.push({ id: nextId('bdoc'), name: String(docName || 'Relevé').slice(0, 120), bank: bank || 'Autre', importedAt: new Date().toISOString(), lines: added });
+  await save();
+  res.json({ added });
+});
+
+app.get('/api/admin/bank-tx', authRequired, adminRequired, (req, res) => {
+  res.json({ transactions: getData().bankTx.slice().sort((a, b) => (b.opDate || '').localeCompare(a.opDate || '')), docs: getData().bankDocs.slice().sort((a, b) => b.importedAt.localeCompare(a.importedAt)) });
+});
+app.put('/api/admin/bank-tx/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const t = db.bankTx.find((x) => x.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Écriture introuvable' });
+  const { category, subCategory } = req.body || {};
+  if (category !== undefined) {
+    t.category = String(category).trim() || 'Divers';
+    // Apprentissage : mémorise le libellé normalisé -> catégorie.
+    const n = normLabel(t.label);
+    if (n) { db.settings.catLearn = db.settings.catLearn || {}; db.settings.catLearn[n] = t.category; }
+  }
+  if (subCategory !== undefined) t.subCategory = String(subCategory).trim();
+  await save();
+  res.json({ tx: t });
+});
+app.delete('/api/admin/bank-tx/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.bankTx = db.bankTx.filter((x) => x.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+
+// Comptabilité de gestion + trésorerie + indicateurs + alertes.
+app.get('/api/admin/finance-overview', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const txs = db.bankTx;
+  const byMonth = {}; // ym -> { revenue, expense, cats:{cat:amount} }
+  for (const t of txs) {
+    const ym = (t.opDate || '').slice(0, 7); if (!ym) continue;
+    const m = byMonth[ym] = byMonth[ym] || { ym, revenue: 0, expense: 0, cats: {} };
+    if (t.amount >= 0) m.revenue += t.amount; else m.expense += -t.amount;
+    m.cats[t.category] = (m.cats[t.category] || 0) + t.amount;
+  }
+  const months = Object.values(byMonth).sort((a, b) => a.ym.localeCompare(b.ym)).map((m) => ({ ...m, result: Math.round((m.revenue - m.expense) * 100) / 100, revenue: Math.round(m.revenue * 100) / 100, expense: Math.round(m.expense * 100) / 100 }));
+  // Trésorerie : solde de départ + cumul.
+  let bal = db.settings.treasuryStartBalance || 0;
+  const treasury = months.map((m) => { const start = bal; bal = Math.round((bal + m.revenue - m.expense) * 100) / 100; return { ym: m.ym, start: Math.round(start * 100) / 100, revenue: m.revenue, expense: m.expense, result: m.result, end: bal }; });
+  const totalRev = months.reduce((s, m) => s + m.revenue, 0);
+  const totalExp = months.reduce((s, m) => s + m.expense, 0);
+  const result = totalRev - totalExp;
+  // Indicateurs (sur l'ensemble).
+  const catTotal = {}; for (const t of txs) if (t.amount < 0) catTotal[t.category] = (catTotal[t.category] || 0) + (-t.amount);
+  const pct = (v) => totalRev > 0 ? Math.round((v / totalRev) * 1000) / 10 : 0;
+  const indicators = {
+    tauxCharges: totalRev > 0 ? Math.round((totalExp / totalRev) * 1000) / 10 : 0,
+    tauxMarge: totalRev > 0 ? Math.round((result / totalRev) * 1000) / 10 : 0,
+    masseSalarialePct: pct((catTotal['Salaires'] || 0) + (catTotal['Charges sociales'] || 0)),
+    carburantPct: pct(catTotal['Carburant'] || 0),
+    peagesPct: pct(catTotal['Péages'] || 0),
+    resultat: Math.round(result * 100) / 100,
+    soldeActuel: bal,
+  };
+  // Répartition des dépenses / recettes par catégorie.
+  const expenseByCat = Object.entries(catTotal).map(([cat, v]) => ({ cat, v: Math.round(v * 100) / 100 })).sort((a, b) => b.v - a.v);
+  const revByCat = {}; for (const t of txs) if (t.amount > 0) revByCat[t.category] = (revByCat[t.category] || 0) + t.amount;
+  const revenueByCat = Object.entries(revByCat).map(([cat, v]) => ({ cat, v: Math.round(v * 100) / 100 })).sort((a, b) => b.v - a.v);
+  // Analyse automatique + alertes.
+  const last = months[months.length - 1];
+  const alerts = [];
+  if (last && last.result < 0) alerts.push({ lvl: 'red', txt: `Résultat de ${last.ym} négatif (${Math.round(last.result)} €).` });
+  if (result < 0) alerts.push({ lvl: 'red', txt: 'Résultat cumulé négatif sur la période.' });
+  else alerts.push({ lvl: 'green', txt: 'Les recettes couvrent les dépenses.' });
+  if (indicators.carburantPct >= 15) alerts.push({ lvl: 'orange', txt: `Le carburant représente ${indicators.carburantPct} % du CA — surveiller la rentabilité.` });
+  if (indicators.masseSalarialePct >= 50) alerts.push({ lvl: 'orange', txt: `Masse salariale élevée (${indicators.masseSalarialePct} % du CA).` });
+  if (bal < 0) alerts.push({ lvl: 'red', txt: 'Trésorerie négative : tension à anticiper.' });
+  else if (treasury.length && treasury[treasury.length - 1].end < totalExp / Math.max(1, months.length)) alerts.push({ lvl: 'orange', txt: 'Trésorerie inférieure à un mois de charges : vigilance.' });
+  res.json({ months, treasury, totals: { revenue: Math.round(totalRev * 100) / 100, expense: Math.round(totalExp * 100) / 100, result: Math.round(result * 100) / 100 }, indicators, expenseByCat, revenueByCat, alerts, txCount: txs.length });
 });
 
 // SPA fallback
