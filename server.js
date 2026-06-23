@@ -2553,6 +2553,52 @@ app.get('/api/admin/finance-overview', authRequired, adminRequired, (req, res) =
   res.json({ months, treasury, totals: { revenue: Math.round(totalRev * 100) / 100, expense: Math.round(totalExp * 100) / 100, result: Math.round(result * 100) / 100 }, indicators, expenseByCat, revenueByCat, alerts, txCount: txs.length });
 });
 
+// ---------------------------------------------------------------------------
+// Gestion des heures : amplitudes des chauffeurs (encadrement)
+// ---------------------------------------------------------------------------
+const AMPLITUDE_MAX = 12; // amplitude indicative (h) — alerte au-delà
+function hmToMin(s) { const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/); return m ? (Number(m[1]) * 60 + Number(m[2])) : null; }
+function computeHours(start, end, breakMin) {
+  const a = hmToMin(start), b = hmToMin(end);
+  if (a == null || b == null) return null;
+  let amp = b - a; if (amp < 0) amp += 24 * 60; // service de nuit
+  const worked = Math.max(0, amp - (Number(breakMin) || 0));
+  return { amplitude: Math.round((amp / 60) * 100) / 100, worked: Math.round((worked / 60) * 100) / 100 };
+}
+
+app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  const since = req.query.from || new Date(Date.now() - 70 * 86400000).toISOString().slice(0, 10);
+  const list = db.workHours.filter((h) => h.date >= since).sort((a, b) => b.date.localeCompare(a.date));
+  const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
+    .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId }))
+    .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX });
+});
+
+app.post('/api/staff/work-hours', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const { userId, date, start, end, breakMin } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Chauffeur introuvable' });
+  if (!validDate(date)) return res.status(400).json({ error: 'Date invalide' });
+  const calc = computeHours(start, end, breakMin);
+  if (!calc) return res.status(400).json({ error: 'Heures invalides (format HH:MM attendu)' });
+  // Une seule saisie par chauffeur et par jour : on remplace si elle existe.
+  db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date === date));
+  const rec = { id: nextId('wh'), userId, userName: `${u.firstName} ${u.lastName}`, date, start, end, breakMin: Number(breakMin) || 0, amplitude: calc.amplitude, worked: calc.worked };
+  db.workHours.push(rec);
+  await save();
+  res.json({ entry: rec });
+});
+
+app.delete('/api/staff/work-hours/:id', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  db.workHours = db.workHours.filter((h) => h.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

@@ -391,6 +391,7 @@ function navSections() {
     sections.push({ title: 'Contrôle & gestion', items: [
       { id: 'admin', icon: '⚙️', label: 'Administration' },
       { id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' },
+      { id: 'hours', icon: '⏱️', label: 'Gestion des heures' },
       { id: 'vehmgmt', icon: '🔧', label: 'Gestion des véhicules' },
       { id: 'fleet', icon: '🚚', label: 'Gestion de la flotte' },
       { id: 'stocks', icon: '📦', label: 'Gestion des stocks' },
@@ -553,6 +554,7 @@ function renderView() {
   if (v === 'finance') return renderFinance(main);
   if (v === 'tender') return renderTender(main);
   if (v === 'contracts') return renderContracts(main);
+  if (v === 'hours') return renderHours(main);
 }
 
 /* =========================================================================
@@ -4121,6 +4123,108 @@ function contractModal(k) {
     }; },
   });
 }
+
+/* =========================================================================
+   GESTION DES HEURES — amplitudes des chauffeurs (encadrement)
+   ========================================================================= */
+let _hours = null;
+function hFmt(h) { const n = Number(h) || 0; const hh = Math.floor(n); const mm = Math.round((n - hh) * 60); return `${hh}h${mm < 10 ? '0' : ''}${mm}`; }
+function isoWeekStart(d) { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x; }
+
+async function renderHours(main) {
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des heures</h1>
+    <p>Suivi des amplitudes et du temps de travail des chauffeurs.</p></div></div>
+    <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-htab="resume" class="active">Résumé des amplitudes</button>
+      <button data-htab="saisie">Saisie</button>
+    </div>
+    <div id="hr-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#hr-tabs');
+  tabs.querySelectorAll('[data-htab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); hrTab(b.dataset.htab); });
+  await loadHours();
+  hrTab('resume');
+}
+async function loadHours() { _hours = await api('GET', '/staff/work-hours'); }
+function hrTab(tab) {
+  const body = document.getElementById('hr-body'); if (!body) return; body.className = '';
+  if (tab === 'resume') return hoursResume(body);
+  if (tab === 'saisie') return hoursSaisie(body);
+}
+
+// Résumé : amplitudes réalisées par chauffeur (semaine + mois en cours).
+function hoursResume(body) {
+  const entries = _hours.entries, ampMax = _hours.amplitudeMax;
+  const today = new Date();
+  const wkStart = iso(isoWeekStart(today));
+  const moStart = iso(new Date(today.getFullYear(), today.getMonth(), 1));
+  // Agrège par chauffeur sur la semaine et le mois.
+  const byUser = {};
+  entries.forEach((e) => {
+    const u = byUser[e.userId] = byUser[e.userId] || { name: e.userName, week: { amp: 0, work: 0, days: 0, max: 0, over: 0 }, month: { amp: 0, work: 0, days: 0, max: 0, over: 0 } };
+    const add = (acc) => { acc.amp += e.amplitude; acc.work += e.worked; acc.days += 1; acc.max = Math.max(acc.max, e.amplitude); if (e.amplitude > ampMax) acc.over += 1; };
+    if (e.date >= moStart) add(u.month);
+    if (e.date >= wkStart) add(u.week);
+  });
+  const rows = Object.values(byUser).filter((u) => u.month.days > 0).sort((a, b) => b.month.amp - a.month.amp);
+  if (!rows.length) { body.innerHTML = `<div class="alert info">Aucune heure saisie ce mois-ci. Renseignez les amplitudes dans l'onglet « Saisie ».</div>`; return; }
+  // Totaux flotte.
+  const tWeekAmp = rows.reduce((s, u) => s + u.week.amp, 0), tMonthAmp = rows.reduce((s, u) => s + u.month.amp, 0);
+  const tOver = rows.reduce((s, u) => s + u.month.over, 0);
+  body.innerHTML = `
+    <div class="grid cols-4">
+      <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tWeekAmp)}</div><div class="label">Amplitude totale (semaine)</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tMonthAmp)}</div><div class="label">Amplitude totale (mois)</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${rows.length}</div><div class="label">Chauffeurs suivis</div></div>
+      <div class="stat ${tOver ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${tOver}</div><div class="label">Dépassements (> ${ampMax}h)</div></div>
+    </div>
+    <div class="card"><h3>Amplitudes par chauffeur — semaine en cours</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Moy./jour</th><th>Max</th></tr></thead>
+      <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.week.days}</td><td>${hFmt(u.week.amp)}</td><td>${hFmt(u.week.work)}</td><td>${u.week.days ? hFmt(u.week.amp / u.week.days) : '—'}</td><td>${u.week.days ? `<span class="pill ${u.week.max > ampMax ? 'danger' : u.week.max > ampMax - 1 ? 'warn' : 'ok'}">${hFmt(u.week.max)}</span>` : '—'}</td></tr>`).join('')}</tbody></table></div>
+    </div>
+    <div class="card"><h3>Amplitudes par chauffeur — mois en cours</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Moy./jour</th><th>Max</th><th>Dépass.</th></tr></thead>
+      <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.month.days}</td><td>${hFmt(u.month.amp)}</td><td>${hFmt(u.month.work)}</td><td>${hFmt(u.month.amp / u.month.days)}</td><td>${hFmt(u.month.max)}</td><td>${u.month.over ? `<span class="pill danger">${u.month.over}</span>` : '0'}</td></tr>`).join('')}</tbody></table></div>
+      <p class="help">Amplitude = durée entre la prise et la fin de service (pauses comprises). Seuil d'alerte : ${ampMax}h.</p>
+    </div>`;
+}
+
+function hoursSaisie(body) {
+  const drivers = _hours.drivers;
+  const recent = _hours.entries.slice(0, 50);
+  const driverOpts = drivers.map((d) => `<option value="${d.id}">${esc(d.lastName)} ${esc(d.firstName)}${d.role !== 'employee' ? ' (' + roleLabel(d.role) + ')' : ''}</option>`).join('');
+  body.innerHTML = `
+    <div class="card"><h3>Saisir une journée</h3>
+      <div class="grid2">
+        <div><label>Chauffeur</label><select id="wh-user">${driverOpts}</select></div>
+        <div><label>Date</label><input id="wh-date" type="date" value="${iso(new Date())}"></div>
+        <div><label>Prise de service</label><input id="wh-start" type="time" value="08:00"></div>
+        <div><label>Fin de service</label><input id="wh-end" type="time" value="17:00"></div>
+        <div><label>Pause (minutes)</label><input id="wh-break" type="number" min="0" value="45"></div>
+      </div>
+      <div style="margin-top:.6rem"><button class="btn accent" id="wh-save">Enregistrer</button> <span class="help" id="wh-preview"></span></div>
+      <p class="help">L'amplitude et le temps de travail sont calculés automatiquement. Une saisie par chauffeur et par jour (remplace l'existante).</p>
+    </div>
+    <div class="card"><h3>Saisies récentes</h3>
+      ${recent.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Service</th><th>Pause</th><th>Amplitude</th><th>Travaillé</th><th></th></tr></thead>
+      <tbody>${recent.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.userName)}</td><td>${esc(e.start)}–${esc(e.end)}</td><td>${e.breakMin} min</td><td><span class="pill ${e.amplitude > _hours.amplitudeMax ? 'danger' : ''}">${hFmt(e.amplitude)}</span></td><td>${hFmt(e.worked)}</td><td><button class="btn ghost sm" data-whdel="${e.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune saisie.</p>'}
+    </div>`;
+  const prev = () => {
+    const s = document.getElementById('wh-start').value, en = document.getElementById('wh-end').value, br = +document.getElementById('wh-break').value;
+    const sm = hmToMinClient(s), em = hmToMinClient(en);
+    if (sm == null || em == null) { document.getElementById('wh-preview').textContent = ''; return; }
+    let amp = em - sm; if (amp < 0) amp += 1440; const work = Math.max(0, amp - br);
+    document.getElementById('wh-preview').textContent = `→ amplitude ${hFmt(amp / 60)} · travaillé ${hFmt(work / 60)}`;
+  };
+  ['wh-start', 'wh-end', 'wh-break'].forEach((id) => document.getElementById(id).oninput = prev); prev();
+  document.getElementById('wh-save').onclick = async () => {
+    const payload = { userId: document.getElementById('wh-user').value, date: document.getElementById('wh-date').value, start: document.getElementById('wh-start').value, end: document.getElementById('wh-end').value, breakMin: document.getElementById('wh-break').value };
+    try { await api('POST', '/staff/work-hours', payload); toast('Heures enregistrées.', 'ok'); await loadHours(); hrTab('saisie'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelectorAll('[data-whdel]').forEach((b) => b.onclick = async () => { try { await api('DELETE', '/staff/work-hours/' + b.dataset.whdel); await loadHours(); hrTab('saisie'); } catch (e) { toast(e.message, 'err'); } });
+}
+function hmToMinClient(s) { const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/); return m ? (Number(m[1]) * 60 + Number(m[2])) : null; }
 
 /* =========================================================================
    ORGANIGRAMME
