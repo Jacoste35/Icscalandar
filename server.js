@@ -2608,7 +2608,47 @@ app.get('/api/staff/work-hours', authRequired, adminRequired, (req, res) => {
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX });
+  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35 });
+});
+
+// Base hebdomadaire des heures supplémentaires (35 h légal par défaut).
+app.put('/api/staff/hsup-base', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const b = Number((req.body || {}).base);
+  if (Number.isFinite(b) && b > 0) db.settings.hsupWeeklyBase = b;
+  await save();
+  res.json({ hsupBase: db.settings.hsupWeeklyBase });
+});
+
+// Indiquer les HSUP déjà payées (en heures brutes) pour un salarié / un mois.
+app.put('/api/staff/hsup-settlement', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, month, paidHours } = req.body || {};
+  if (!db.users.some((u) => u.id === userId)) return res.status(404).json({ error: 'Salarié introuvable' });
+  if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return res.status(400).json({ error: 'Mois invalide' });
+  let s = db.hsupSettlements.find((x) => x.userId === userId && x.month === month);
+  if (!s) { s = { userId, month, paidHours: 0, transmittedEquiv: 0 }; db.hsupSettlements.push(s); }
+  s.paidHours = Math.max(0, Math.round((Number(paidHours) || 0) * 100) / 100);
+  await save();
+  res.json({ settlement: s });
+});
+
+// Transmettre la récupération due (équivalent majoré) au compteur du salarié.
+app.post('/api/staff/hsup/transmit', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, month, equivHours } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+  if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return res.status(400).json({ error: 'Mois invalide' });
+  const eq = Math.round((Number(equivHours) || 0) * 100) / 100;
+  if (eq <= 0) return res.status(400).json({ error: 'Aucune récupération à transmettre' });
+  let s = db.hsupSettlements.find((x) => x.userId === userId && x.month === month);
+  if (!s) { s = { userId, month, paidHours: 0, transmittedEquiv: 0 }; db.hsupSettlements.push(s); }
+  // Crédite le compteur « Récupération / heures sup. » du salarié.
+  u.balances.heuresSupp = Math.round(((u.balances.heuresSupp || 0) + eq) * 100) / 100;
+  s.transmittedEquiv = Math.round(((s.transmittedEquiv || 0) + eq) * 100) / 100;
+  await save();
+  res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });
 
 app.post('/api/staff/work-hours', authRequired, adminRequired, async (req, res) => {
