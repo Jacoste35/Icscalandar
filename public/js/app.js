@@ -580,6 +580,9 @@ async function renderDashboard(main) {
 
     const isAdmin = State.user.role === 'admin';
     const staff = isStaff();
+    // Le groupe Président n'est pas éligible aux compteurs CP / CP N-1 / RCC /
+    // HSUP ni au suivi des retards : on les masque de son espace.
+    const isPresident = (State.user.groupId === 'grp_president');
     const { team } = await api('GET', '/team').catch(() => ({ team: [] }));
 
     // Priorité de pose des congés (administrateur uniquement)
@@ -602,14 +605,14 @@ async function renderDashboard(main) {
 
     // Mes retards (compteurs glissants) + classement (encadrement)
     const myRetards = events.filter((e) => e.userId === State.user.id && e.category === 'RET' && e.status === 'approved');
-    const retardCards = `<div class="grid cols-4">
+    const retardCards = isPresident ? '' : `<div class="grid cols-4">
       ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
       ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
       ${statCard('Retards (semestre)', retardCountSince(myRetards, 182), 'retard(s)')}
       ${statCard('Retards (année)', retardCountSince(myRetards, 365), 'retard(s)', true)}
     </div>`;
     const classement = staff ? retardRankingHTML(events, team) : '';
-    const philo = philoMessageHTML(retardCountSince(myRetards, 365));
+    const philo = isPresident ? '' : philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Panneaux véhicules + discipline (encadrement).
     let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '';
@@ -648,12 +651,12 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${anc}
-      <div class="grid cols-4">
+      ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
         ${statCard('Congés N-1 restants', b.congesN1, 'jours')}
         ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h`)}
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
-      </div>
+      </div>`}
       ${philo}
       ${messagesPanel}
       ${stockAlertPanel}
@@ -1541,14 +1544,17 @@ async function renderMyData(main) {
     const { requests } = await api('GET', '/requests/mine');
     const g = groupById(user.groupId);
     const approved = requests.filter((r) => r.status === 'approved');
+    // Le Président n'est pas éligible aux compteurs CP / CP N-1 / RCC / HSUP ni
+    // au suivi des retards.
+    const isPresident = (user.groupId === 'grp_president');
     const md = document.getElementById('md'); md.className = '';
     md.innerHTML = `
-      <div class="grid cols-4">
+      ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N', user.balances.congesN, 'jours')}
         ${statCard('Congés N-1', user.balances.congesN1, 'jours')}
         ${statCard('RCC', user.balances.rcc, 'h', false, hToDays(user.balances.rcc))}
         ${statCard('Récup. / Heures sup.', user.balances.heuresSupp, 'h', true, hToDays(user.balances.heuresSupp))}
-      </div>
+      </div>`}
       <div class="card">
         <h3>Profil</h3>
         <div class="table-wrap"><table>
@@ -1569,10 +1575,10 @@ async function renderMyData(main) {
       </div>
       <div class="card">
         <h3>Suivi : maladie, accident, absences</h3>
-        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures ; retards en nombre.</p>
+        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures${isPresident ? '' : ' ; retards en nombre'}.</p>
         <div class="grid cols-4">
           ${suiviHighlight(approved, ['AM','AT','ANRN'])}
-          <div class="stat alt"><div class="value" style="font-size:1.3rem">${approved.filter((r)=>r.category==='RET').length} <span class="unit">retard(s)</span></div><div class="label">Retards (total validés)</div></div>
+          ${isPresident ? '' : `<div class="stat alt"><div class="value" style="font-size:1.3rem">${approved.filter((r)=>r.category==='RET').length} <span class="unit">retard(s)</span></div><div class="label">Retards (total validés)</div></div>`}
         </div>
       </div>
       <div class="card">
@@ -1621,15 +1627,16 @@ async function renderRequests(main) {
     const { events } = await api('GET', '/calendar');
     const { requests } = await api('GET', '/requests/mine');
     const b = user.balances;
+    const isPresident = (user.groupId === 'grp_president');
     const recent = requests.filter((r) => new Date(r.createdAt) >= new Date(Date.now() - 92 * 86400000));
     const list = document.getElementById('req-list'); list.className = '';
     list.innerHTML = `
-      <div class="grid cols-4">
+      ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N', b.congesN, 'jours')}
         ${statCard('Congés N-1', b.congesN1, 'jours')}
         ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
-      </div>
+      </div>`}
       <div class="card">
         <h3>${events.filter((ev) => ev.category!=='RET' && ev.groupId===user.groupId && ev.endDate>=iso(startOfWeekMonday(new Date())) && ev.startDate<=iso(addDays(startOfWeekMonday(new Date()),83))).length} absence(s) à prévoir dans les 12 prochaines semaines — Disponibilité de l'année</h3>
         <p class="help" style="margin-top:-.6rem">Vert = libre · rouge = absence prévue dans votre groupe (avec le nombre) · bleu = vous · 🔒 = fermé. Les retards n'affectent pas la disponibilité.</p>
@@ -4267,8 +4274,8 @@ function hoursHsup(body) {
     const u = byUser[id]; u.days.sort((a, b) => a.date.localeCompare(b.date));
     // Semaines -> HSUP -> répartition 25/50 par semaine.
     const weeks = {};
-    u.days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); (weeks[k] = weeks[k] || { worked: 0, days: 0 }); weeks[k].worked += e.worked || 0; weeks[k].days += 1; });
-    const weekRows = Object.keys(weeks).sort().map((k) => { const w = weeks[k]; const hsup = Math.max(0, w.worked - base); const sp = splitHsup(hsup); return { k, worked: w.worked, days: w.days, hsup, h25: sp.h25, h50: sp.h50 }; });
+    u.days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); (weeks[k] = weeks[k] || { worked: 0, days: 0, ids: [] }); weeks[k].worked += e.worked || 0; weeks[k].days += 1; if (e.id) weeks[k].ids.push(e.id); });
+    const weekRows = Object.keys(weeks).sort().map((k) => { const w = weeks[k]; const hsup = Math.max(0, w.worked - base); const sp = splitHsup(hsup); return { k, worked: w.worked, days: w.days, hsup, h25: sp.h25, h50: sp.h50, ids: w.ids }; });
     // Agrégat mensuel (25/50 sommés sur les semaines du mois).
     const months = {};
     weekRows.forEach((w) => { const m = w.k.slice(0, 7); (months[m] = months[m] || { worked: 0, h25: 0, h50: 0 }); months[m].worked += w.worked; months[m].h25 += w.h25; months[m].h50 += w.h50; });
@@ -4314,7 +4321,7 @@ function hoursHsup(body) {
       </div>
       ${open ? `<div class="veh-card-body">
         <h4 style="margin:.4rem 0 .3rem">Synthèse du salarié</h4>
-        ${synthSalarie(u.days, base)}
+        ${synthSalarie(u.days, base, id)}
         <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
         <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <div class="alert info" style="margin-top:.5rem">
@@ -4322,14 +4329,14 @@ function hoursHsup(body) {
           <span class="help">Équivalence en récupération (à titre informatif, pour la direction) : ajustements légaux +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour. Soit ≈ <strong>${(totRemEquivInfo / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</span>
         </div>
         <div style="margin:.5rem 0"><button class="btn ok" data-transmitall="${id}">Transmettre tout le reste dû au compteur de ${esc(u.name)}</button></div>
-        <h4 style="margin:.7rem 0 .3rem">Semaine par semaine</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>HSUP</th><th>25%</th><th>50%</th></tr></thead>
-          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td></tr>`).join('')}</tbody></table></div>
-        <h4 style="margin:.7rem 0 .3rem">Indemnités & événements (mois par mois)</h4>
-        ${indMonthsHTML(u.days)}
-        <h4 style="margin:.7rem 0 .3rem">Jour par jour</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Nuit</th><th>Ampl.</th><th>R.midi</th><th>R.soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Mission</th><th>Absence</th></tr></thead>
-          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${e.nightHours ? hFmt(e.nightHours) : '—'}</td><td>${hFmt(e.amplitude)}</td><td>${e.mealMidi || '—'}</td><td>${e.mealSoir || '—'}</td><td>${e.casseCroute || '—'}</td><td>${e.decoucher || '—'}</td><td>${e.km || '—'}</td><td>${esc(e.missions || '—')}</td><td>${e.absence ? hFmt(e.absence) + (e.motif ? ' (' + esc(e.motif) + ')' : '') : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.7rem 0 .3rem">Semaine par semaine <span class="help">— supprimez une semaine mal attribuée</span></h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>HSUP</th><th>25%</th><th>50%</th><th></th></tr></thead>
+          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td><td>${w.ids && w.ids.length ? `<button class="btn ghost sm" data-delweek="${w.ids.join(',')}" data-uid="${id}" title="Supprimer la semaine">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.7rem 0 .3rem">Détail par mois (indemnités & estimation de salaire)</h4>
+        ${monthsDetailHTML(u.days, base, id)}
+        <h4 style="margin:.7rem 0 .3rem">Jour par jour <span class="help">— supprimez une saisie mal attribuée</span></h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Nuit</th><th>Ampl.</th><th>R.midi</th><th>R.soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Mission</th><th>Absence</th><th></th></tr></thead>
+          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${e.nightHours ? hFmt(e.nightHours) : '—'}</td><td>${hFmt(e.amplitude)}</td><td>${e.mealMidi || '—'}</td><td>${e.mealSoir || '—'}</td><td>${e.casseCroute || '—'}</td><td>${e.decoucher || '—'}</td><td>${e.km || '—'}</td><td>${esc(e.missions || '—')}</td><td>${e.absence ? hFmt(e.absence) + (e.motif ? ' (' + esc(e.motif) + ')' : '') : '—'}</td><td>${e.id ? `<button class="btn ghost sm" data-delday="${e.id}" data-uid="${id}" title="Supprimer cette saisie">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
         <div style="margin-top:.6rem"><button class="btn ghost" data-exportcsv="${id}">⬇️ Exporter le tableau (CSV)</button></div>
       </div>` : ''}
     </div>`;
@@ -4364,68 +4371,150 @@ function hoursHsup(body) {
     catch (e) { toast(e.message, 'err'); }
   });
   body.querySelectorAll('[data-exportcsv]').forEach((b) => b.onclick = () => exportHoursCSV(byUser[b.dataset.exportcsv], _hours.hsupBase || 35));
+  // Enregistrement des paramètres de paie par salarié.
+  body.querySelectorAll('[data-savesal]').forEach((b) => b.onclick = async () => {
+    const id = b.dataset.savesal;
+    const params = {};
+    body.querySelectorAll(`.salary-param[data-uid="${id}"]`).forEach((inp) => { params[inp.dataset.key] = inp.value; });
+    try { await api('PUT', '/staff/salary-params', { userId: id, params }); toast('Paramètres de paie enregistrés.', 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  // Suppression d'une saisie (journée) mal attribuée.
+  body.querySelectorAll('[data-delday]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Supprimer définitivement cette saisie ?')) return;
+    try { await api('DELETE', `/staff/work-hours/${b.dataset.delday}`); toast('Saisie supprimée.', 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  // Suppression de toutes les saisies d'une semaine (semaine mal attribuée).
+  body.querySelectorAll('[data-delweek]').forEach((b) => b.onclick = async () => {
+    const ids = (b.dataset.delweek || '').split(',').filter(Boolean);
+    if (!ids.length) return;
+    if (!confirm(`Supprimer les ${ids.length} saisie(s) de cette semaine ?`)) return;
+    try { for (const id of ids) await api('DELETE', `/staff/work-hours/${id}`); toast('Semaine supprimée.', 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
 }
 
-// Synthèse mensuelle des indemnités & événements (paniers, nuit, découcher, km).
-// Synthèse d'un salarié : totaux de la période en cours (dernier mois importé)
-// + tendance sur le trimestre glissant (3 derniers mois) pour voir s'il a plus
-// ou moins travaillé.
-function synthSalarie(days, base) {
+// Paramètres de paie par défaut (calés sur un bulletin Chauffeur-Livreur réel).
+const SAL_DEFAULTS = { tauxHoraire: 12.09, baseMois: 151.67, cotisPct: 23.04, exoHsPct: 11.31, panierMidi: 16.36, panierSoir: 16.36, casseCroute: 0, nuitParH: 0, decoucher: 0, pasPct: 0 };
+function getSalParams(id) { const o = (_hours.salaryParams || {})[id] || {}; return Object.assign({}, SAL_DEFAULTS, o); }
+
+// Agrégats mensuels d'un salarié : heures (avec répartition HSUP 25/50 calculée
+// par semaine au-delà de la base) + indemnités/événements. Renvoie un tableau
+// trié par mois croissant.
+function monthlyAgg(days, base) {
   base = base || 35;
-  if (!days || !days.length) return '<p class="help">—</p>';
-  // Agrégats mensuels : heures + indemnités/événements.
   const m = {};
-  const bucket = () => ({ worked: 0, days: 0, hsup: 0, night: 0, midi: 0, soir: 0, casse: 0, dec: 0, km: 0, abs: 0 });
+  const bucket = (k) => ({ key: k, worked: 0, days: 0, h25: 0, h50: 0, hsup: 0, night: 0, midi: 0, soir: 0, casse: 0, dec: 0, km: 0, abs: 0 });
   days.forEach((e) => {
     const k = (e.date || '').slice(0, 7); if (!k) return;
-    const o = m[k] = m[k] || bucket();
+    const o = m[k] = m[k] || bucket(k);
     o.worked += e.worked || 0; o.days += 1; o.night += e.nightHours || 0;
     o.midi += e.mealMidi || 0; o.soir += e.mealSoir || 0; o.casse += e.casseCroute || 0;
     o.dec += e.decoucher || 0; o.km += e.km || 0; o.abs += e.absence || 0;
   });
-  // HSUP par semaine (au-delà de la base) imputées au mois de la semaine.
   const weeks = {};
   days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); weeks[k] = (weeks[k] || 0) + (e.worked || 0); });
-  Object.keys(weeks).forEach((wk) => { const mk = wk.slice(0, 7); const o = m[mk] = m[mk] || bucket(); o.hsup += Math.max(0, weeks[wk] - base); });
-  const keys = Object.keys(m).sort();
-  if (!keys.length) return '<p class="help">—</p>';
-  const cur = m[keys[keys.length - 1]]; const curK = keys[keys.length - 1];
-  // Fenêtre glissante : 3 derniers mois.
-  const win = keys.slice(-3); const winData = win.map((k) => m[k]);
-  const totW = winData.reduce((s, o) => s + o.worked, 0);
-  const totH = winData.reduce((s, o) => s + o.hsup, 0);
-  const avgW = totW / winData.length;
-  const lastW = winData[winData.length - 1].worked;
-  const firstW = winData[0].worked;
+  Object.keys(weeks).forEach((wk) => { const mk = wk.slice(0, 7); const o = m[mk] = m[mk] || bucket(mk); const hs = Math.max(0, weeks[wk] - base); const sp = splitHsup(hs); o.h25 += sp.h25; o.h50 += sp.h50; o.hsup += hs; });
+  return Object.keys(m).sort().map((k) => m[k]);
+}
+
+// Estimation du salaire net mensuel à partir des heures du mois et des
+// paramètres de paie du salarié (calage ≈ bulletin réel).
+function estimSalaire(mo, p) {
+  const base = p.baseMois * p.tauxHoraire;
+  const hs25 = mo.h25 * p.tauxHoraire * 1.25;
+  const hs50 = mo.h50 * p.tauxHoraire * 1.5;
+  const nuit = (mo.night || 0) * p.nuitParH;
+  const brut = base + hs25 + hs50 + nuit;
+  const hsTot = hs25 + hs50;
+  const cotis = Math.max(0, brut * p.cotisPct / 100 - hsTot * p.exoHsPct / 100);
+  const netImpo = brut - cotis;
+  const indem = (mo.midi || 0) * p.panierMidi + (mo.soir || 0) * p.panierSoir + (mo.casse || 0) * p.casseCroute + (mo.dec || 0) * p.decoucher;
+  const pas = netImpo * p.pasPct / 100;
+  const net = netImpo + indem - pas;
+  return { base, hs25, hs50, nuit, brut, cotis, netImpo, indem, pas, net };
+}
+
+// Formulaire (repliable) des paramètres de paie, éditable et enregistrable.
+function salaryParamsForm(id, p) {
+  const open = !!_vehOpen['sal_' + id];
+  const f = (key, lbl, step) => `<div style="display:flex;flex-direction:column;gap:.15rem"><label class="help" style="margin:0">${lbl}</label><input class="salary-param" data-uid="${id}" data-key="${key}" type="number" step="${step || '0.01'}" min="0" value="${p[key]}" style="width:120px"></div>`;
+  return `<div class="card" style="margin:.2rem 0 .5rem">
+    <div class="veh-card-head" data-toggle="sal_${id}" style="cursor:pointer"><span class="veh-caret">${open ? '▾' : '▸'}</span><strong>Paramètres de paie</strong><span class="help" style="margin-left:auto">taux horaire, base mensualisée, cotisations, paniers…</span></div>
+    ${open ? `<div style="display:flex;gap:.7rem;flex-wrap:wrap;margin-top:.6rem">
+      ${f('tauxHoraire', 'Taux horaire brut (€)')}
+      ${f('baseMois', 'Base mensualisée (h)')}
+      ${f('cotisPct', 'Cotisations salariales (%)')}
+      ${f('exoHsPct', 'Exonération HS salariale (%)')}
+      ${f('panierMidi', 'Panier repas midi (€)')}
+      ${f('panierSoir', 'Panier repas soir (€)')}
+      ${f('casseCroute', 'Casse-croûte (€)')}
+      ${f('nuitParH', 'Majoration nuit (€/h)')}
+      ${f('decoucher', 'Découcher (€)')}
+      ${f('pasPct', 'Prélèvement à la source (%)')}
+    </div>
+    <div style="margin-top:.6rem"><button class="btn accent sm" data-savesal="${id}">Enregistrer les paramètres</button></div>
+    <p class="help" style="margin-top:.3rem">Estimation <strong>indicative</strong> du net (≈ bulletin de paie). Base mensualisée 151,67 h. Ajustez selon le bulletin réel du salarié.</p>` : ''}
+  </div>`;
+}
+
+// Synthèse d'un salarié : paramètres de paie + comparatif mois en cours / mois
+// précédent (avec estimation du net) + tendance sur le trimestre glissant.
+function synthSalarie(days, base, id) {
+  const months = monthlyAgg(days, base);
+  if (!months.length) return '<p class="help">—</p>';
+  const p = getSalParams(id);
+  const cur = months[months.length - 1];
+  const prev = months.length > 1 ? months[months.length - 2] : null;
+  const eCur = estimSalaire(cur, p);
+  const ePrev = prev ? estimSalaire(prev, p) : null;
+  const line = (lbl, val, delta) => `<div style="display:flex;justify-content:space-between;gap:.6rem;padding:.14rem 0;border-bottom:1px solid var(--border,#eee)"><span class="help">${lbl}</span><span style="text-align:right">${val} ${delta || ''}</span></div>`;
+  const dh = (c, pv) => pv == null ? '' : (Math.abs(c - pv) < 0.01 ? '<span class="help">=</span>' : `<span class="help">(${c - pv > 0 ? '+' : '−'}${hFmt(Math.abs(c - pv))})</span>`);
+  const di = (c, pv, suf) => pv == null ? '' : (!(c - pv) ? '<span class="help">=</span>' : `<span class="help">(${c - pv > 0 ? '+' : '−'}${Math.abs(c - pv)}${suf || ''})</span>`);
+  const de = (c, pv) => pv == null ? '' : (Math.abs(c - pv) < 0.01 ? '<span class="help">=</span>' : `<span class="${c - pv > 0 ? 'pos' : 'warn'}" style="font-size:.85em">(${c - pv > 0 ? '+' : '−'}${eur(Math.abs(c - pv))})</span>`);
+  const panel = (mo, est, pv, pvEst, title, accent) => `<div class="card" style="flex:1;min-width:270px;${accent ? 'border:1px solid var(--accent,#6b7cff)' : ''}">
+    <h4 style="margin:.1rem 0 .5rem">${title} — <span style="color:var(--accent,#6b7cff)">${esc(mo.key)}</span></h4>
+    ${line('Jours travaillés', mo.days, pv ? di(mo.days, pv.days) : '')}
+    ${line('Heures travaillées', `<strong>${hFmt(mo.worked)}</strong>`, pv ? dh(mo.worked, pv.worked) : '')}
+    ${line('HSUP 25% / 50%', `${hFmt(mo.h25)} / ${hFmt(mo.h50)}`, pv ? dh(mo.h25 + mo.h50, pv.h25 + pv.h50) : '')}
+    ${line('Heures de nuit', mo.night ? hFmt(mo.night) : '—', pv ? dh(mo.night, pv.night) : '')}
+    ${line('Paniers midi / soir', `${mo.midi || 0} / ${mo.soir || 0}`, pv ? di((mo.midi || 0) + (mo.soir || 0), (pv.midi || 0) + (pv.soir || 0)) : '')}
+    ${line('Casse-croûte', mo.casse || 0, pv ? di(mo.casse || 0, pv.casse || 0) : '')}
+    ${line('Découcher', mo.dec || 0, pv ? di(mo.dec || 0, pv.dec || 0) : '')}
+    ${line('Kilomètres', (mo.km || 0).toLocaleString('fr-FR'), pv ? di(mo.km || 0, pv.km || 0, ' km') : '')}
+    ${line('Absences', mo.abs ? hFmt(mo.abs) : '—', '')}
+    <div style="border-top:2px solid var(--border,#ddd);margin-top:.35rem;padding-top:.35rem">
+      ${line('Salaire brut estimé', eur(est.brut), pv ? de(est.brut, pvEst.brut) : '')}
+      ${line('Cotisations salariales', '− ' + eur(est.cotis), '')}
+      ${line('Indemnités (non soumis)', eur(est.indem), '')}
+      ${line('Net estimé à payer', `<strong style="font-size:1.1em">${eur(est.net)}</strong>`, pv ? de(est.net, pvEst.net) : '')}
+    </div>
+  </div>`;
+  // Tendance trimestre glissant (3 derniers mois).
+  const win = months.slice(-3);
+  const totW = win.reduce((s, o) => s + o.worked, 0);
+  const totH = win.reduce((s, o) => s + o.hsup, 0);
+  const avgW = totW / win.length;
+  const lastW = win[win.length - 1].worked, firstW = win[0].worked;
   const diffAvg = avgW ? Math.round(((lastW - avgW) / avgW) * 100) : 0;
   const diffFirst = firstW ? Math.round(((lastW - firstW) / firstW) * 100) : 0;
   const verdict = diffAvg > 2 ? 'plus' : (diffAvg < -2 ? 'moins' : 'autant');
   const vcls = diffAvg > 2 ? 'warn' : (diffAvg < -2 ? 'pos' : '');
-  // Mini graphe heures travaillées par mois (toute la période).
-  const allW = keys.map((k) => ({ l: k.slice(2), v: m[k].worked }));
+  const allW = months.map((o) => ({ l: o.key.slice(2), v: o.worked }));
   const maxW = Math.max(1, ...allW.map((i) => i.v));
-  const bars = `<div class="bars">${allW.map((i) => { const h = Math.round((i.v / maxW) * 100); const isCur = i.l === curK.slice(2); return `<div class="bar-col"><div class="bar-wrap"><div class="bar ${isCur ? 'pos' : ''}" style="height:${h}%;${isCur ? '' : 'background:var(--accent,#6b7cff);opacity:.55'}" title="${hFmt(i.v)}"></div></div><div class="bar-lbl">${esc(i.l)}</div><div class="bar-val">${hFmt(i.v)}</div></div>`; }).join('')}</div>`;
-  const tile = (lbl, val) => `<div class="stat" style="min-width:96px;padding:.4rem .6rem"><div class="value" style="font-size:1.05rem">${val}</div><div class="label">${lbl}</div></div>`;
+  const bars = `<div class="bars">${allW.map((i) => { const h = Math.round((i.v / maxW) * 100); const isCur = i.l === cur.key.slice(2); return `<div class="bar-col"><div class="bar-wrap"><div class="bar ${isCur ? 'pos' : ''}" style="height:${h}%;${isCur ? '' : 'background:var(--accent,#6b7cff);opacity:.5'}" title="${hFmt(i.v)}"></div></div><div class="bar-lbl">${esc(i.l)}</div><div class="bar-val">${hFmt(i.v)}</div></div>`; }).join('')}</div>`;
   const arrow = (pct) => pct > 2 ? `<span class="warn">▲ +${pct}%</span>` : (pct < -2 ? `<span class="pos">▼ ${pct}%</span>` : '<span class="help">≈</span>');
   return `
-    <div class="alert info" style="margin:.2rem 0 .5rem">
-      <strong>Période en cours — ${esc(curK)}</strong>
-      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.45rem">
-        ${tile('Jours travaillés', cur.days)}
-        ${tile('Heures travaillées', hFmt(cur.worked))}
-        ${tile('Heures sup.', cur.hsup ? hFmt(cur.hsup) : '—')}
-        ${tile('Heures de nuit', cur.night ? hFmt(cur.night) : '—')}
-        ${tile('Paniers midi', cur.midi || '—')}
-        ${tile('Paniers soir', cur.soir || '—')}
-        ${tile('Casse-croûte', cur.casse || '—')}
-        ${tile('Découcher', cur.dec || '—')}
-        ${tile('Kilomètres', cur.km ? cur.km.toLocaleString('fr-FR') : '—')}
-        ${tile('Absences', cur.abs ? hFmt(cur.abs) : '—')}
-      </div>
+    ${salaryParamsForm(id, p)}
+    <h4 style="margin:.5rem 0 .3rem">Comparatif mensuel</h4>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+      ${panel(cur, eCur, prev, ePrev, 'Période en cours', true)}
+      ${prev ? panel(prev, ePrev, null, null, 'Mois précédent', false) : '<div class="card" style="flex:1;min-width:270px;display:flex;align-items:center;justify-content:center"><span class="help">Pas de mois précédent à comparer.</span></div>'}
     </div>
-    <h4 style="margin:.6rem 0 .3rem">Tendance sur le trimestre glissant (${winData.length} dernier(s) mois)</h4>
+    <h4 style="margin:.7rem 0 .3rem">Tendance sur le trimestre glissant (${win.length} dernier(s) mois)</h4>
     <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Jours</th><th>Travaillé</th><th>Évol.</th><th>HSUP</th><th>Nuit</th><th>Paniers (m/s)</th><th>Km</th></tr></thead>
-      <tbody>${win.map((k, i) => { const o = m[k]; const prev = i > 0 ? m[win[i - 1]].worked : null; const pct = prev ? Math.round(((o.worked - prev) / prev) * 100) : null; return `<tr><td>${esc(k)}</td><td>${o.days}</td><td>${hFmt(o.worked)}</td><td>${pct === null ? '—' : arrow(pct)}</td><td>${o.hsup ? hFmt(o.hsup) : '—'}</td><td>${o.night ? hFmt(o.night) : '—'}</td><td>${(o.midi || 0)}/${(o.soir || 0)}</td><td>${o.km ? o.km.toLocaleString('fr-FR') : '—'}</td></tr>`; }).join('')}</tbody></table></div>
+      <tbody>${win.map((o, i) => { const prevW = i > 0 ? win[i - 1].worked : null; const pct = prevW ? Math.round(((o.worked - prevW) / prevW) * 100) : null; return `<tr><td>${esc(o.key)}</td><td>${o.days}</td><td>${hFmt(o.worked)}</td><td>${pct === null ? '—' : arrow(pct)}</td><td>${o.hsup ? hFmt(o.hsup) : '—'}</td><td>${o.night ? hFmt(o.night) : '—'}</td><td>${(o.midi || 0)}/${(o.soir || 0)}</td><td>${o.km ? o.km.toLocaleString('fr-FR') : '—'}</td></tr>`; }).join('')}</tbody></table></div>
     ${allW.length > 1 ? `<div style="margin:.5rem 0">${bars}</div>` : ''}
     <div class="alert ${vcls || 'info'}" style="margin-top:.4rem">
       Trimestre glissant : <strong>${hFmt(totW)}</strong> travaillées (moyenne <strong>${hFmt(avgW)}</strong>/mois, dont <strong>${hFmt(totH)}</strong> d'heures sup.).<br>
@@ -4433,13 +4522,22 @@ function synthSalarie(days, base) {
     </div>`;
 }
 
-function indMonthsHTML(days) {
-  const m = {};
-  days.forEach((e) => { const k = (e.date || '').slice(0, 7); const o = m[k] = m[k] || { midi: 0, soir: 0, casse: 0, dec: 0, night: 0, km: 0, abs: 0 }; o.midi += e.mealMidi || 0; o.soir += e.mealSoir || 0; o.casse += e.casseCroute || 0; o.dec += e.decoucher || 0; o.night += e.nightHours || 0; o.km += e.km || 0; o.abs += e.absence || 0; });
-  const keys = Object.keys(m).sort();
-  if (!keys.length) return '<p class="help">—</p>';
-  return `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Paniers midi</th><th>Paniers soir</th><th>Casse-croûte</th><th>Découcher</th><th>Heures nuit</th><th>Km</th><th>Absence</th></tr></thead>
-    <tbody>${keys.map((k) => { const o = m[k]; return `<tr><td>${esc(k)}</td><td>${o.midi || '—'}</td><td>${o.soir || '—'}</td><td>${o.casse || '—'}</td><td>${o.dec || '—'}</td><td>${o.night ? hFmt(o.night) : '—'}</td><td>${o.km ? o.km.toLocaleString('fr-FR') : '—'}</td><td>${o.abs ? hFmt(o.abs) : '—'}</td></tr>`; }).join('')}</tbody></table></div>`;
+// Détail par mois, dans des tableaux DISTINCTS (un bloc par mois) : indemnités/
+// événements + estimation détaillée du salaire.
+function monthsDetailHTML(days, base, id) {
+  const months = monthlyAgg(days, base);
+  if (!months.length) return '<p class="help">—</p>';
+  const p = getSalParams(id);
+  return months.slice().reverse().map((mo) => {
+    const e = estimSalaire(mo, p);
+    return `<div class="card" style="margin:.4rem 0">
+      <h4 style="margin:.1rem 0 .4rem">📅 ${esc(mo.key)} — ${hFmt(mo.worked)} travaillées · ${mo.days} j</h4>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Nuit</th><th>Paniers midi</th><th>Paniers soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Absence</th></tr></thead>
+        <tbody><tr><td>${hFmt(mo.worked)}</td><td>${mo.h25 ? hFmt(mo.h25) : '—'}</td><td>${mo.h50 ? hFmt(mo.h50) : '—'}</td><td>${mo.night ? hFmt(mo.night) : '—'}</td><td>${mo.midi || '—'}</td><td>${mo.soir || '—'}</td><td>${mo.casse || '—'}</td><td>${mo.dec || '—'}</td><td>${mo.km ? mo.km.toLocaleString('fr-FR') : '—'}</td><td>${mo.abs ? hFmt(mo.abs) : '—'}</td></tr></tbody></table></div>
+      <div class="table-wrap" style="margin-top:.4rem"><table class="veh-table"><thead><tr><th>Salaire de base</th><th>HS 25%</th><th>HS 50%</th><th>Maj. nuit</th><th>Brut</th><th>Cotis.</th><th>Indemnités</th><th>Net estimé</th></tr></thead>
+        <tbody><tr><td>${eur(e.base)}</td><td>${e.hs25 ? eur(e.hs25) : '—'}</td><td>${e.hs50 ? eur(e.hs50) : '—'}</td><td>${e.nuit ? eur(e.nuit) : '—'}</td><td><strong>${eur(e.brut)}</strong></td><td>− ${eur(e.cotis)}</td><td>${eur(e.indem)}</td><td><strong class="pos">${eur(e.net)}</strong></td></tr></tbody></table></div>
+    </div>`;
+  }).join('');
 }
 
 // Export CSV du tableau d'un salarié (journées + indemnités + événements).
@@ -4581,10 +4679,11 @@ function renderImportMapping() {
   document.getElementById('hi-import').onclick = async () => {
     const maps = Array.from(el.querySelectorAll('[data-mapname]')).map((s) => ({ name: s.dataset.mapname, userId: s.value })).filter((m) => m.userId);
     if (!maps.length) { toast('Associez au moins un salarié.', 'err'); return; }
-    let total = 0;
+    let total = 0; const reopened = new Set();
     try {
-      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; }
+      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
+      if (reopened.size) toast(`Mois rouvert(s) : ${[...reopened].sort().join(', ')} — de nouvelles heures sup. peuvent être dues (voir « Reste dû »).`, 'warn');
       _hImport = null; await loadHours(); hrTab('hsup');
     } catch (e) { toast(e.message, 'err'); }
   };
