@@ -4155,7 +4155,9 @@ async function renderHours(main) {
     <p>Suivi des amplitudes et du temps de travail des chauffeurs.</p></div></div>
     <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-htab="resume" class="active">Résumé des amplitudes</button>
-      <button data-htab="saisie">Saisie</button>
+      <button data-htab="hsup">Heures supplémentaires</button>
+      <button data-htab="import">Import rapport d'activité</button>
+      <button data-htab="saisie">Saisie manuelle</button>
     </div>
     <div id="hr-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#hr-tabs');
@@ -4167,6 +4169,8 @@ async function loadHours() { _hours = await api('GET', '/staff/work-hours'); }
 function hrTab(tab) {
   const body = document.getElementById('hr-body'); if (!body) return; body.className = '';
   if (tab === 'resume') return hoursResume(body);
+  if (tab === 'hsup') return hoursHsup(body);
+  if (tab === 'import') return hoursImport(body);
   if (tab === 'saisie') return hoursSaisie(body);
 }
 
@@ -4243,6 +4247,186 @@ function hoursSaisie(body) {
   body.querySelectorAll('[data-whdel]').forEach((b) => b.onclick = async () => { try { await api('DELETE', '/staff/work-hours/' + b.dataset.whdel); await loadHours(); hrTab('saisie'); } catch (e) { toast(e.message, 'err'); } });
 }
 function hmToMinClient(s) { const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/); return m ? (Number(m[1]) * 60 + Number(m[2])) : null; }
+
+/* --- Heures supplémentaires : compteur par salarié (base hebdo paramétrable) - */
+let _hsupBase = 35;
+function isoWeekKey(d) { const x = isoWeekStart(d); return iso(x); }
+function hoursHsup(body) {
+  // Agrège les entrées par salarié.
+  const byUser = {};
+  _hours.entries.forEach((e) => { (byUser[e.userId] = byUser[e.userId] || { name: e.userName, days: [] }).days.push(e); });
+  const ids = Object.keys(byUser);
+  if (!ids.length) { body.innerHTML = `<div class="alert info">Aucune donnée. Importez un rapport d'activité ou saisissez des heures.</div>`; return; }
+  const cards = ids.map((id) => {
+    const u = byUser[id];
+    u.days.sort((a, b) => a.date.localeCompare(b.date));
+    // Hebdo.
+    const weeks = {};
+    u.days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); (weeks[k] = weeks[k] || { worked: 0, days: 0 }); weeks[k].worked += e.worked || 0; weeks[k].days += 1; });
+    const weekRows = Object.keys(weeks).sort().map((k) => { const w = weeks[k]; const hsup = Math.max(0, w.worked - _hsupBase); return { k, worked: w.worked, days: w.days, hsup }; });
+    const totalHsup = weekRows.reduce((s, w) => s + w.hsup, 0);
+    const totalWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
+    // Mensuel (HSUP = somme des HSUP des semaines rattachées au mois du lundi).
+    const months = {};
+    weekRows.forEach((w) => { const m = w.k.slice(0, 7); (months[m] = months[m] || { worked: 0, hsup: 0 }); months[m].worked += w.worked; months[m].hsup += w.hsup; });
+    const open = !!_vehOpen['hsup_' + id];
+    return `<div class="card veh-card">
+      <div class="veh-card-head" data-toggle="hsup_${id}">
+        <span class="veh-caret">${open ? '▾' : '▸'}</span>
+        <strong>${esc(u.name)}</strong>
+        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} jours · ${hFmt(totalWorked)}</span><span class="pill ${totalHsup > 0 ? 'warn' : 'ok'}">Compteur HSUP : ${hFmt(totalHsup)}</span></span>
+      </div>
+      ${open ? `<div class="veh-card-body">
+        <h4 style="margin:.4rem 0 .3rem">Semaine par semaine</h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>Base</th><th>HSUP</th></tr></thead>
+          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${_hsupBase}h</td><td>${w.hsup > 0 ? `<span class="pill warn">${hFmt(w.hsup)}</span>` : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.7rem 0 .3rem">Mois par mois</h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP</th></tr></thead>
+          <tbody>${Object.keys(months).sort().map((m) => `<tr><td>${esc(m)}</td><td>${hFmt(months[m].worked)}</td><td>${months[m].hsup > 0 ? hFmt(months[m].hsup) : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.7rem 0 .3rem">Jour par jour</h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Amplitude</th></tr></thead>
+          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${hFmt(e.amplitude)}</td></tr>`).join('')}</tbody></table></div>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+  body.innerHTML = `
+    <div class="card"><h3>Heures supplémentaires</h3>
+      <div style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap">
+        <div><label>Base hebdomadaire (heures au-delà desquelles = HSUP)</label><input id="hsup-base" type="number" step="0.5" min="0" value="${_hsupBase}" style="width:120px"></div>
+        <button class="btn ghost" id="hsup-recalc">Recalculer</button>
+      </div>
+      <p class="help">Les heures supplémentaires sont calculées par semaine (au-delà de la base), puis cumulées par mois et au total. Base légale en France : 35 h/semaine.</p>
+    </div>
+    ${cards}`;
+  document.getElementById('hsup-recalc').onclick = () => { _hsupBase = Number(document.getElementById('hsup-base').value) || 35; hrTab('hsup'); };
+  body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; hoursHsup(body); });
+}
+
+/* --- Import d'un rapport d'activité (.xlsx) -------------------------------- */
+// Lecteur XLSX minimal et SANS dépendance : décompression ZIP via l'API native
+// DecompressionStream du navigateur + lecture XML via DOMParser.
+async function xlsxUnzip(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= 0; i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+  if (eocd < 0) throw new Error('Fichier .xlsx invalide.');
+  const cdOff = dv.getUint32(eocd + 16, true), count = dv.getUint16(eocd + 10, true);
+  const out = {}; let p = cdOff;
+  const inflate = async (bytes) => { const ds = new DecompressionStream('deflate-raw'); const ab = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer(); return new Uint8Array(ab); };
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), compSize = dv.getUint32(p + 20, true);
+    const fnLen = dv.getUint16(p + 28, true), exLen = dv.getUint16(p + 30, true), cmLen = dv.getUint16(p + 32, true);
+    const localOff = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + fnLen));
+    if (/sharedStrings\.xml$|worksheets\/sheet1\.xml$/.test(name)) {
+      const lfn = dv.getUint16(localOff + 26, true), lex = dv.getUint16(localOff + 28, true);
+      const start = localOff + 30 + lfn + lex; const comp = u8.subarray(start, start + compSize);
+      out[name] = new TextDecoder('utf-8').decode(method === 0 ? comp : await inflate(comp));
+    }
+    p += 46 + fnLen + exLen + cmLen;
+  }
+  return out;
+}
+function colIndex(ref) { const m = /^([A-Z]+)/.exec(ref); let n = 0; for (const c of m[1]) n = n * 26 + (c.charCodeAt(0) - 64); return n - 1; }
+async function parseXlsx(buf) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('Votre navigateur ne supporte pas la lecture .xlsx ici. Exportez en CSV ou utilisez un navigateur récent.');
+  const files = await xlsxUnzip(buf);
+  const sheetKey = Object.keys(files).find((k) => /sheet1\.xml$/.test(k));
+  if (!sheetKey) throw new Error('Feuille introuvable dans le fichier.');
+  const ss = [];
+  const ssKey = Object.keys(files).find((k) => /sharedStrings\.xml$/.test(k));
+  if (ssKey) { const doc = new DOMParser().parseFromString(files[ssKey], 'application/xml'); doc.querySelectorAll('si').forEach((si) => { let t = ''; si.querySelectorAll('t').forEach((n) => { t += n.textContent; }); ss.push(t); }); }
+  const sdoc = new DOMParser().parseFromString(files[sheetKey], 'application/xml');
+  const rows = [];
+  sdoc.querySelectorAll('row').forEach((row) => {
+    const cells = [];
+    row.querySelectorAll('c').forEach((c) => {
+      const ref = c.getAttribute('r'); if (!ref) return; const col = colIndex(ref); const t = c.getAttribute('t');
+      const v = c.querySelector('v'); let val = null;
+      if (t === 'inlineStr') { const isn = c.querySelector('is t'); val = isn ? isn.textContent : ''; }
+      else if (v != null) { val = v.textContent; if (t === 's') val = ss[+val] || ''; else if (t === 'str' || t === 'b') { /* string */ } else val = Number(val); }
+      cells[col] = val;
+    });
+    rows.push(cells);
+  });
+  return rows;
+}
+function xlDateISO(n) { const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 86400000); return d.toISOString().slice(0, 10); }
+function xlTimeHM(n) { const frac = n - Math.floor(n); let mins = Math.round(frac * 24 * 60); const hh = Math.floor(mins / 60), mm = mins % 60; return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`; }
+
+let _hImport = null; // { employees: { name: rows[] }, period }
+function hoursImport(body) {
+  body.innerHTML = `
+    <div class="card"><h3>Importer un rapport d'activité (.xlsx)</h3>
+      <p class="help">Chargez le fichier exporté (colonnes Employé, Jour, Début, Fin, Total travail, Amplitude…). Les salariés détectés seront à associer à vos comptes, puis les données alimentent les amplitudes et les heures supplémentaires.</p>
+      <input id="hi-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <div id="hi-status" class="help" style="margin-top:.4rem"></div>
+    </div>
+    <div id="hi-map"></div>`;
+  document.getElementById('hi-file').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    document.getElementById('hi-status').textContent = 'Analyse en cours…';
+    try {
+      const rows = await parseXlsx(await f.arrayBuffer());
+      _hImport = extractActivityReport(rows);
+      const names = Object.keys(_hImport.employees);
+      if (!names.length) throw new Error('Aucune ligne exploitable détectée.');
+      document.getElementById('hi-status').textContent = `${names.length} salarié(s) détecté(s) · période ${_hImport.period}.`;
+      renderImportMapping();
+    } catch (err) { document.getElementById('hi-status').innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
+  };
+}
+// Extrait les lignes d'activité (employé porté ligne par ligne).
+function extractActivityReport(rows) {
+  let hdr = -1;
+  for (let i = 0; i < rows.length; i++) { const r = rows[i] || []; if (r.some((c) => typeof c === 'string' && c.trim() === 'Employé') && r.some((c) => typeof c === 'string' && /Total travail/.test(c))) { hdr = i; break; } }
+  if (hdr < 0) throw new Error('En-têtes non reconnus (Employé / Total travail).');
+  const H = rows[hdr];
+  const col = (name) => H.findIndex((c) => typeof c === 'string' && c.trim().startsWith(name));
+  const cE = col('Employé'), cJ = col('Jour'), cD = col('Début'), cF = col('Fin'), cP = col('Pause'), cT = col('Total travail'), cA = col('Amplitude'), cAbs = col('Heures congés');
+  const employees = {}; let cur = null; let minD = null, maxD = null;
+  for (let i = hdr + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const e = r[cE]; if (typeof e === 'string' && e.trim()) cur = e.split(/\r?\n/)[0].trim();
+    if (!cur || typeof r[cJ] !== 'number') continue;
+    const date = xlDateISO(r[cJ]);
+    const rec = {
+      date,
+      start: typeof r[cD] === 'number' ? xlTimeHM(r[cD]) : '',
+      end: typeof r[cF] === 'number' ? xlTimeHM(r[cF]) : '',
+      breakMin: typeof r[cP] === 'number' ? Math.round(r[cP] * 24 * 60) : 0,
+      worked: typeof r[cT] === 'number' ? Math.round(r[cT] * 24 * 100) / 100 : 0,
+      amplitude: typeof r[cA] === 'number' ? Math.round(r[cA] * 24 * 100) / 100 : 0,
+      absence: (cAbs >= 0 && typeof r[cAbs] === 'number') ? Math.round(r[cAbs] * 24 * 100) / 100 : 0,
+    };
+    (employees[cur] = employees[cur] || []).push(rec);
+    if (!minD || date < minD) minD = date; if (!maxD || date > maxD) maxD = date;
+  }
+  return { employees, period: minD ? `${fmtDate(minD)} → ${fmtDate(maxD)}` : '' };
+}
+function renderImportMapping() {
+  const drivers = _hours.drivers;
+  const names = Object.keys(_hImport.employees);
+  const opts = (sel) => `<option value="">— Associer à un salarié —</option>` + drivers.map((d) => `<option value="${d.id}">${esc(d.lastName)} ${esc(d.firstName)}</option>`).join('');
+  const el = document.getElementById('hi-map');
+  el.innerHTML = `<div class="card"><h3>Associer les salariés détectés</h3>
+    <div class="table-wrap"><table class="veh-table"><thead><tr><th>Salarié du fichier</th><th>Jours</th><th>Total travaillé</th><th>Associer au compte</th></tr></thead>
+    <tbody>${names.map((n, i) => { const rows = _hImport.employees[n]; const tot = rows.reduce((s, r) => s + r.worked, 0); return `<tr><td><strong>${esc(n)}</strong></td><td>${rows.length}</td><td>${hFmt(tot)}</td><td><select data-mapname="${esc(n)}">${opts()}</select></td></tr>`; }).join('')}</tbody></table></div>
+    <div style="margin-top:.7rem"><button class="btn accent" id="hi-import">Importer les données associées</button></div>
+    <p class="help">Astuce : un salarié non associé est ignoré.</p>
+  </div>`;
+  document.getElementById('hi-import').onclick = async () => {
+    const maps = Array.from(el.querySelectorAll('[data-mapname]')).map((s) => ({ name: s.dataset.mapname, userId: s.value })).filter((m) => m.userId);
+    if (!maps.length) { toast('Associez au moins un salarié.', 'err'); return; }
+    let total = 0;
+    try {
+      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; }
+      toast(`${total} journée(s) importée(s).`, 'ok');
+      _hImport = null; await loadHours(); hrTab('hsup');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
 
 /* =========================================================================
    ORGANIGRAMME

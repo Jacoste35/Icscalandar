@@ -2634,6 +2634,32 @@ app.delete('/api/staff/work-hours/:id', authRequired, adminRequired, async (req,
   res.json({ ok: true });
 });
 
+// Import en masse depuis un rapport d'activité (fichier analysé côté client).
+app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, rows } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+  if (!Array.isArray(rows)) return res.status(400).json({ error: 'Données invalides' });
+  let added = 0;
+  for (const r of rows) {
+    if (!validDate(r.date)) continue;
+    // Une seule entrée par salarié et par jour : on remplace.
+    db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date === r.date));
+    db.workHours.push({
+      id: nextId('wh'), userId, userName: `${u.firstName} ${u.lastName}`, date: r.date,
+      start: String(r.start || ''), end: String(r.end || ''), breakMin: Number(r.breakMin) || 0,
+      amplitude: Math.round((Number(r.amplitude) || 0) * 100) / 100,
+      worked: Math.round((Number(r.worked) || 0) * 100) / 100,
+      absence: Math.round((Number(r.absence) || 0) * 100) / 100,
+      source: 'import',
+    });
+    added++;
+  }
+  await save();
+  res.json({ added });
+});
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
