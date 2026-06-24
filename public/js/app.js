@@ -4720,14 +4720,56 @@ function extractActivityReport(rows) {
   }
   return { employees, period: minD ? `${fmtDate(minD)} → ${fmtDate(maxD)}` : '' };
 }
+// Normalise un nom (minuscules, sans accents, ponctuation -> espaces).
+function normNm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+function nmTokens(s) { return normNm(s).split(' ').filter((t) => t.length > 1); }
+// Tente d'associer un nom du fichier à un salarié (compare noms ET prénoms).
+function matchDriverId(fileName, drivers) {
+  const fileTokens = new Set(nmTokens(fileName));
+  if (!fileTokens.size) return '';
+  let best = null, bestScore = 0;
+  drivers.forEach((d) => {
+    const lastT = nmTokens(d.lastName), firstT = nmTokens(d.firstName);
+    if (!lastT.length && !firstT.length) return;
+    const lastMatch = lastT.length && lastT.every((t) => fileTokens.has(t));
+    const firstMatch = firstT.some((t) => fileTokens.has(t));
+    const score = (lastMatch ? 2 : 0) + (firstMatch ? 1 : 0);
+    if (score > bestScore) { bestScore = score; best = d; }
+  });
+  // Auto-sélection seulement si le nom de famille correspond (idéalement nom + prénom).
+  return bestScore >= 2 ? best.id : '';
+}
+// Liste déroulante des salariés, triée par groupe d'attribution (optgroups).
+function importDriverOptions(selectedId, drivers) {
+  const order = State.groups.map((g) => g.id).concat([null]);
+  const byGroup = {};
+  drivers.forEach((d) => { const k = d.groupId || 'none'; (byGroup[k] = byGroup[k] || []).push(d); });
+  let html = `<option value="">— Associer à un salarié —</option>`;
+  order.forEach((gid) => {
+    const list = byGroup[gid || 'none']; if (!list || !list.length) return;
+    const g = groupById(gid);
+    list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
+    html += `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">` + list.map((d) => `<option value="${d.id}" ${d.id === selectedId ? 'selected' : ''}>${esc(d.lastName)} ${esc(d.firstName)}</option>`).join('') + `</optgroup>`;
+  });
+  return html;
+}
 function renderImportMapping() {
   const drivers = _hours.drivers;
   const names = Object.keys(_hImport.employees);
-  const opts = (sel) => `<option value="">— Associer à un salarié —</option>` + drivers.map((d) => `<option value="${d.id}">${esc(d.lastName)} ${esc(d.firstName)}</option>`).join('');
   const el = document.getElementById('hi-map');
+  let matched = 0;
+  const rowsHTML = names.map((n) => {
+    const rows = _hImport.employees[n];
+    const tot = rows.reduce((s, r) => s + r.worked, 0);
+    const mid = matchDriverId(n, drivers);
+    if (mid) matched++;
+    const badge = mid ? '<span class="pill ok" style="margin-left:.4rem">✓ détecté</span>' : '<span class="pill warn" style="margin-left:.4rem">à associer</span>';
+    return `<tr><td><strong>${esc(n)}</strong>${badge}</td><td>${rows.length}</td><td>${hFmt(tot)}</td><td><select data-mapname="${esc(n)}">${importDriverOptions(mid, drivers)}</select></td></tr>`;
+  }).join('');
   el.innerHTML = `<div class="card"><h3>Associer les salariés détectés</h3>
+    <p class="help">${matched} / ${names.length} salarié(s) reconnu(s) automatiquement (par comparaison nom + prénom). Vérifiez et corrigez si besoin ; la liste est triée par groupe.</p>
     <div class="table-wrap"><table class="veh-table"><thead><tr><th>Salarié du fichier</th><th>Jours</th><th>Total travaillé</th><th>Associer au compte</th></tr></thead>
-    <tbody>${names.map((n, i) => { const rows = _hImport.employees[n]; const tot = rows.reduce((s, r) => s + r.worked, 0); return `<tr><td><strong>${esc(n)}</strong></td><td>${rows.length}</td><td>${hFmt(tot)}</td><td><select data-mapname="${esc(n)}">${opts()}</select></td></tr>`; }).join('')}</tbody></table></div>
+    <tbody>${rowsHTML}</tbody></table></div>
     <div style="margin-top:.7rem"><button class="btn accent" id="hi-import">Importer les données associées</button></div>
     <p class="help">Astuce : un salarié non associé est ignoré.</p>
   </div>`;
