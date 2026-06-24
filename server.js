@@ -2455,15 +2455,19 @@ function parseBankText(text) {
   const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return [];
   const delim = guessDelim(lines);
+  // Robustesse accents/encodage (Windows-1252) + cellules entre guillemets.
+  const stripAcc = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const unq = (s) => String(s == null ? '' : s).trim().replace(/^"([\s\S]*)"$/, '$1').trim();
   let header = null, idx = {};
   if (delim) {
-    const c0 = lines[0].split(delim).map((c) => c.trim().toLowerCase());
-    if (c0.some((c) => c.includes('date')) && c0.some((c) => /libell|montant|debit|débit|credit|crédit/.test(c))) {
+    const c0 = lines[0].split(delim).map((c) => stripAcc(unq(c)));
+    if (c0.some((c) => c.includes('date')) && c0.some((c) => /libell|montant|debit|credit/.test(c))) {
       header = c0;
       idx.date = c0.findIndex((c) => c.includes('date'));
-      idx.label = c0.findIndex((c) => /libell|operation|opération|nature|motif|détail|detail/.test(c));
-      idx.debit = c0.findIndex((c) => /debit|débit/.test(c));
-      idx.credit = c0.findIndex((c) => /credit|crédit/.test(c));
+      // Le libellé ne doit pas être la colonne de date (« Date d'opération »).
+      idx.label = c0.findIndex((c, j) => j !== idx.date && /libell|motif|nature|detail|intitul|operation/.test(c));
+      idx.debit = c0.findIndex((c) => /debit/.test(c));
+      idx.credit = c0.findIndex((c) => /credit/.test(c));
       idx.amount = c0.findIndex((c) => /montant/.test(c));
     }
   }
@@ -2471,7 +2475,7 @@ function parseBankText(text) {
   for (let i = header ? 1 : 0; i < lines.length; i++) {
     const line = lines[i]; let date, label, amount;
     if (delim) {
-      const cells = line.split(delim).map((c) => c.trim());
+      const cells = line.split(delim).map((c) => unq(c));
       date = parseDateFin(cells[idx.date >= 0 ? idx.date : 0]);
       label = idx.label >= 0 ? cells[idx.label] : cells.filter((c, j) => j !== idx.date && isNaN(parseAmount(c))).join(' ');
       if (idx.amount >= 0 && cells[idx.amount]) amount = parseAmount(cells[idx.amount]);
@@ -2542,8 +2546,9 @@ app.post('/api/admin/bank-import', authRequired, adminRequired, (req, res) => {
 // Confirmation d'import : persiste les écritures (hors doublons) + archive le doc.
 app.post('/api/admin/bank-confirm', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { transactions, bank, docName } = req.body || {};
+  const { transactions, bank, docName, month } = req.body || {};
   if (!Array.isArray(transactions)) return res.status(400).json({ error: 'Aucune écriture' });
+  const docMonth = /^\d{4}-\d{2}$/.test(String(month || '')) ? month : '';
   const existing = new Set(db.bankTx.map(txHash));
   const docId = nextId('bdoc');
   let added = 0;
@@ -2556,7 +2561,7 @@ app.post('/api/admin/bank-confirm', authRequired, adminRequired, async (req, res
     existing.add(txHash(rec));
     db.bankTx.push(rec); added++;
   }
-  db.bankDocs.push({ id: docId, name: String(docName || 'Relevé').slice(0, 120), bank: bank || 'Autre', importedAt: new Date().toISOString(), lines: added });
+  db.bankDocs.push({ id: docId, name: String(docName || 'Relevé').slice(0, 120), bank: bank || 'Autre', month: docMonth, importedAt: new Date().toISOString(), lines: added });
   await save();
   res.json({ added });
 });
