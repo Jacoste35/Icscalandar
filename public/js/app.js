@@ -4371,6 +4371,8 @@ function hoursHsup(body) {
     catch (e) { toast(e.message, 'err'); }
   });
   body.querySelectorAll('[data-exportcsv]').forEach((b) => b.onclick = () => exportHoursCSV(byUser[b.dataset.exportcsv], _hours.hsupBase || 35));
+  // Option « payer les HSUP 25% jusqu'à 32 h » (recalcule la projection).
+  body.querySelectorAll('.hs25-32').forEach((c) => c.onchange = () => { _hs25To32[c.dataset.uid] = c.checked; hoursHsup(body); });
   // Enregistrement des paramètres de paie par salarié.
   body.querySelectorAll('[data-savesal]').forEach((b) => b.onclick = async () => {
     const id = b.dataset.savesal;
@@ -4397,6 +4399,8 @@ function hoursHsup(body) {
 
 // Paramètres de paie par défaut (calés sur un bulletin Chauffeur-Livreur réel).
 const SAL_DEFAULTS = { tauxHoraire: 12.09, baseMois: 151.67, cotisPct: 23.04, exoHsPct: 11.31, panierMidi: 16.36, panierSoir: 16.36, casseCroute: 0, nuitParH: 0, decoucher: 0, pasPct: 0 };
+// Option « payer les HSUP 25% jusqu'à 32 h » (au lieu de 22 h), par salarié.
+let _hs25To32 = {};
 function getSalParams(id) { const o = (_hours.salaryParams || {})[id] || {}; return Object.assign({}, SAL_DEFAULTS, o); }
 
 // Agrégats mensuels d'un salarié : heures (avec répartition HSUP 25/50 calculée
@@ -4421,19 +4425,25 @@ function monthlyAgg(days, base) {
 
 // Estimation du salaire net mensuel à partir des heures du mois et des
 // paramètres de paie du salarié (calage ≈ bulletin réel).
-function estimSalaire(mo, p) {
+// Règles de paie : les HSUP à 50% ne sont PAS payées (récupérées) ; les HSUP à
+// 25% sont payées dans la limite d'un plafond (22 h de base, 32 h en option).
+const HS25_BASE = 22, HS25_MAX = 32;
+function estimSalaire(mo, p, hs25Cap) {
+  const cap = hs25Cap || HS25_BASE;
   const base = p.baseMois * p.tauxHoraire;
-  const hs25 = mo.h25 * p.tauxHoraire * 1.25;
-  const hs50 = mo.h50 * p.tauxHoraire * 1.5;
+  const paidH25 = Math.min(mo.h25, cap);        // HSUP 25% payées (plafonnées)
+  const over22 = Math.max(0, mo.h25 - HS25_BASE); // dépassement au-delà de 22 h
+  const hs25 = paidH25 * p.tauxHoraire * 1.25;
+  const hs50 = 0;                                // récupérées, non payées
   const nuit = (mo.night || 0) * p.nuitParH;
-  const brut = base + hs25 + hs50 + nuit;
-  const hsTot = hs25 + hs50;
+  const brut = base + hs25 + nuit;
+  const hsTot = hs25;                            // exonération HS sur la part payée
   const cotis = Math.max(0, brut * p.cotisPct / 100 - hsTot * p.exoHsPct / 100);
   const netImpo = brut - cotis;
   const indem = (mo.midi || 0) * p.panierMidi + (mo.soir || 0) * p.panierSoir + (mo.casse || 0) * p.casseCroute + (mo.dec || 0) * p.decoucher;
   const pas = netImpo * p.pasPct / 100;
   const net = netImpo + indem - pas;
-  return { base, hs25, hs50, nuit, brut, cotis, netImpo, indem, pas, net };
+  return { base, hs25, hs50, nuit, brut, cotis, netImpo, indem, pas, net, paidH25, over22, cap };
 }
 
 // Formulaire (repliable) des paramètres de paie, éditable et enregistrable.
@@ -4465,21 +4475,28 @@ function synthSalarie(days, base, id) {
   const months = monthlyAgg(days, base);
   if (!months.length) return '<p class="help">—</p>';
   const p = getSalParams(id);
+  const to32 = !!_hs25To32[id];
+  const cap = to32 ? HS25_MAX : HS25_BASE;
   const cur = months[months.length - 1];
   const prev = months.length > 1 ? months[months.length - 2] : null;
-  const eCur = estimSalaire(cur, p);
-  const ePrev = prev ? estimSalaire(prev, p) : null;
+  const eCur = estimSalaire(cur, p, cap);
+  const ePrev = prev ? estimSalaire(prev, p, cap) : null;
   const line = (lbl, val, delta) => `<div style="display:flex;justify-content:space-between;gap:.6rem;padding:.14rem 0;border-bottom:1px solid var(--border,#eee)"><span class="help">${lbl}</span><span style="text-align:right">${val} ${delta || ''}</span></div>`;
   const dh = (c, pv) => pv == null ? '' : (Math.abs(c - pv) < 0.01 ? '<span class="help">=</span>' : `<span class="help">(${c - pv > 0 ? '+' : '−'}${hFmt(Math.abs(c - pv))})</span>`);
   const di = (c, pv, suf) => pv == null ? '' : (!(c - pv) ? '<span class="help">=</span>' : `<span class="help">(${c - pv > 0 ? '+' : '−'}${Math.abs(c - pv)}${suf || ''})</span>`);
   const de = (c, pv) => pv == null ? '' : (Math.abs(c - pv) < 0.01 ? '<span class="help">=</span>' : `<span class="${c - pv > 0 ? 'pos' : 'warn'}" style="font-size:.85em">(${c - pv > 0 ? '+' : '−'}${eur(Math.abs(c - pv))})</span>`);
-  const panel = (mo, est, pv, pvEst, title, accent) => `<div class="card" style="flex:1;min-width:270px;${accent ? 'border:1px solid var(--accent,#6b7cff)' : ''}">
+  const panel = (mo, est, pv, pvEst, title, accent) => {
+    const panierVal = (mo.midi || 0) * p.panierMidi + (mo.soir || 0) * p.panierSoir;
+    const over22 = Math.max(0, mo.h25 - HS25_BASE);
+    const h25Disp = hFmt(Math.min(mo.h25, HS25_BASE)) + (over22 > 0 ? ` <span class="warn">(+${hFmt(over22)} > 22h${to32 ? ', payées' : ''})</span>` : '');
+    return `<div class="card" style="flex:1;min-width:270px;${accent ? 'border:1px solid var(--accent,#6b7cff)' : ''}">
     <h4 style="margin:.1rem 0 .5rem">${title} — <span style="color:var(--accent,#6b7cff)">${esc(mo.key)}</span></h4>
     ${line('Jours travaillés', mo.days, pv ? di(mo.days, pv.days) : '')}
     ${line('Heures travaillées', `<strong>${hFmt(mo.worked)}</strong>`, pv ? dh(mo.worked, pv.worked) : '')}
-    ${line('HSUP 25% / 50%', `${hFmt(mo.h25)} / ${hFmt(mo.h50)}`, pv ? dh(mo.h25 + mo.h50, pv.h25 + pv.h50) : '')}
+    ${line('HSUP 25% payées', h25Disp, '')}
+    ${line('HSUP 50% (récupérées)', mo.h50 ? `${hFmt(mo.h50)} <span class="help">non payées</span>` : '—', '')}
     ${line('Heures de nuit', mo.night ? hFmt(mo.night) : '—', pv ? dh(mo.night, pv.night) : '')}
-    ${line('Paniers midi / soir', `${mo.midi || 0} / ${mo.soir || 0}`, pv ? di((mo.midi || 0) + (mo.soir || 0), (pv.midi || 0) + (pv.soir || 0)) : '')}
+    ${line('Paniers midi / soir', `${mo.midi || 0} / ${mo.soir || 0} <span class="help">(${eur(panierVal)})</span>`, '')}
     ${line('Casse-croûte', mo.casse || 0, pv ? di(mo.casse || 0, pv.casse || 0) : '')}
     ${line('Découcher', mo.dec || 0, pv ? di(mo.dec || 0, pv.dec || 0) : '')}
     ${line('Kilomètres', (mo.km || 0).toLocaleString('fr-FR'), pv ? di(mo.km || 0, pv.km || 0, ' km') : '')}
@@ -4491,6 +4508,7 @@ function synthSalarie(days, base, id) {
       ${line('Net estimé à payer', `<strong style="font-size:1.1em">${eur(est.net)}</strong>`, pv ? de(est.net, pvEst.net) : '')}
     </div>
   </div>`;
+  };
   // Tendance trimestre glissant (3 derniers mois).
   const win = months.slice(-3);
   const totW = win.reduce((s, o) => s + o.worked, 0);
@@ -4507,7 +4525,14 @@ function synthSalarie(days, base, id) {
   const arrow = (pct) => pct > 2 ? `<span class="warn">▲ +${pct}%</span>` : (pct < -2 ? `<span class="pos">▼ ${pct}%</span>` : '<span class="help">≈</span>');
   return `
     ${salaryParamsForm(id, p)}
-    <h4 style="margin:.5rem 0 .3rem">Comparatif mensuel</h4>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin:.5rem 0 .3rem">
+      <h4 style="margin:0">Comparatif mensuel</h4>
+      <label style="display:inline-flex;gap:.4rem;align-items:center;font-weight:400;cursor:pointer;margin:0">
+        <input type="checkbox" class="hs25-32" data-uid="${id}" ${to32 ? 'checked' : ''} style="width:auto">
+        <span class="help" style="margin:0">Payer les HSUP 25% jusqu'à <strong>32 h</strong> (au lieu de 22 h)</span>
+      </label>
+    </div>
+    <p class="help" style="margin:0 0 .4rem">Projection : HSUP 50% <strong>non payées</strong> (récupérées) ; HSUP 25% payées jusqu'à ${to32 ? '32' : '22'} h.</p>
     <div style="display:flex;gap:.6rem;flex-wrap:wrap">
       ${panel(cur, eCur, prev, ePrev, 'Période en cours', true)}
       ${prev ? panel(prev, ePrev, null, null, 'Mois précédent', false) : '<div class="card" style="flex:1;min-width:270px;display:flex;align-items:center;justify-content:center"><span class="help">Pas de mois précédent à comparer.</span></div>'}
@@ -4528,14 +4553,15 @@ function monthsDetailHTML(days, base, id) {
   const months = monthlyAgg(days, base);
   if (!months.length) return '<p class="help">—</p>';
   const p = getSalParams(id);
+  const cap = _hs25To32[id] ? HS25_MAX : HS25_BASE;
   return months.slice().reverse().map((mo) => {
-    const e = estimSalaire(mo, p);
+    const e = estimSalaire(mo, p, cap);
     return `<div class="card" style="margin:.4rem 0">
       <h4 style="margin:.1rem 0 .4rem">📅 ${esc(mo.key)} — ${hFmt(mo.worked)} travaillées · ${mo.days} j</h4>
-      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Nuit</th><th>Paniers midi</th><th>Paniers soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Absence</th></tr></thead>
-        <tbody><tr><td>${hFmt(mo.worked)}</td><td>${mo.h25 ? hFmt(mo.h25) : '—'}</td><td>${mo.h50 ? hFmt(mo.h50) : '—'}</td><td>${mo.night ? hFmt(mo.night) : '—'}</td><td>${mo.midi || '—'}</td><td>${mo.soir || '—'}</td><td>${mo.casse || '—'}</td><td>${mo.dec || '—'}</td><td>${mo.km ? mo.km.toLocaleString('fr-FR') : '—'}</td><td>${mo.abs ? hFmt(mo.abs) : '—'}</td></tr></tbody></table></div>
-      <div class="table-wrap" style="margin-top:.4rem"><table class="veh-table"><thead><tr><th>Salaire de base</th><th>HS 25%</th><th>HS 50%</th><th>Maj. nuit</th><th>Brut</th><th>Cotis.</th><th>Indemnités</th><th>Net estimé</th></tr></thead>
-        <tbody><tr><td>${eur(e.base)}</td><td>${e.hs25 ? eur(e.hs25) : '—'}</td><td>${e.hs50 ? eur(e.hs50) : '—'}</td><td>${e.nuit ? eur(e.nuit) : '—'}</td><td><strong>${eur(e.brut)}</strong></td><td>− ${eur(e.cotis)}</td><td>${eur(e.indem)}</td><td><strong class="pos">${eur(e.net)}</strong></td></tr></tbody></table></div>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50% (récup.)</th><th>Nuit</th><th>Paniers midi</th><th>Paniers soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Absence</th></tr></thead>
+        <tbody><tr><td>${hFmt(mo.worked)}</td><td>${mo.h25 ? hFmt(mo.h25) + (e.over22 > 0 ? ` <span class="warn">(+${hFmt(e.over22)} > 22h)</span>` : '') : '—'}</td><td>${mo.h50 ? hFmt(mo.h50) : '—'}</td><td>${mo.night ? hFmt(mo.night) : '—'}</td><td>${mo.midi || '—'}</td><td>${mo.soir || '—'}</td><td>${mo.casse || '—'}</td><td>${mo.dec || '—'}</td><td>${mo.km ? mo.km.toLocaleString('fr-FR') : '—'}</td><td>${mo.abs ? hFmt(mo.abs) : '—'}</td></tr></tbody></table></div>
+      <div class="table-wrap" style="margin-top:.4rem"><table class="veh-table"><thead><tr><th>Salaire de base</th><th>HS 25% payées (≤${cap}h)</th><th>HS 50%</th><th>Maj. nuit</th><th>Brut</th><th>Cotis.</th><th>Indemnités</th><th>Net estimé</th></tr></thead>
+        <tbody><tr><td>${eur(e.base)}</td><td>${e.hs25 ? eur(e.hs25) : '—'}</td><td><span class="help">récup. (non payé)</span></td><td>${e.nuit ? eur(e.nuit) : '—'}</td><td><strong>${eur(e.brut)}</strong></td><td>− ${eur(e.cotis)}</td><td>${eur(e.indem)}</td><td><strong class="pos">${eur(e.net)}</strong></td></tr></tbody></table></div>
     </div>`;
   }).join('');
 }
