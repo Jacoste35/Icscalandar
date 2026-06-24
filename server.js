@@ -2914,6 +2914,9 @@ app.get('/api/staff/vehicle-km', authRequired, staffRequired, (req, res) => {
   res.json({ log: db.vehicleKmLog.slice(), vehicles: db.vehicles.map((v) => ({ id: v.id, name: v.name, plate: v.plate, km: v.km, baseKm: v.baseKm })) });
 });
 
+// Extension ERP (facturation, conformité, documents, audit) — déterministe.
+require('./routes/erp').mount(app, { express, authRequired, adminRequired, getData, save });
+
 // SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -2926,6 +2929,7 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`INTER COLIS SERVICES — serveur démarré sur http://localhost:${PORT}`);
   });
+  try { require('./lib/erp/scheduler').start({ getData, save }); } catch (e) { console.warn('ERP scheduler:', e.message); }
 }
 
 module.exports = app;
