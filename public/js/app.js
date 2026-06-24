@@ -3401,8 +3401,10 @@ async function finImport(body) {
       <p class="help">Collez le contenu d'un relevé (CSV exporté de votre banque, ou lignes copiées) ou chargez un fichier <strong>.csv / .txt</strong>. Le système reconnaît les colonnes Date / Libellé / Débit / Crédit (ou Montant), catégorise automatiquement et détecte les doublons.</p>
       <div class="grid2">
         <div><label>Banque</label><select id="im-bank"><option value="auto">Détection automatique</option>${meta.banks.map((b) => `<option>${esc(b)}</option>`).join('')}</select></div>
+        <div><label>Mois du relevé</label><input id="im-month" type="month" value="${iso(new Date()).slice(0, 7)}"></div>
         <div><label>Fichier (.csv / .txt)</label><input id="im-file" type="file" accept=".csv,.txt,text/csv,text/plain"></div>
       </div>
+      <p class="help" style="margin:.3rem 0 0">Indiquez le <strong>mois du relevé</strong> : il sert à nommer l'import et à alimenter les résumés et graphiques mensuels.</p>
       <label style="margin-top:.5rem">Ou collez le relevé ici</label>
       <textarea id="im-text" style="min-height:140px;font-family:monospace;font-size:.82rem" placeholder="Date;Libellé;Débit;Crédit&#10;02/03/2026;VIR SEPA FEDEX;;40193,99&#10;05/03/2026;PRVL AXA ASSURANCES;394,38;"></textarea>
       <div style="margin-top:.6rem"><button class="btn accent" id="im-analyze">Analyser</button></div>
@@ -3410,14 +3412,31 @@ async function finImport(body) {
     <div id="im-preview"></div>
     <div class="card"><h3>Relevés importés</h3><div id="im-docs"></div></div>
     <div class="alert info">📷 L'import de <strong>PDF scannés / photos (OCR)</strong> nécessite un moteur OCR serveur (Tesseract) — non activé ici. Pour un PDF natif, copiez-collez son texte. Le CSV reste le plus fiable.</div>`;
-  document.getElementById('im-file').onchange = (e) => {
+  document.getElementById('im-file').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    const r = new FileReader(); r.onload = () => { document.getElementById('im-text').value = r.result; }; r.readAsText(f, 'utf-8');
+    // Les relevés bancaires FR sont souvent en Windows-1252 : on bascule si l'UTF-8
+    // produit des caractères de remplacement (�).
+    try {
+      const buf = await f.arrayBuffer();
+      let txt = new TextDecoder('utf-8').decode(buf);
+      if (txt.includes('�')) { try { txt = new TextDecoder('windows-1252').decode(buf); } catch (err) {} }
+      document.getElementById('im-text').value = txt;
+    } catch (err) { const r = new FileReader(); r.onload = () => { document.getElementById('im-text').value = r.result; }; r.readAsText(f, 'windows-1252'); }
   };
   document.getElementById('im-analyze').onclick = async () => {
     const text = document.getElementById('im-text').value;
     if (!text.trim()) { toast('Collez un relevé ou chargez un fichier.', 'err'); return; }
-    try { _importPreview = await api('POST', '/admin/bank-import', { text, bank: document.getElementById('im-bank').value }); renderImportPreview(); }
+    try {
+      _importPreview = await api('POST', '/admin/bank-import', { text, bank: document.getElementById('im-bank').value });
+      // Mois du relevé : par défaut le mois dominant des écritures détectées.
+      const mEl = document.getElementById('im-month');
+      if (mEl && _importPreview.transactions && _importPreview.transactions.length) {
+        const counts = {}; _importPreview.transactions.forEach((t) => { const k = (t.opDate || '').slice(0, 7); if (k) counts[k] = (counts[k] || 0) + 1; });
+        const dom = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+        if (dom) mEl.value = dom;
+      }
+      renderImportPreview();
+    }
     catch (e) { toast(e.message, 'err'); }
   };
   // Documents déjà importés (supprimables s'ils sont incorrects).
@@ -3427,7 +3446,7 @@ async function renderImportDocs() {
   const el = document.getElementById('im-docs'); if (!el) return;
   try {
     const { docs } = await api('GET', '/admin/bank-tx');
-    el.innerHTML = docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Banque</th><th>Lignes</th><th>Importé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.bank)}</td><td>${d.lines}</td><td>${fmtDateTime(d.importedAt)}</td><td><button class="btn danger sm" data-docdel="${d.id}" data-docname="${esc(d.name)}" title="Supprimer ce relevé et ses écritures">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun relevé importé.</p>';
+    el.innerHTML = docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Banque</th><th>Mois</th><th>Lignes</th><th>Importé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.bank)}</td><td>${esc(d.month || '—')}</td><td>${d.lines}</td><td>${fmtDateTime(d.importedAt)}</td><td><button class="btn danger sm" data-docdel="${d.id}" data-docname="${esc(d.name)}" title="Supprimer ce relevé et ses écritures">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun relevé importé.</p>';
     el.querySelectorAll('[data-docdel]').forEach((b) => b.onclick = async () => {
       if (!confirm(`Supprimer le relevé « ${b.dataset.docname} » et toutes ses écritures ? Cette action est irréversible.`)) return;
       try { const r = await api('DELETE', `/admin/bank-docs/${b.dataset.docdel}`); toast(`Relevé supprimé (${r.removedTx} écriture(s) retirée(s)).`, 'ok'); await renderImportDocs(); }
@@ -3465,7 +3484,9 @@ function renderImportPreview() {
   el.querySelectorAll('[data-imkeep]').forEach((b) => b.onclick = () => { p.transactions[+b.dataset.imkeep].force = true; renderImportPreview(); });
   el.querySelectorAll('[data-imdel]').forEach((b) => b.onclick = () => { p.transactions.splice(+b.dataset.imdel, 1); renderImportPreview(); });
   document.getElementById('im-confirm').onclick = async () => {
-    try { const r = await api('POST', '/admin/bank-confirm', { transactions: p.transactions, bank: p.bank, docName: 'Relevé ' + p.bank + ' ' + iso(new Date()) }); toast(r.added + ' écritures importées.', 'ok'); _importPreview = null; finTab('treso'); }
+    const mEl = document.getElementById('im-month'); const month = mEl ? mEl.value : '';
+    const docName = 'Relevé ' + p.bank + (month ? ' ' + month : ' ' + iso(new Date()));
+    try { const r = await api('POST', '/admin/bank-confirm', { transactions: p.transactions, bank: p.bank, month, docName }); toast(r.added + ' écritures importées.', 'ok'); _importPreview = null; finTab('treso'); }
     catch (e) { toast(e.message, 'err'); }
   };
 }
