@@ -217,22 +217,8 @@
       <div class="erp-row">
         <button class="erp-btn" id="dc-gen">Générer le brouillon</button>
         <button class="erp-btn ghost" id="dc-save" style="display:none">Valider &amp; enregistrer (sanction)</button>
-        <button class="erp-btn ghost" id="dc-pack">📦 Pack départ (3 documents)</button>
       </div>`;
     bodyEl.appendChild(form);
-    form.querySelector('#dc-pack').onclick = async () => {
-      const userId = form.querySelector('#dc-user').value;
-      if (!userId) return alert('Sélectionnez un salarié.');
-      const lastDay = prompt('Dernier jour travaillé (AAAA-MM-JJ) :', new Date().toISOString().slice(0, 10));
-      if (!lastDay) return;
-      const motif = prompt('Motif de la rupture :', 'Rupture conventionnelle') || '';
-      try {
-        const { docs } = await api('POST', '/documents/pack-depart', { userId, lastDay, motif });
-        const w = window.open('', '_blank');
-        w.document.write(docs.map((d) => `<h2>${d.label}</h2>${d.html}<hr style="page-break-after:always">`).join(''));
-        w.document.close();
-      } catch (e) { alert('Erreur : ' + e.message); }
-    };
     const preview = E('div', 'erp-card'); preview.style.display = 'none'; preview.style.background = '#fff'; preview.style.color = '#1e293b';
     bodyEl.appendChild(preview);
 

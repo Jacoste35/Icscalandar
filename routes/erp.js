@@ -20,6 +20,7 @@ const tours = require('../lib/erp/tours');
 const cashflow = require('../lib/erp/cashflow');
 const closing = require('../lib/erp/closing');
 const ik = require('../lib/erp/ik');
+const docsign = require('../lib/erp/docsign');
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -227,22 +228,6 @@ function mount(app, deps) {
     res.json({ ok: true });
   }));
 
-  /* ---- MODULE 3 : pack fin de contrat --------------------------------- */
-  r.post('/documents/pack-depart', guard, withData(async (req, res, data) => {
-    const { userId, lastDay, motif } = req.body || {};
-    const u = (data.users || []).find((x) => x.id === userId);
-    if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
-    const vars = {
-      company: data.settings.company, date: new Date().toLocaleDateString('fr-FR'),
-      salarie: { civilite: u.civilite || 'Monsieur', fullName: `${u.firstName} ${u.lastName}`, lastName: (u.lastName || '').toUpperCase(), address: u.address || '', hireDate: u.hireDate || '', poste: u.poste || 'conducteur VL', coefficient: u.coefficient || '110M' },
-      contrat: { lastDay: lastDay || '', motif: motif || '', detail: '' },
-    };
-    const docs = ['certificat_travail', 'solde_tout_compte', 'attestation_france_travail'].map((type) => ({
-      type, label: data.settings.erpTemplates[type].label, html: templates.render(data.settings.erpTemplates[type].body, vars),
-    }));
-    audit.logAction(data, { ...actor(req), action: 'depart.pack', entity: vars.salarie.fullName, detail: motif || '' });
-    res.json({ docs });
-  }));
 
   /* ---- MODULE 4 : avoir + devis --------------------------------------- */
   r.post('/invoices/avoir', guard, withData(async (req, res, data) => {
@@ -409,6 +394,81 @@ function mount(app, deps) {
     if (!exp) return res.status(404).send('Note de frais introuvable');
     const u = (data.users || []).find((x) => x.id === exp.userId);
     res.type('html').send(invoicing.renderExpenseHtml(exp, u, data.settings.company, data.settings.ikScale));
+  }));
+
+  /* ---- Documents adressés aux salariés + accusé de réception ---------- */
+  // Admin : valide et adresse un document à un salarié.
+  r.post('/documents/issue', guard, withData(async (req, res, data) => {
+    const { userId, type, vars, html: rawHtml, label } = req.body || {};
+    const u = (data.users || []).find((x) => x.id === userId);
+    if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+    const tpl = data.settings.erpTemplates[type];
+    const inner = rawHtml || (tpl ? templates.render(tpl.body, Object.assign({ company: data.settings.company, date: new Date().toLocaleDateString('fr-FR') }, vars || {})) : '');
+    const doc = {
+      id: erp.eid('doc'), userId, userName: `${u.firstName} ${u.lastName}`,
+      type: type || 'document', label: label || (tpl && tpl.label) || 'Document', html: inner,
+      createdAt: new Date().toISOString(), createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`,
+      status: 'sent', ackedAt: null, ackBy: null, ackName: null, ackRef: null,
+    };
+    data.erp.documents.push(doc);
+    audit.logAction(data, { ...actor(req), action: 'document.issue', entity: doc.label, detail: doc.userName });
+    await save();
+    res.json({ document: { id: doc.id, label: doc.label, userName: doc.userName, status: doc.status } });
+  }));
+  // Admin : suivi de tous les documents adressés (lu/reçu).
+  r.get('/documents', guard, withData(async (req, res, data) => {
+    res.json({ documents: data.erp.documents.slice().reverse().map((d) => ({ id: d.id, userId: d.userId, userName: d.userName, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, ackedAt: d.ackedAt, ackName: d.ackName })) });
+  }));
+  // Salarié : ses propres documents (authRequired seul).
+  r.get('/my-documents', authRequired, withData(async (req, res, data) => {
+    const mine = data.erp.documents.filter((d) => d.userId === req.user.id).slice().reverse()
+      .map((d) => ({ id: d.id, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, ackedAt: d.ackedAt }));
+    res.json({ documents: mine });
+  }));
+  // Document imprimable (le salarié destinataire ou l'admin).
+  r.get('/documents/:id/view', authRequired, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc) return res.status(404).send('Document introuvable');
+    if (req.user.role !== 'admin' && doc.userId !== req.user.id) return res.status(403).send('Accès refusé');
+    res.type('html').send(printableDoc(doc.label, doc.html));
+  }));
+  // Salarié : accuse réception / signe électroniquement sa lecture.
+  r.post('/documents/:id/ack', authRequired, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Document introuvable' });
+    if (doc.userId !== req.user.id) return res.status(403).json({ error: 'Document non destiné à ce compte' });
+    if (doc.status !== 'acked') {
+      doc.status = 'acked'; doc.ackedAt = new Date().toISOString();
+      doc.ackBy = req.user.id; doc.ackName = `${req.user.firstName} ${req.user.lastName}`; doc.ackRef = erp.eid('sig');
+      data.erp.acknowledgements.push({ id: doc.ackRef, type: 'document', refId: doc.id, userId: req.user.id, name: doc.ackName, at: doc.ackedAt });
+      audit.logAction(data, { userId: req.user.id, userName: doc.ackName, action: 'document.ack', entity: doc.label, detail: doc.ackedAt });
+      await save();
+    }
+    res.json({ ok: true, ackedAt: doc.ackedAt, stamp: docsign.frenchStamp(doc.ackedAt) });
+  }));
+  // Attestation de prise de connaissance (admin ou destinataire).
+  r.get('/documents/:id/attestation', authRequired, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc) return res.status(404).send('Document introuvable');
+    if (req.user.role !== 'admin' && doc.userId !== req.user.id) return res.status(403).send('Accès refusé');
+    if (doc.status !== 'acked') return res.status(400).send('Le document n\'a pas encore été signé.');
+    res.type('html').send(docsign.renderAttestationHtml(doc, data.settings.company));
+  }));
+
+  /* ---- MODULE Facturation : profils par donneur d'ordre --------------- */
+  r.get('/billing-profiles', guard, withData(async (req, res, data) => {
+    res.json({ profiles: data.settings.billingProfiles, company: data.settings.company });
+  }));
+  r.put('/billing-profiles/:key', guard, withData(async (req, res, data) => {
+    const p = data.settings.billingProfiles[req.params.key];
+    if (!p) return res.status(404).json({ error: 'Profil inconnu' });
+    const b = req.body || {};
+    if (b.clientAddress != null) p.clientAddress = String(b.clientAddress).slice(0, 200);
+    if (Array.isArray(b.mentions)) p.mentions = b.mentions.map((m) => String(m).slice(0, 160));
+    if (Array.isArray(b.lignes)) p.lignes = b.lignes.map((l) => ({ designation: String(l.designation || '').slice(0, 160), prixUnitaire: Number(l.prixUnitaire) || 0, unit: String(l.unit || '').slice(0, 30) }));
+    audit.logAction(data, { ...actor(req), action: 'billing.profile', entity: req.params.key });
+    await save();
+    res.json({ profile: p });
   }));
 
   app.use('/api/admin/erp', r);

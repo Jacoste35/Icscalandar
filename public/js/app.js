@@ -652,6 +652,10 @@ async function renderDashboard(main) {
       try { const { anomalies } = await api('GET', '/staff/km-anomalies'); kmAnomalyPanel = kmAnomalyHTML(anomalies); } catch (e) {}
     }
 
+    // Documents adressés au salarié (à accuser réception) — visible de tous.
+    let myDocsPanel = '';
+    try { const { documents } = await api('GET', '/admin/erp/my-documents'); myDocsPanel = myDocumentsHTML(documents); } catch (e) {}
+
     // Camions nécessitant un entretien (visible de TOUS les salariés).
     let needsMaintPanel = '';
     try { const { items } = await api('GET', '/vehicles/needs-maintenance'); needsMaintPanel = needsMaintHTML(items); } catch (e) {}
@@ -686,6 +690,7 @@ async function renderDashboard(main) {
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
       </div>`}
       ${philo}
+      ${myDocsPanel}
       ${messagesPanel}
       ${kmAnomalyPanel}
       ${stockAlertPanel}
@@ -718,6 +723,14 @@ async function renderDashboard(main) {
 
 // Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
 function bindDashboardActions(scope) {
+  // Mes documents : consulter, accuser réception (signature), attestation.
+  scope.querySelectorAll('[data-mydocview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mydocview + '/view'));
+  scope.querySelectorAll('[data-mydocatt]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mydocatt + '/attestation'));
+  scope.querySelectorAll('[data-mydocack]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Je certifie sur l\'honneur avoir reçu et lu ce document.\n\nEn validant, vous le signez électroniquement (date et heure enregistrées).')) return;
+    try { const r = await api('POST', '/admin/erp/documents/' + b.dataset.mydocack + '/ack'); toast('Réception accusée et signée le ' + (r.stamp || '') + '.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   // Ajouter / modifier le remplaçant directement depuis le planning d'accueil.
   scope.querySelectorAll('[data-repl-cal]').forEach((b) => b.onclick = () => {
     const ev = (_calEvents || []).find((x) => x.id === b.dataset.replCal);
@@ -1009,6 +1022,20 @@ function colleaguesUpcomingHTML(team, events) {
 }
 
 // Carte "qui est/était absent" pour une semaine donnée (lundi -> samedi).
+// Documents adressés au salarié : à lire et à accuser réception (signature élec.).
+function myDocumentsHTML(docs) {
+  if (!docs || !docs.length) return '';
+  const pending = docs.filter((d) => d.status !== 'acked');
+  return `<div class="card" style="border-left:5px solid ${pending.length ? 'var(--danger)' : 'var(--brand-2)'}">
+    <h3 style="margin:0 0 .3rem">📄 Mes documents${pending.length ? ` — ${pending.length} à accuser réception` : ''}</h3>
+    <p class="help" style="margin-top:0">Consultez vos documents et certifiez sur l'honneur les avoir reçus et lus (signature électronique horodatée).</p>
+    <div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Émis le</th><th>Statut</th><th></th></tr></thead>
+      <tbody>${docs.map((d) => `<tr><td>${esc(d.label)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
+        <td>${d.status === 'acked' ? `<span class="pill ok">signé le ${fmtDateTime(d.ackedAt)}</span>` : '<span class="pill warn">à accuser réception</span>'}</td>
+        <td style="white-space:nowrap"><button class="btn ghost sm" data-mydocview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ghost sm" data-mydocatt="${d.id}">Attestation</button>` : ` <button class="btn ok sm" data-mydocack="${d.id}">✍️ J'accuse réception</button>`}</td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+
 // Alerte d'accueil : anomalies de kilométrage relevées à l'import (validation admin).
 function kmAnomalyHTML(anomalies) {
   if (!anomalies || !anomalies.length) return '';
@@ -3401,7 +3428,7 @@ async function renderDocMgmt(main) {
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
         <button class="btn accent" id="dm-gen">Aperçu</button>
         <button class="btn" id="dm-pdf">⬇️ Exporter en PDF</button>
-        <button class="btn ok" id="dm-pack">📦 Pack départ (3 documents)</button>
+        <button class="btn ok" id="dm-issue" style="display:none">✅ Valider & adresser au salarié</button>
         <button class="btn ghost" id="dm-sanction" style="display:none">Enregistrer comme avertissement (dossier salarié)</button>
       </div>
       <p class="help">Le brouillon est éditable avant export. La structure juridique (CCN Transports routiers IDCC 16) est automatique ; vous remplissez les champs.</p>
@@ -3424,13 +3451,14 @@ async function renderDocMgmt(main) {
     } catch (e) { toast(e.message, 'err'); }
   };
   body.querySelector('#dm-pdf').onclick = () => erpOpenHtml('POST', '/admin/erp/documents/print', { type: body.querySelector('#dm-type').value, vars: collectVars() });
-  body.querySelector('#dm-pack').onclick = async () => {
+  // Affiche « Adresser au salarié » dès qu'un salarié est sélectionné.
+  const syncIssue = () => { body.querySelector('#dm-issue').style.display = body.querySelector('#dm-user').value ? 'inline-block' : 'none'; };
+  body.querySelector('#dm-user').addEventListener('change', syncIssue); syncIssue();
+  body.querySelector('#dm-issue').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
-    const lastDay = prompt('Dernier jour travaillé (AAAA-MM-JJ) :', iso(new Date())); if (!lastDay) return;
-    const motif = prompt('Motif de la rupture :', 'Rupture conventionnelle') || '';
-    try { const { docs } = await api('POST', '/admin/erp/documents/pack-depart', { userId: uid, lastDay, motif });
-      const w = window.open('', '_blank'); w.document.write(docs.map((d) => `<h2 style="font-family:sans-serif">${esc(d.label)}</h2>${d.html}<hr style="page-break-after:always">`).join('') + '<button class="noprint" onclick="window.print()">Imprimer / PDF</button>'); w.document.close();
-    } catch (e) { toast(e.message, 'err'); }
+    if (!confirm('Adresser ce document au salarié ? Il devra en accuser réception dans l\'application.')) return;
+    try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: body.querySelector('#dm-type').value, vars: collectVars() }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
+    catch (e) { toast(e.message, 'err'); }
   };
   body.querySelector('#dm-sanction').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
@@ -3440,66 +3468,103 @@ async function renderDocMgmt(main) {
 }
 
 // --- Gestion de la facturation (factures conformes + PDF) --------------------
+let _billTab = 'generic';
 async function renderBilling(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion de la facturation</h1>
-    <p>Émettez des factures conformes (mentions légales) et exportez-les en PDF.</p></div></div>
-    <div id="bl-body" class="empty">Chargement…</div>`;
-  let inv, co;
-  try { inv = await api('GET', '/admin/erp/invoices'); co = (await api('GET', '/admin/erp/company')).company; }
-  catch (e) { document.getElementById('bl-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
-  const body = document.getElementById('bl-body'); body.className = '';
-  const f = (id, lbl, v, ph) => `<div><label>${lbl}</label><input id="${id}" value="${esc(v || '')}" placeholder="${ph || ''}"></div>`;
-  body.innerHTML = `
-    <div class="card"><h3>Coordonnées légales (mentions obligatoires sur la facture)</h3>
-      <div class="grid2">
-        ${f('co-legal', 'Dénomination', co.legal)}${f('co-forme', 'Forme juridique', co.formeJuridique)}
-        ${f('co-capital', 'Capital social', co.capital, '1 000 €')}${f('co-address', 'Adresse', co.address)}
-        ${f('co-siret', 'SIRET', co.siret, '14 chiffres')}${f('co-rcs', 'RCS', co.rcs, 'RCS Caen 820 323 350')}
-        ${f('co-ape', 'Code APE/NAF', co.ape, '4941A')}${f('co-tva', 'N° TVA intracom.', co.tva, 'FR..')}
-        ${f('co-iban', 'IBAN', co.iban)}${f('co-bic', 'BIC', co.bic)}
-        ${f('co-penalty', 'Taux pénalités retard (%/an)', co.penaltyRate, 'laisser vide = taux légal')}${f('co-contact', 'Contact (email/tél.)', co.contact)}
-      </div>
-      <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="co-franchise" ${co.tvaFranchise ? 'checked' : ''}> Franchise en base de TVA (art. 293 B du CGI)</label>
-      <div style="margin-top:.5rem"><button class="btn ok" id="co-save">Enregistrer les coordonnées</button></div>
+    <p>Émettez des factures conformes (mentions légales) et exportez-les en PDF. Les coordonnées de l'entreprise se règlent dans Administration → Informations de l'entreprise.</p></div></div>
+    <div class="view-switch" id="bl-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-btab="generic">Facture libre</button>
+      <button data-btab="fedex">FedEx</button>
+      <button data-btab="gls">GLS</button>
+      <button data-btab="ciblex">Ciblex</button>
     </div>
-    <div class="card"><h3>Nouvelle facture</h3>
+    <div id="bl-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#bl-tabs');
+  const setActive = () => tabs.querySelectorAll('[data-btab]').forEach((b) => b.classList.toggle('active', b.dataset.btab === _billTab));
+  tabs.querySelectorAll('[data-btab]').forEach((b) => b.onclick = () => { _billTab = b.dataset.btab; setActive(); billTab(main); });
+  setActive();
+  billTab(main);
+}
+
+async function billTab(main) {
+  const body = document.getElementById('bl-body'); if (!body) return; body.className = '';
+  let inv, profiles, co;
+  try { inv = await api('GET', '/admin/erp/invoices'); const bp = await api('GET', '/admin/erp/billing-profiles'); profiles = bp.profiles; co = bp.company; }
+  catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const isClient = _billTab !== 'generic';
+  const prof = isClient ? (profiles[_billTab] || { name: _billTab, clientAddress: '', mentions: [], lignes: [] }) : null;
+  const vat = co.tvaFranchise ? 0 : (co.vatRate || 20);
+  let formHtml;
+  if (!isClient) {
+    formHtml = `<div class="card"><h3>Nouvelle facture (libre)</h3>
       <div class="grid2">
-        <div><label>Client (donneur d'ordre)</label><input id="iv-client" list="iv-contracts" placeholder="ex. GLS"><datalist id="iv-contracts">${(inv.contracts || []).map((c) => `<option value="${esc(c.client || c.name || '')}">`).join('')}</datalist></div>
-        <div><label>Adresse client</label><input id="iv-addr" placeholder="adresse du client"></div>
+        <div><label>Client</label><input id="iv-client" list="iv-contracts" placeholder="ex. Client"><datalist id="iv-contracts">${(inv.contracts || []).map((c) => `<option value="${esc(c.client || c.name || '')}">`).join('')}</datalist></div>
+        <div><label>Adresse client</label><input id="iv-addr" placeholder="adresse"></div>
         <div><label>Période / prestation</label><input id="iv-period" placeholder="${iso(new Date()).slice(0, 7)}"></div>
-        <div><label>TVA (%)</label><input id="iv-vat" type="number" value="${co.tvaFranchise ? 0 : (co.vatRate || 20)}" style="width:90px"></div>
+        <div><label>TVA (%)</label><input id="iv-vat" type="number" value="${vat}" style="width:90px"></div>
       </div>
       <div id="iv-lines" style="margin-top:.5rem"></div>
-      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
-        <button class="btn ghost sm" id="iv-add">+ Ligne</button>
-        <button class="btn accent" id="iv-create">Créer la facture</button>
-        <label class="veh-check" style="margin:0"><input type="checkbox" id="iv-avoir"> Facture d'avoir (montants négatifs)</label>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn accent" id="iv-create">Créer la facture</button><label class="veh-check" style="margin:0"><input type="checkbox" id="iv-avoir"> Avoir (négatif)</label></div>
+    </div>`;
+  } else {
+    formHtml = `<div class="card"><h3>Facturation ${esc(prof.name)}</h3>
+      <p class="help">Profil du donneur d'ordre : adresse, mentions et lignes de prestation (avec prix unitaire). Saisissez les quantités du mois (ou collez la préfacturation) puis générez la facture conforme.</p>
+      <div class="grid2">
+        <div><label>Adresse ${esc(prof.name)}</label><input id="pf-addr" value="${esc(prof.clientAddress || '')}" placeholder="adresse du donneur d'ordre"></div>
+        <div><label>Période / prestation</label><input id="iv-period" placeholder="${iso(new Date()).slice(0, 7)}"></div>
       </div>
-    </div>
-    <div class="card"><h3>Factures émises</h3><div id="iv-list"></div></div>`;
-  body.querySelector('#co-save').onclick = async () => {
-    try { await api('PUT', '/admin/erp/company', { legal: val('#co-legal'), formeJuridique: val('#co-forme'), capital: val('#co-capital'), address: val('#co-address'), siret: val('#co-siret'), rcs: val('#co-rcs'), ape: val('#co-ape'), tva: val('#co-tva'), iban: val('#co-iban'), bic: val('#co-bic'), penaltyRate: val('#co-penalty'), contact: val('#co-contact'), tvaFranchise: body.querySelector('#co-franchise').checked }); toast('Coordonnées enregistrées.', 'ok'); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  function val(s) { return body.querySelector(s).value; }
+      <label style="margin-top:.4rem">Mentions spécifiques (une par ligne)</label>
+      <textarea id="pf-mentions" style="min-height:60px;font-size:.85rem">${esc((prof.mentions || []).join('\n'))}</textarea>
+      <h4 style="margin:.7rem 0 .3rem">Lignes de prestation</h4>
+      <div id="iv-lines"></div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn ghost sm" id="pf-save">💾 Enregistrer le profil</button><button class="btn accent" id="iv-create">Générer la facture ${esc(prof.name)}</button></div>
+      <details style="margin-top:.7rem"><summary class="help">Importer une préfacturation (coller : désignation;quantité;prix unitaire — une ligne par prestation)</summary>
+        <textarea id="pf-paste" style="min-height:80px;font-family:monospace;font-size:.8rem" placeholder="Livraison points;1850;0,82&#10;Surcharge gasoil;1;120,00"></textarea>
+        <button class="btn ghost sm" id="pf-import" style="margin-top:.4rem">Charger les lignes</button>
+        <p class="help">Une fois que vous m'aurez transmis vos 3 factures réelles (FedEx, GLS, Ciblex), j'adapterai automatiquement la lecture du fichier de préfacturation et les mentions à leur format exact.</p>
+      </details>
+    </div>`;
+  }
+  body.innerHTML = formHtml + `<div class="card"><h3>Factures émises</h3><div id="iv-list"></div></div>`;
+  const val = (s) => { const el = body.querySelector(s); return el ? el.value : ''; };
   const linesBox = body.querySelector('#iv-lines');
-  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><input class="il-q" type="number" value="${q}" style="width:80px" title="Qté"><input class="il-pu" type="number" value="${pu}" style="width:120px" title="P.U. HT"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => row.remove(); linesBox.appendChild(row); };
-  addLine('Prestation de livraison', 21, 560);
+  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><input class="il-q" type="number" step="0.01" value="${q}" style="width:90px" title="Qté"><input class="il-pu" type="number" step="0.001" value="${pu}" style="width:120px" title="P.U. HT"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => row.remove(); linesBox.appendChild(row); };
+  if (isClient) { (prof.lignes && prof.lignes.length ? prof.lignes : [{ designation: 'Prestation de livraison', prixUnitaire: 0 }]).forEach((l) => addLine(l.designation, 0, l.prixUnitaire || 0)); }
+  else { addLine('Prestation de livraison', 21, 560); }
   body.querySelector('#iv-add').onclick = () => addLine();
+  const collectLines = () => [...linesBox.querySelectorAll('.impact-row')].map((r) => ({ designation: r.querySelector('.il-d').value, quantite: +r.querySelector('.il-q').value, prixUnitaire: +r.querySelector('.il-pu').value })).filter((l) => l.designation);
+  if (isClient) {
+    const num = (s) => parseFloat(String(s).replace(/\s/g, '').replace(',', '.')) || 0;
+    body.querySelector('#pf-import').onclick = () => {
+      const rows = body.querySelector('#pf-paste').value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      linesBox.innerHTML = '';
+      rows.forEach((l) => { const c = l.split(';'); addLine((c[0] || '').trim(), num(c[1]), num(c[2])); });
+      if (!rows.length) addLine();
+      toast(`${rows.length} ligne(s) chargée(s).`, 'ok');
+    };
+    body.querySelector('#pf-save').onclick = async () => {
+      try { await api('PUT', '/admin/erp/billing-profiles/' + _billTab, { clientAddress: val('#pf-addr'), mentions: body.querySelector('#pf-mentions').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean), lignes: collectLines().map((l) => ({ designation: l.designation, prixUnitaire: l.prixUnitaire, unit: '' })) }); toast('Profil enregistré.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  }
   body.querySelector('#iv-create').onclick = async () => {
-    const lines = [...linesBox.querySelectorAll('.impact-row')].map((r) => ({ designation: r.querySelector('.il-d').value, quantite: +r.querySelector('.il-q').value, prixUnitaire: +r.querySelector('.il-pu').value })).filter((l) => l.designation);
-    if (!val('#iv-client') || !lines.length) { toast('Client et au moins une ligne requis.', 'err'); return; }
-    const payload = { client: val('#iv-client'), clientAddress: val('#iv-addr'), period: val('#iv-period'), vatRate: +val('#iv-vat'), lines };
-    try { await api('POST', body.querySelector('#iv-avoir').checked ? '/admin/erp/invoices/avoir' : '/admin/erp/invoices', payload); toast('Facture créée.', 'ok'); renderBilling(main); }
+    const lines = collectLines();
+    const client = isClient ? prof.name : val('#iv-client');
+    const clientAddress = isClient ? val('#pf-addr') : val('#iv-addr');
+    if (!client || !lines.length) { toast('Client et au moins une ligne requis.', 'err'); return; }
+    const payload = { client, clientAddress, period: val('#iv-period'), vatRate: isClient ? vat : +val('#iv-vat'), lines };
+    const avoir = !isClient && body.querySelector('#iv-avoir') && body.querySelector('#iv-avoir').checked;
+    try { await api('POST', avoir ? '/admin/erp/invoices/avoir' : '/admin/erp/invoices', payload); toast('Facture créée.', 'ok'); billTab(main); }
     catch (e) { toast(e.message, 'err'); }
   };
   const list = body.querySelector('#iv-list');
-  list.innerHTML = (inv.invoices || []).length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>N°</th><th>Client</th><th>Date</th><th>TTC</th><th>Statut</th><th></th></tr></thead><tbody>${(inv.invoices || []).map((i) => `<tr><td>${esc(i.number)}</td><td>${esc(i.client)}</td><td>${esc(i.date)}</td><td>${eur(i.totalTTC)}</td><td><span class="pill ${i.status === 'paid' ? 'ok' : i.status === 'sent' ? 'warn' : ''}">${i.status}</span></td><td style="white-space:nowrap"><button class="btn ghost sm" data-pdf="${i.id}">PDF</button>${i.status !== 'paid' ? ` <button class="btn ghost sm" data-sent="${i.id}">Envoyée</button> <button class="btn ok sm" data-paid="${i.id}">Payée</button>` : ''} <button class="btn danger sm" data-del="${i.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune facture.</p>';
+  const shown = isClient ? (inv.invoices || []).filter((i) => (i.client || '').toLowerCase().includes(_billTab) || (i.client || '') === prof.name) : (inv.invoices || []);
+  list.innerHTML = shown.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>N°</th><th>Client</th><th>Date</th><th>TTC</th><th>Statut</th><th></th></tr></thead><tbody>${shown.map((i) => `<tr><td>${esc(i.number)}</td><td>${esc(i.client)}</td><td>${esc(i.date)}</td><td>${eur(i.totalTTC)}</td><td><span class="pill ${i.status === 'paid' ? 'ok' : i.status === 'sent' ? 'warn' : ''}">${i.status}</span></td><td style="white-space:nowrap"><button class="btn ghost sm" data-pdf="${i.id}">PDF</button>${i.status !== 'paid' ? ` <button class="btn ghost sm" data-sent="${i.id}">Envoyée</button> <button class="btn ok sm" data-paid="${i.id}">Payée</button>` : ''} <button class="btn danger sm" data-del="${i.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune facture.</p>';
   list.querySelectorAll('[data-pdf]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/invoices/' + b.dataset.pdf + '/print'));
-  list.querySelectorAll('[data-sent]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/invoices/' + b.dataset.sent + '/status', { status: 'sent' }); renderBilling(main); });
-  list.querySelectorAll('[data-paid]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/invoices/' + b.dataset.paid + '/status', { status: 'paid' }); renderBilling(main); });
-  list.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette facture ?')) return; await api('DELETE', '/admin/erp/invoices/' + b.dataset.del); renderBilling(main); });
+  list.querySelectorAll('[data-sent]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/invoices/' + b.dataset.sent + '/status', { status: 'sent' }); billTab(main); });
+  list.querySelectorAll('[data-paid]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/invoices/' + b.dataset.paid + '/status', { status: 'paid' }); billTab(main); });
+  list.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette facture ?')) return; await api('DELETE', '/admin/erp/invoices/' + b.dataset.del); billTab(main); });
 }
 
 // --- Gestion des justificatifs (frais / IK conformes + PDF) ------------------
@@ -5420,6 +5485,8 @@ async function renderAdmin(main) {
       <button data-tab="pending" class="active">Nouveaux inscrits${badge(nbPending)}</button>
       <button data-tab="reqs">En attente d'approbation${badge(nbReqs)}</button>
       <button data-tab="users">Paramétrages salariés</button>
+      <button data-tab="company">Informations de l'entreprise</button>
+      <button data-tab="docsuivi">Suivi des documents</button>
       <button data-tab="export">Exporter des données</button>
       <button data-tab="reglement">Règlement intérieur</button>
       <button data-tab="groups">Groupes</button>
@@ -5443,11 +5510,70 @@ async function adminTab(tab) {
     if (tab === 'pending') return adminPending(body);
     if (tab === 'reqs') return adminReqs(body);
     if (tab === 'users') return adminUsers(body);
+    if (tab === 'company') return adminCompany(body);
+    if (tab === 'docsuivi') return adminDocSuivi(body);
     if (tab === 'export') return adminExport(body);
     if (tab === 'groups') return adminGroups(body);
     if (tab === 'reglement') return adminReglement(body);
     if (tab === 'categories') return adminCategories(body);
   } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+}
+
+// Informations de l'entreprise (en-tête de tous les documents générés).
+async function adminCompany(body) {
+  let co;
+  try { co = (await api('GET', '/admin/erp/company')).company; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const f = (id, lbl, ph) => `<div><label>${lbl}</label><input id="${id}" value="${esc(co[id.replace('co-', '')] || '')}" placeholder="${ph || ''}"></div>`;
+  body.innerHTML = `<div class="card">
+    <h3>Informations de l'entreprise</h3>
+    <p class="help">Ces informations constituent l'<strong>en-tête de tous les documents</strong> générés (courriers, contrats, factures, attestations). Renseignez-les une fois, elles seront reprises automatiquement.</p>
+    <div class="grid2">
+      ${f('co-name', 'Nom commercial', 'INTER COLIS SERVICES')}
+      ${f('co-legal', 'Dénomination légale', 'SASU INTER COLIS SERVICES')}
+      ${f('co-formeJuridique', 'Forme juridique', 'SASU')}
+      ${f('co-capital', 'Capital social', '1 000 €')}
+      ${f('co-address', 'Adresse du siège', 'rue…, 14930 Éterville')}
+      ${f('co-siret', 'SIRET (14 chiffres)', '82032335000042')}
+      ${f('co-rcs', 'RCS', 'RCS Caen 820 323 350')}
+      ${f('co-ape', 'Code APE / NAF', '4941A')}
+      ${f('co-tva', 'N° TVA intracommunautaire', 'FR..')}
+      ${f('co-iban', 'IBAN', 'FR76 …')}
+      ${f('co-bic', 'BIC / SWIFT', '')}
+      ${f('co-contact', 'Contact (email / téléphone)', '')}
+      ${f('co-penaltyRate', 'Taux pénalités de retard (%/an)', 'vide = taux légal')}
+    </div>
+    <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="co-franchise" ${co.tvaFranchise ? 'checked' : ''}> Franchise en base de TVA (art. 293 B du CGI — pas de TVA facturée)</label>
+    <div style="margin-top:.6rem"><button class="btn ok" id="co-save">Enregistrer les informations</button></div>
+  </div>`;
+  body.querySelector('#co-save').onclick = async () => {
+    const v = (id) => body.querySelector(id).value;
+    try {
+      await api('PUT', '/admin/erp/company', {
+        name: v('#co-name'), legal: v('#co-legal'), formeJuridique: v('#co-formeJuridique'), capital: v('#co-capital'), address: v('#co-address'),
+        siret: v('#co-siret'), rcs: v('#co-rcs'), ape: v('#co-ape'), tva: v('#co-tva'), iban: v('#co-iban'), bic: v('#co-bic'), contact: v('#co-contact'),
+        penaltyRate: v('#co-penaltyRate'), tvaFranchise: body.querySelector('#co-franchise').checked,
+      });
+      toast('Informations de l\'entreprise enregistrées.', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+// Suivi des documents adressés aux salariés (lu / reçu / signé + attestation).
+async function adminDocSuivi(body) {
+  let docs;
+  try { docs = (await api('GET', '/admin/erp/documents')).documents; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  body.innerHTML = `<div class="card">
+    <h3>Suivi des documents adressés aux salariés</h3>
+    <p class="help">Chaque document généré et adressé apparaît ici. Le salarié le retrouve à l'ouverture de l'application et certifie sur l'honneur l'avoir reçu et lu (signature électronique horodatée). L'attestation est alors disponible.</p>
+    ${docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Salarié</th><th>Émis le</th><th>Statut</th><th>Signé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr>
+      <td>${esc(d.label)}</td><td>${esc(d.userName)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
+      <td>${d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : '<span class="pill warn">en attente d\'accusé</span>'}</td>
+      <td>${d.ackedAt ? fmtDateTime(d.ackedAt) : '—'}</td>
+      <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation PDF</button>` : ''}</td>
+    </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun document adressé pour le moment. Générez-en un depuis « Gestion documentaire ».</p>'}
+  </div>`;
+  body.querySelectorAll('[data-docview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.docview + '/view'));
+  body.querySelectorAll('[data-att]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.att + '/attestation'));
 }
 
 async function adminPending(body) {
