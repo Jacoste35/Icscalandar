@@ -4314,9 +4314,12 @@ function hoursHsup(body) {
         <h4 style="margin:.7rem 0 .3rem">Semaine par semaine</h4>
         <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>HSUP</th><th>25%</th><th>50%</th></tr></thead>
           <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.7rem 0 .3rem">Indemnités & événements (mois par mois)</h4>
+        ${indMonthsHTML(u.days)}
         <h4 style="margin:.7rem 0 .3rem">Jour par jour</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Amplitude</th></tr></thead>
-          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${hFmt(e.amplitude)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Nuit</th><th>Ampl.</th><th>R.midi</th><th>R.soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Mission</th><th>Absence</th></tr></thead>
+          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${e.nightHours ? hFmt(e.nightHours) : '—'}</td><td>${hFmt(e.amplitude)}</td><td>${e.mealMidi || '—'}</td><td>${e.mealSoir || '—'}</td><td>${e.casseCroute || '—'}</td><td>${e.decoucher || '—'}</td><td>${e.km || '—'}</td><td>${esc(e.missions || '—')}</td><td>${e.absence ? hFmt(e.absence) + (e.motif ? ' (' + esc(e.motif) + ')' : '') : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <div style="margin-top:.6rem"><button class="btn ghost" data-exportcsv="${id}">⬇️ Exporter le tableau (CSV)</button></div>
       </div>` : ''}
     </div>`;
   }).join('');
@@ -4349,6 +4352,34 @@ function hoursHsup(body) {
     try { for (const bt of btns) await api('POST', '/staff/hsup/transmit', { userId: id, month: bt.dataset.month, equivHours: bt.dataset.eq }); toast('Récupération transmise.', 'ok'); await loadHours(); hoursHsup(body); }
     catch (e) { toast(e.message, 'err'); }
   });
+  body.querySelectorAll('[data-exportcsv]').forEach((b) => b.onclick = () => exportHoursCSV(byUser[b.dataset.exportcsv], _hours.hsupBase || 35));
+}
+
+// Synthèse mensuelle des indemnités & événements (paniers, nuit, découcher, km).
+function indMonthsHTML(days) {
+  const m = {};
+  days.forEach((e) => { const k = (e.date || '').slice(0, 7); const o = m[k] = m[k] || { midi: 0, soir: 0, casse: 0, dec: 0, night: 0, km: 0, abs: 0 }; o.midi += e.mealMidi || 0; o.soir += e.mealSoir || 0; o.casse += e.casseCroute || 0; o.dec += e.decoucher || 0; o.night += e.nightHours || 0; o.km += e.km || 0; o.abs += e.absence || 0; });
+  const keys = Object.keys(m).sort();
+  if (!keys.length) return '<p class="help">—</p>';
+  return `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Paniers midi</th><th>Paniers soir</th><th>Casse-croûte</th><th>Découcher</th><th>Heures nuit</th><th>Km</th><th>Absence</th></tr></thead>
+    <tbody>${keys.map((k) => { const o = m[k]; return `<tr><td>${esc(k)}</td><td>${o.midi || '—'}</td><td>${o.soir || '—'}</td><td>${o.casse || '—'}</td><td>${o.dec || '—'}</td><td>${o.night ? hFmt(o.night) : '—'}</td><td>${o.km ? o.km.toLocaleString('fr-FR') : '—'}</td><td>${o.abs ? hFmt(o.abs) : '—'}</td></tr>`; }).join('')}</tbody></table></div>`;
+}
+
+// Export CSV du tableau d'un salarié (journées + indemnités + événements).
+function exportHoursCSV(u, base) {
+  const cell = (v) => { const s = String(v == null ? '' : v); return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const head = ['Date', 'Début', 'Fin', 'Travaillé (h)', 'Heures nuit (h)', 'Amplitude (h)', 'Pause (min)', 'Repas midi', 'Repas soir', 'Casse-croûte', 'Découcher', 'Km', 'Mission(s)', 'Absence (h)', 'Motif', 'Observations'];
+  const lines = [head.join(';')];
+  u.days.slice().sort((a, b) => a.date.localeCompare(b.date)).forEach((e) => {
+    lines.push([e.date, e.start || '', e.end || '', e.worked || 0, e.nightHours || 0, e.amplitude || 0, e.breakMin || 0, e.mealMidi || 0, e.mealSoir || 0, e.casseCroute || 0, e.decoucher || 0, e.km || 0, e.missions || '', e.absence || 0, e.motif || '', e.observations || ''].map(cell).join(';'));
+  });
+  const csv = '﻿' + lines.join('\r\n'); // BOM pour Excel
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `heures_${(u.name || 'salarie').replace(/[^a-zA-Z0-9]+/g, '_')}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 /* --- Import d'un rapport d'activité (.xlsx) -------------------------------- */
@@ -4434,9 +4465,13 @@ function extractActivityReport(rows) {
   const H = rows[hdr];
   const col = (name) => H.findIndex((c) => typeof c === 'string' && c.trim().startsWith(name));
   const cE = col('Employé'), cJ = col('Jour'), cD = col('Début'), cF = col('Fin'), cP = col('Pause'), cT = col('Total travail'), cA = col('Amplitude'), cAbs = col('Heures congés');
-  const employees = {}; let cur = null; let minD = null, maxD = null;
+  const cNight = col('Heures au tarif nuit'), cKm = col('Nombre de kilomètres'), cMidi = col('Repas midi'), cSoir = col('Repas soir'), cDec = col('Découcher'), cCasse = col('Casse'), cMiss = col('Mission'), cMot = col('Motif'), cObs = col('Observations');
+  const hN = (i) => (i >= 0 && typeof r[i] === 'number') ? Math.round(r[i] * 24 * 100) / 100 : 0; // fraction de jour -> heures
+  const nb = (i) => (i >= 0 && typeof r[i] === 'number') ? r[i] : 0;
+  const str = (i) => (i >= 0 && typeof r[i] === 'string') ? r[i].replace(/\s+/g, ' ').trim() : '';
+  let r; const employees = {}; let cur = null; let minD = null, maxD = null;
   for (let i = hdr + 1; i < rows.length; i++) {
-    const r = rows[i] || [];
+    r = rows[i] || [];
     const e = r[cE]; if (typeof e === 'string' && e.trim()) cur = e.split(/\r?\n/)[0].trim();
     if (!cur || typeof r[cJ] !== 'number') continue;
     const date = xlDateISO(r[cJ]);
@@ -4445,9 +4480,10 @@ function extractActivityReport(rows) {
       start: typeof r[cD] === 'number' ? xlTimeHM(r[cD]) : '',
       end: typeof r[cF] === 'number' ? xlTimeHM(r[cF]) : '',
       breakMin: typeof r[cP] === 'number' ? Math.round(r[cP] * 24 * 60) : 0,
-      worked: typeof r[cT] === 'number' ? Math.round(r[cT] * 24 * 100) / 100 : 0,
-      amplitude: typeof r[cA] === 'number' ? Math.round(r[cA] * 24 * 100) / 100 : 0,
-      absence: (cAbs >= 0 && typeof r[cAbs] === 'number') ? Math.round(r[cAbs] * 24 * 100) / 100 : 0,
+      worked: hN(cT), amplitude: hN(cA), absence: hN(cAbs),
+      nightHours: hN(cNight), km: Math.round(nb(cKm)),
+      mealMidi: nb(cMidi), mealSoir: nb(cSoir), casseCroute: nb(cCasse), decoucher: nb(cDec),
+      missions: str(cMiss), motif: str(cMot), observations: str(cObs),
     };
     (employees[cur] = employees[cur] || []).push(rec);
     if (!minD || date < minD) minD = date; if (!maxD || date > maxD) maxD = date;
