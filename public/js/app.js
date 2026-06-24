@@ -813,7 +813,7 @@ function priorityPanelHTML(users) {
   const { deadline } = leaveDeadlineInfo();
   return `
     <div class="card" style="border-left:5px solid var(--accent)">
-      <h3>🔔 Alertes — salariés à faire poser leurs congés</h3>
+      <h3>🔔 Alerte : salariés ayant dépassé l'un des seuils fixés.</h3>
       <p class="help" style="margin-top:-.6rem">Alertes : heures sup. en retard (&gt; 25 h) et CP N-1 &gt; 20 j entre le 1er janvier et le 31 mai (échéance ${pad(deadline.getDate())}/${pad(deadline.getMonth()+1)}/${deadline.getFullYear()}).</p>
       <div class="table-wrap"><table>
         <thead><tr><th>#</th><th>Salarié</th><th>Groupe</th><th>Soldes à écouler</th></tr></thead>
@@ -2335,6 +2335,8 @@ function drivingBadge(d) { return (!d || d.grade === '—') ? '<span class="help
 function worstLevel(v) { return v.items.some((i) => i.level === 'overdue') ? 'overdue' : v.items.some((i) => i.level === 'soon') ? 'soon' : 'ok'; }
 
 let _vehOpen = {}; // état déplié/replié par véhicule (minimise l'affichage)
+let _admGrp = {};  // état déplié/replié des groupes (Salariés actifs)
+let _admHist = {}; // état déplié/replié des groupes (Historique par groupe)
 
 // Onglet « Suivi & alertes » : par véhicule, état des consommables + alertes.
 function vehTabSuivi(body) {
@@ -4303,13 +4305,14 @@ function hoursHsup(body) {
       return { m, ...mo, hsup, equipTot, paid, transmitted, remDue, remEquivInfo };
     });
     const open = !!_vehOpen['hsup_' + id];
+    const jourOpen = !!_vehOpen['jour_' + id];
     const totWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
     const rows = monthCalc.map((c) => `<tr>
       <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
       <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
       <td><span class="help">${hFmt(c.equipTot)} (${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
       <td><input class="hsup-paid" data-uid="${id}" data-month="${c.m}" type="number" step="0.5" min="0" value="${c.paid}" style="width:70px"></td>
-      <td>${c.transmitted > 0 ? hFmt(c.transmitted) : '—'}</td>
+      <td><input class="hsup-transmitted" data-uid="${id}" data-month="${c.m}" data-old="${c.transmitted}" type="number" step="0.5" min="0" value="${c.transmitted}" style="width:70px" title="Modifie ce qui a déjà été transmis au compteur du salarié (ajuste son solde)"></td>
       <td><strong class="${c.remDue > 0 ? 'warn' : 'pos'}">${hFmt(c.remDue)}</strong>${c.remDue > 0 ? ` <span class="help">(≈ ${(c.remEquivInfo / HPERDAY).toFixed(2)} j récup.)</span>` : ''}</td>
       <td>${c.remDue > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remDue}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
     </tr>`).join('');
@@ -4324,6 +4327,7 @@ function hoursHsup(body) {
         ${synthSalarie(u.days, base, id)}
         <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
         <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        <p class="help" style="margin:.3rem 0">« Déjà payé » et « Transmis » sont modifiables directement (mettez 0 pour annuler). Modifier « Transmis » ajuste automatiquement le compteur Récupération du salarié.</p>
         <div class="alert info" style="margin-top:.5rem">
           <strong>Reste à transmettre à ${esc(u.name)} : ${hFmt(totRemDue)}</strong> d'heures supplémentaires réalisées (heures brutes transmises au compteur du salarié).<br>
           <span class="help">Équivalence en récupération (à titre informatif, pour la direction) : ajustements légaux +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour. Soit ≈ <strong>${(totRemEquivInfo / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</span>
@@ -4334,9 +4338,9 @@ function hoursHsup(body) {
           <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td><td>${w.ids && w.ids.length ? `<button class="btn ghost sm" data-delweek="${w.ids.join(',')}" data-uid="${id}" title="Supprimer la semaine">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
         <h4 style="margin:.7rem 0 .3rem">Détail par mois (indemnités & estimation de salaire)</h4>
         ${monthsDetailHTML(u.days, base, id)}
-        <h4 style="margin:.7rem 0 .3rem">Jour par jour <span class="help">— supprimez une saisie mal attribuée</span></h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Nuit</th><th>Ampl.</th><th>R.midi</th><th>R.soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Mission</th><th>Absence</th><th></th></tr></thead>
-          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${e.nightHours ? hFmt(e.nightHours) : '—'}</td><td>${hFmt(e.amplitude)}</td><td>${e.mealMidi || '—'}</td><td>${e.mealSoir || '—'}</td><td>${e.casseCroute || '—'}</td><td>${e.decoucher || '—'}</td><td>${e.km || '—'}</td><td>${esc(e.missions || '—')}</td><td>${e.absence ? hFmt(e.absence) + (e.motif ? ' (' + esc(e.motif) + ')' : '') : '—'}</td><td>${e.id ? `<button class="btn ghost sm" data-delday="${e.id}" data-uid="${id}" title="Supprimer cette saisie">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.7rem 0 .3rem;cursor:pointer" data-toggle="jour_${id}"><span class="veh-caret">${jourOpen ? '▾' : '▸'}</span> Jour par jour <span class="help">— supprimez une saisie mal attribuée</span></h4>
+        ${jourOpen ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Nuit</th><th>Ampl.</th><th>R.midi</th><th>R.soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Mission</th><th>Absence</th><th></th></tr></thead>
+          <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${e.nightHours ? hFmt(e.nightHours) : '—'}</td><td>${hFmt(e.amplitude)}</td><td>${e.mealMidi || '—'}</td><td>${e.mealSoir || '—'}</td><td>${e.casseCroute || '—'}</td><td>${e.decoucher || '—'}</td><td>${e.km || '—'}</td><td>${esc(e.missions || '—')}</td><td>${e.absence ? hFmt(e.absence) + (e.motif ? ' (' + esc(e.motif) + ')' : '') : '—'}</td><td>${e.id ? `<button class="btn ghost sm" data-delday="${e.id}" data-uid="${id}" title="Supprimer cette saisie">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
         <div style="margin-top:.6rem"><button class="btn ghost" data-exportcsv="${id}">⬇️ Exporter le tableau (CSV)</button></div>
       </div>` : ''}
     </div>`;
@@ -4356,6 +4360,14 @@ function hoursHsup(body) {
   body.querySelectorAll('.hsup-paid').forEach((inp) => inp.onchange = async () => {
     try { await api('PUT', '/staff/hsup-settlement', { userId: inp.dataset.uid, month: inp.dataset.month, paidHours: inp.value }); await loadHours(); hoursHsup(body); }
     catch (e) { toast(e.message, 'err'); }
+  });
+  // Correction du nombre d'heures déjà transmises (ajuste le solde Récup. du salarié).
+  body.querySelectorAll('.hsup-transmitted').forEach((inp) => inp.onchange = async () => {
+    const oldV = Number(inp.dataset.old) || 0, newV = Number(inp.value) || 0;
+    if (newV === oldV) return;
+    if (!confirm(`Corriger le transmis de ${hFmt(oldV)} à ${hFmt(newV)} ? Le compteur Récupération du salarié sera ajusté de ${newV - oldV >= 0 ? '+' : ''}${hFmt(newV - oldV)}.`)) { inp.value = oldV; return; }
+    try { const r = await api('PUT', '/staff/hsup/transmitted', { userId: inp.dataset.uid, month: inp.dataset.month, transmittedHours: newV }); toast(`Transmis corrigé. Nouveau solde récup. : ${hFmt(r.newBalance)}.`, 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); inp.value = oldV; }
   });
   body.querySelectorAll('[data-transmit]').forEach((b) => b.onclick = async () => {
     if (!confirm(`Transmettre ${hFmt(+b.dataset.eq)} d'heures supplémentaires au compteur du salarié ?`)) return;
@@ -4489,10 +4501,10 @@ function synthSalarie(days, base, id) {
     const panierVal = (mo.midi || 0) * p.panierMidi + (mo.soir || 0) * p.panierSoir;
     const over22 = Math.max(0, mo.h25 - HS25_BASE);
     const h25Disp = hFmt(Math.min(mo.h25, HS25_BASE)) + (over22 > 0 ? ` <span class="warn">(+${hFmt(over22)} > 22h${to32 ? ', payées' : ''})</span>` : '');
-    return `<div class="card" style="flex:1;min-width:270px;${accent ? 'border:1px solid var(--accent,#6b7cff)' : ''}">
+    return `<div class="card zoom-hover" style="flex:1;min-width:270px;${accent ? 'border:1px solid var(--accent,#6b7cff)' : ''}">
     <h4 style="margin:.1rem 0 .5rem">${title} — <span style="color:var(--accent,#6b7cff)">${esc(mo.key)}</span></h4>
     ${line('Jours travaillés', mo.days, pv ? di(mo.days, pv.days) : '')}
-    ${line('Heures travaillées', `<strong>${hFmt(mo.worked)}</strong>`, pv ? dh(mo.worked, pv.worked) : '')}
+    ${line('Heures travaillées <span class="help">(base mensualisée 151,67 h)</span>', `<strong>${hFmt(mo.worked)}</strong>`, pv ? dh(mo.worked, pv.worked) : '')}
     ${line('HSUP 25% payées', h25Disp, '')}
     ${line('HSUP 50% (récupérées)', mo.h50 ? `${hFmt(mo.h50)} <span class="help">non payées</span>` : '—', '')}
     ${line('Heures de nuit', mo.night ? hFmt(mo.night) : '—', pv ? dh(mo.night, pv.night) : '')}
@@ -4502,6 +4514,7 @@ function synthSalarie(days, base, id) {
     ${line('Kilomètres', (mo.km || 0).toLocaleString('fr-FR'), pv ? di(mo.km || 0, pv.km || 0, ' km') : '')}
     ${line('Absences', mo.abs ? hFmt(mo.abs) : '—', '')}
     <div style="border-top:2px solid var(--border,#ddd);margin-top:.35rem;padding-top:.35rem">
+      ${line('Salaire de base <span class="help">(151,67 h mensualisées)</span>', eur(est.base), '')}
       ${line('Salaire brut estimé', eur(est.brut), pv ? de(est.brut, pvEst.brut) : '')}
       ${line('Cotisations salariales', '− ' + eur(est.cotis), '')}
       ${line('Indemnités (non soumis)', eur(est.indem), '')}
@@ -4524,19 +4537,17 @@ function synthSalarie(days, base, id) {
   const bars = `<div class="bars">${allW.map((i) => { const h = Math.round((i.v / maxW) * 100); const isCur = i.l === cur.key.slice(2); return `<div class="bar-col"><div class="bar-wrap"><div class="bar ${isCur ? 'pos' : ''}" style="height:${h}%;${isCur ? '' : 'background:var(--accent,#6b7cff);opacity:.5'}" title="${hFmt(i.v)}"></div></div><div class="bar-lbl">${esc(i.l)}</div><div class="bar-val">${hFmt(i.v)}</div></div>`; }).join('')}</div>`;
   const arrow = (pct) => pct > 2 ? `<span class="warn">▲ +${pct}%</span>` : (pct < -2 ? `<span class="pos">▼ ${pct}%</span>` : '<span class="help">≈</span>');
   return `
-    ${salaryParamsForm(id, p)}
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin:.5rem 0 .3rem">
-      <h4 style="margin:0">Comparatif mensuel</h4>
-      <label style="display:inline-flex;gap:.4rem;align-items:center;font-weight:400;cursor:pointer;margin:0">
-        <input type="checkbox" class="hs25-32" data-uid="${id}" ${to32 ? 'checked' : ''} style="width:auto">
-        <span class="help" style="margin:0">Payer les HSUP 25% jusqu'à <strong>32 h</strong> (au lieu de 22 h)</span>
-      </label>
-    </div>
-    <p class="help" style="margin:0 0 .4rem">Projection : HSUP 50% <strong>non payées</strong> (récupérées) ; HSUP 25% payées jusqu'à ${to32 ? '32' : '22'} h.</p>
+    <h4 style="margin:.5rem 0 .3rem">Comparatif mensuel</h4>
+    <p class="help" style="margin:0 0 .4rem">Projection : HSUP 50% <strong>non payées</strong> (récupérées) ; HSUP 25% payées jusqu'à ${to32 ? '32' : '22'} h ; base mensualisée 151,67 h.</p>
     <div style="display:flex;gap:.6rem;flex-wrap:wrap">
-      ${panel(cur, eCur, prev, ePrev, 'Période en cours', true)}
-      ${prev ? panel(prev, ePrev, null, null, 'Mois précédent', false) : '<div class="card" style="flex:1;min-width:270px;display:flex;align-items:center;justify-content:center"><span class="help">Pas de mois précédent à comparer.</span></div>'}
+      ${panel(cur, eCur, prev, ePrev, 'Estimation de la période en cours', true)}
+      ${prev ? panel(prev, ePrev, null, null, 'Estimation du mois précédent', false) : '<div class="card" style="flex:1;min-width:270px;display:flex;align-items:center;justify-content:center"><span class="help">Pas de mois précédent à comparer.</span></div>'}
     </div>
+    <label style="display:inline-flex;gap:.4rem;align-items:center;font-weight:400;cursor:pointer;margin:.5rem 0">
+      <input type="checkbox" class="hs25-32" data-uid="${id}" ${to32 ? 'checked' : ''} style="width:auto">
+      <span style="margin:0">Payer les HSUP 25% jusqu'à <strong>32 h</strong> (au lieu de 22 h)</span>
+    </label>
+    ${salaryParamsForm(id, p)}
     <h4 style="margin:.7rem 0 .3rem">Tendance sur le trimestre glissant (${win.length} dernier(s) mois)</h4>
     <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Jours</th><th>Travaillé</th><th>Évol.</th><th>HSUP</th><th>Nuit</th><th>Paniers (m/s)</th><th>Km</th></tr></thead>
       <tbody>${win.map((o, i) => { const prevW = i > 0 ? win[i - 1].worked : null; const pct = prevW ? Math.round(((o.worked - prevW) / prevW) * 100) : null; return `<tr><td>${esc(o.key)}</td><td>${o.days}</td><td>${hFmt(o.worked)}</td><td>${pct === null ? '—' : arrow(pct)}</td><td>${o.hsup ? hFmt(o.hsup) : '—'}</td><td>${o.night ? hFmt(o.night) : '—'}</td><td>${(o.midi || 0)}/${(o.soir || 0)}</td><td>${o.km ? o.km.toLocaleString('fr-FR') : '—'}</td></tr>`; }).join('')}</tbody></table></div>
@@ -4556,7 +4567,7 @@ function monthsDetailHTML(days, base, id) {
   const cap = _hs25To32[id] ? HS25_MAX : HS25_BASE;
   return months.slice().reverse().map((mo) => {
     const e = estimSalaire(mo, p, cap);
-    return `<div class="card" style="margin:.4rem 0">
+    return `<div class="card zoom-hover" style="margin:.4rem 0">
       <h4 style="margin:.1rem 0 .4rem">📅 ${esc(mo.key)} — ${hFmt(mo.worked)} travaillées · ${mo.days} j</h4>
       <div class="table-wrap"><table class="veh-table"><thead><tr><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50% (récup.)</th><th>Nuit</th><th>Paniers midi</th><th>Paniers soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Absence</th></tr></thead>
         <tbody><tr><td>${hFmt(mo.worked)}</td><td>${mo.h25 ? hFmt(mo.h25) + (e.over22 > 0 ? ` <span class="warn">(+${hFmt(e.over22)} > 22h)</span>` : '') : '—'}</td><td>${mo.h50 ? hFmt(mo.h50) : '—'}</td><td>${mo.night ? hFmt(mo.night) : '—'}</td><td>${mo.midi || '—'}</td><td>${mo.soir || '—'}</td><td>${mo.casse || '—'}</td><td>${mo.dec || '—'}</td><td>${mo.km ? mo.km.toLocaleString('fr-FR') : '—'}</td><td>${mo.abs ? hFmt(mo.abs) : '—'}</td></tr></tbody></table></div>
@@ -4984,11 +4995,24 @@ async function adminReqs(body) {
     if (!list || !list.length) return '';
     const g = groupById(gid);
     const title = g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Sans groupe</em>';
-    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return `<h4 style="margin:1rem 0 .4rem">${title} <span class="help">${list.length}</span></h4>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Salarié</th><th>Type</th><th>Période</th><th>Jours</th><th>Demandé le</th><th>Statut</th><th></th></tr></thead>
-        <tbody>${list.map((r)=>`<tr><td>${esc(r.userName)}${parentTag(r)}</td><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}</td><td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td><td>${statusTag(r.status)}</td><td><button class="btn danger sm" data-del-req="${r.id}" title="Supprimer / libérer les dates">🗑️</button></td></tr>`).join('')}</tbody></table></div>`;
+    const key = gid || 'none';
+    const isOpen = !!_admHist[key];
+    // Regroupe les évènements par salarié pour une lecture claire.
+    const byUser = {};
+    list.forEach((r) => { (byUser[r.userId] = byUser[r.userId] || { name: r.userName, items: [] }).items.push(r); });
+    const users = Object.values(byUser).sort((a, b) => a.name.localeCompare(b.name));
+    const summary = users.map((u) => `${esc(u.name)} <span class="help">(${u.items.length})</span>`).join(' · ');
+    const userBlocks = users.map((u) => {
+      u.items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return `<h5 style="margin:.7rem 0 .2rem">${esc(u.name)}${parentTag(u.items[0])} <span class="help">${u.items.length} évènement(s)</span></h5>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Type</th><th>Période</th><th>Jours</th><th>Demandé le</th><th>Statut</th><th></th></tr></thead>
+          <tbody>${u.items.map((r) => `<tr><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}</td><td>${r.days}${reqHours(r)}</td><td class="help">${fmtDateTime(r.createdAt)}<div>par ${esc(r.createdByName||'—')}</div></td><td>${statusTag(r.status)}</td><td style="white-space:nowrap"><button class="btn sm" data-edit-req="${r.id}" title="Modifier la saisie (ajouter / retirer des jours)">✏️</button> <button class="btn danger sm" data-del-req="${r.id}" title="Supprimer / libérer les dates">🗑️</button></td></tr>`).join('')}</tbody></table></div>`;
+    }).join('');
+    return `<div style="border:1px solid var(--border,#e5e7eb);border-radius:10px;padding:.6rem .7rem;margin-top:.8rem">
+      <h4 style="margin:0;cursor:pointer" data-admhist="${key}"><span class="veh-caret">${isOpen ? '▾' : '▸'}</span> ${title} <span class="help">${list.length} évènement(s) · ${users.length} salarié(s)</span></h4>
+      ${isOpen ? userBlocks : `<p class="help" style="margin:.4rem 0 0">${summary}</p>`}
+    </div>`;
   }).join('');
 
   body.innerHTML = `
@@ -5019,6 +5043,38 @@ async function adminReqs(body) {
     if (!confirm('Supprimer cet évènement et libérer les dates ? (le solde est recrédité si la demande était validée)')) return;
     try { await api('DELETE', `/admin/requests/${btn.dataset.delReq}`); toast('Évènement supprimé, dates libérées.', 'ok'); refreshAdminBadge(); adminReqs(body); }
     catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-admhist]').forEach((el) => el.onclick = () => { const k = el.dataset.admhist; _admHist[k] = !_admHist[k]; adminReqs(body); });
+  body.querySelectorAll('[data-edit-req]').forEach((btn) => btn.onclick = () => editEventModal(requests.find((r) => r.id === btn.dataset.editReq), body));
+}
+
+// Modifier une saisie (évènement) sans la supprimer : ajuster la période et le
+// nombre de jours/heures. Le solde est ré-ajusté automatiquement (recrédit de
+// l'ancien décompte puis application du nouveau).
+function editEventModal(req, body) {
+  if (!req) return;
+  const isHours = req.category === 'RCP' || req.category === 'RCC';
+  modal({
+    title: `Modifier la saisie — ${req.userName}`,
+    bodyHTML: `
+      <p class="help">${esc(reqLabel(req))} · statut : ${req.status}. Ajustez la période et le décompte ; le solde du salarié sera recalculé en conséquence.</p>
+      <div class="row">
+        <div><label>Du</label><input type="date" id="ee-start" value="${req.startDate}"></div>
+        <div><label>Au</label><input type="date" id="ee-end" value="${req.endDate}"></div>
+      </div>
+      <div class="row">
+        <div><label>Nombre de jours</label><input type="number" step="0.5" min="0" id="ee-days" value="${req.days || 0}"></div>
+        ${isHours ? `<div><label>Nombre d'heures</label><input type="number" step="0.5" min="0" id="ee-hours" value="${req.hours || 0}"></div>` : ''}
+      </div>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ee-save">Enregistrer</button>`,
+    onMount: (ov) => {
+      ov.querySelector('#ee-save').onclick = async () => {
+        const payload = { startDate: ov.querySelector('#ee-start').value, endDate: ov.querySelector('#ee-end').value, days: ov.querySelector('#ee-days').value };
+        if (isHours) payload.hours = ov.querySelector('#ee-hours').value;
+        try { await api('PUT', `/admin/requests/${req.id}`, payload); closeModal(); toast('Saisie mise à jour, solde réajusté.', 'ok'); refreshAdminBadge(); adminReqs(body); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    },
   });
 }
 
@@ -5113,13 +5169,17 @@ async function adminUsers(body) {
     list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
     const title = g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Sans groupe</em>';
     const key = gid || 'none';
-    return `<div style="margin-top:1.2rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
-        <h3 style="margin:0">${title} <span class="help">${list.length} salarié(s)</span></h3>
+    const isOpen = !!_admGrp[key];
+    const names = list.map((u) => `${esc(u.firstName)} ${esc(u.lastName)}`).join(' · ');
+    return `<div class="card" style="margin-top:1rem">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <h3 style="margin:0;cursor:pointer" data-admgrp="${key}"><span class="veh-caret">${isOpen ? '▾' : '▸'}</span> ${title} <span class="help">${list.length} salarié(s)</span></h3>
         <button class="btn ok sm" data-save-group="${key}">💾 Enregistrer ce groupe</button>
       </div>
-      <div class="table-wrap"><table>
+      ${isOpen ? `<div class="table-wrap" style="margin-top:.5rem"><table>
         <thead><tr><th>Salarié</th><th>Compte</th><th>CP N</th><th>CP N-1</th><th>RCC (h)</th><th>H. sup.</th><th>Actions</th></tr></thead>
-        <tbody>${list.map(userRow).join('')}</tbody></table></div>`;
+        <tbody>${list.map(userRow).join('')}</tbody></table></div>` : `<p class="help" style="margin:.4rem 0 0">${names}</p>`}
+    </div>`;
   }).join('');
 
   body.innerHTML = `<div class="card">
@@ -5173,6 +5233,7 @@ async function adminUsers(body) {
     try { for (const u of list) await saveUser(u.id); toast('Soldes du groupe enregistrés.', 'ok'); adminUsers(body); }
     catch (e) { toast(e.message, 'err'); }
   });
+  body.querySelectorAll('[data-admgrp]').forEach((el) => el.onclick = () => { const k = el.dataset.admgrp; _admGrp[k] = !_admGrp[k]; adminUsers(body); });
 }
 
 // Popup de confirmation de départ (démission / licenciement).
@@ -5326,8 +5387,9 @@ function userModal(u, body) {
       </div>
       <div class="row">
         <div><label>RCC (j)</label><input type="number" step="0.5" id="eu-rcc" value="${b.rcc}"></div>
-        <div><label>Heures sup. dues (h)</label><input type="number" step="0.5" id="eu-heuresSupp" value="${b.heuresSupp}"></div>
-      </div>`,
+        <div><label>H. sup. restant dues (h)<span class="help"> — après paiement du reste</span></label><input type="number" step="0.5" id="eu-heuresSupp" value="${b.heuresSupp}"></div>
+      </div>
+      <p class="help" style="margin:.2rem 0 0">« H. sup. restant dues » = heures supplémentaires encore dues au salarié <strong>après paiement</strong> des autres (celles qu'il peut récupérer).</p>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn ${isNew?'accent':''}" id="eu-save">${isNew?'Créer le compte':'Enregistrer'}</button>`,
     onMount: (overlay) => {
       const val = (id) => overlay.querySelector(id).value;

@@ -1041,6 +1041,32 @@ app.put('/api/admin/requests/:id/replacement', authRequired, adminRequired, asyn
   res.json({ request: r });
 });
 
+// Modifier une saisie (admin) : période + décompte jours/heures, sans la
+// supprimer. Réajuste le solde (recrédit de l'ancien décompte puis application
+// du nouveau) si la demande est validée.
+app.put('/api/admin/requests/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const r = db.requests.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Demande introuvable' });
+  const { startDate, endDate, days, hours } = req.body || {};
+  if (startDate && !validDate(startDate)) return res.status(400).json({ error: 'Date de début invalide' });
+  if (endDate && !validDate(endDate)) return res.status(400).json({ error: 'Date de fin invalide' });
+  const user = db.users.find((u) => u.id === r.userId);
+  const wasApproved = r.status === 'approved';
+  // Recrédite l'ancien décompte si la demande était validée.
+  if (wasApproved && user) { const d = deductionFor(r); if (d) user.balances[d.balance] = Math.round((user.balances[d.balance] + d.amount) * 100) / 100; }
+  // Applique les modifications.
+  if (startDate) r.startDate = startDate;
+  if (endDate) r.endDate = endDate;
+  if (r.endDate < r.startDate) r.endDate = r.startDate;
+  if (days != null && days !== '') r.days = Math.max(0, Math.round((Number(days) || 0) * 100) / 100);
+  if (hours != null && hours !== '') r.hours = Math.max(0, Math.round((Number(hours) || 0) * 100) / 100);
+  // Applique le nouveau décompte.
+  if (wasApproved && user) { const d = deductionFor(r); if (d) user.balances[d.balance] = Math.round((user.balances[d.balance] - d.amount) * 100) / 100; }
+  await save();
+  res.json({ request: r });
+});
+
 // Décision admin sur une demande (validation = déduction du solde)
 app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (req, res) => {
   const db = getData();
@@ -2668,6 +2694,26 @@ app.post('/api/staff/hsup/transmit', authRequired, adminRequired, async (req, re
   // transmittedEquiv = cumul des heures BRUTES déjà transmises (anti double-envoi).
   s.transmittedEquiv = Math.round(((s.transmittedEquiv || 0) + eq) * 100) / 100;
   s.transmittedAt = new Date().toISOString(); // pour repérer une réouverture du mois
+  await save();
+  res.json({ settlement: s, newBalance: u.balances.heuresSupp });
+});
+
+// Corriger les heures déjà transmises pour un mois (valeur absolue) : ajuste le
+// compteur Récupération du salarié du delta (ajout ou retrait).
+app.put('/api/staff/hsup/transmitted', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, month, transmittedHours } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+  if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return res.status(400).json({ error: 'Mois invalide' });
+  const nv = Math.max(0, Math.round((Number(transmittedHours) || 0) * 100) / 100);
+  let s = db.hsupSettlements.find((x) => x.userId === userId && x.month === month);
+  if (!s) { s = { userId, month, paidHours: 0, transmittedEquiv: 0 }; db.hsupSettlements.push(s); }
+  const old = Math.round((s.transmittedEquiv || 0) * 100) / 100;
+  const delta = Math.round((nv - old) * 100) / 100;
+  u.balances.heuresSupp = Math.max(0, Math.round(((u.balances.heuresSupp || 0) + delta) * 100) / 100);
+  s.transmittedEquiv = nv;
+  s.transmittedAt = new Date().toISOString();
   await save();
   res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });

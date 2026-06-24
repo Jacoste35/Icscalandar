@@ -562,3 +562,15 @@ td.neg { color: var(--danger); font-weight: 700; }
   /* Tableaux larges : police lisible + scroll horizontal géré par .table-wrap */
   .veh-table th, .veh-table td { font-size: .9rem; padding: .5rem .45rem; }
 }
+
+/* Mise en avant au survol (« consultation ») : zoom léger + surlignage rouge.
+   Utilisé sur les tableaux/cartes d'estimation de la Gestion des heures. */
+.zoom-hover { transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.zoom-hover:hover {
+  transform: scale(1.025);
+  border: 1px solid #dc2626 !important;
+  box-shadow: 0 6px 22px rgba(220, 38, 38, .25);
+  position: relative;
+  z-index: 2;
+}
+.zoom-hover:hover .veh-table tbody tr:hover { background: rgba(220, 38, 38, .08); }
