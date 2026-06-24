@@ -2435,12 +2435,17 @@ function detectBank(text) {
   if (T.includes('THEMIS')) return 'Themis';
   return null;
 }
-function categorizeFin(db, label) {
+function categorizeFin(db, label, amount) {
   const L = String(label || '').toUpperCase();
   const learn = db.settings.catLearn || {};
   const n = normLabel(label);
   if (n && learn[n]) return learn[n];
-  for (const r of (db.settings.catRules || [])) { if (r.kw && L.includes(String(r.kw).toUpperCase())) return r.cat; }
+  const sign = (amount == null || !Number.isFinite(amount)) ? null : (amount < 0 ? 'debit' : 'credit');
+  for (const r of (db.settings.catRules || [])) {
+    if (!r.kw || !L.includes(String(r.kw).toUpperCase())) continue;
+    if (r.sens && sign && r.sens !== sign) continue; // règle limitée au débit ou au crédit
+    return r.cat;
+  }
   return null;
 }
 function txHash(t) { return `${t.opDate}|${Math.round(t.amount * 100)}|${normLabel(t.label)}`; }
@@ -2488,12 +2493,17 @@ function parseBankText(text) {
 
 app.get('/api/admin/finance-meta', authRequired, adminRequired, (req, res) => {
   const db = getData();
-  res.json({ banks: FIN_BANKS, categories: FIN_CATEGORIES, rules: db.settings.catRules || [], startBalance: db.settings.treasuryStartBalance || 0 });
+  // Catégories = liste standard + catégories personnalisées (règles) + apprises.
+  const custom = (db.settings.catRules || []).map((r) => r.cat).filter(Boolean);
+  const learned = Object.values(db.settings.catLearn || {});
+  const categories = Array.from(new Set([...FIN_CATEGORIES, ...custom, ...learned].map((c) => String(c).trim()).filter(Boolean)));
+  res.json({ banks: FIN_BANKS, categories, rules: db.settings.catRules || [], startBalance: db.settings.treasuryStartBalance || 0 });
 });
 app.put('/api/admin/cat-rules', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const { rules } = req.body || {};
-  if (Array.isArray(rules)) db.settings.catRules = rules.filter((r) => r && r.kw && r.cat).map((r) => ({ kw: String(r.kw).trim(), cat: String(r.cat).trim() }));
+  // Une règle peut créer une catégorie personnalisée et la limiter au débit/crédit.
+  if (Array.isArray(rules)) db.settings.catRules = rules.filter((r) => r && r.kw && r.cat).map((r) => ({ kw: String(r.kw).trim(), cat: String(r.cat).trim(), sens: ['debit', 'credit'].includes(r.sens) ? r.sens : '' }));
   await save();
   res.json({ rules: db.settings.catRules });
 });
@@ -2517,7 +2527,7 @@ app.post('/api/admin/bank-import', authRequired, adminRequired, (req, res) => {
     const h = txHash(t);
     const dupe = existing.has(h) || seen.has(h);
     seen.add(h);
-    const category = categorizeFin(db, t.label);
+    const category = categorizeFin(db, t.label, t.amount);
     return { opDate: t.opDate, label: t.label, amount: t.amount, debit: t.amount < 0 ? -t.amount : 0, credit: t.amount > 0 ? t.amount : 0, category: category || '', bank, dupe };
   });
   res.json({
@@ -2535,16 +2545,18 @@ app.post('/api/admin/bank-confirm', authRequired, adminRequired, async (req, res
   const { transactions, bank, docName } = req.body || {};
   if (!Array.isArray(transactions)) return res.status(400).json({ error: 'Aucune écriture' });
   const existing = new Set(db.bankTx.map(txHash));
+  const docId = nextId('bdoc');
   let added = 0;
   for (const t of transactions) {
-    if (t.dupe) continue;
+    // Doublon NON conservé : on ignore. Conservé (force) : on l'ajoute malgré tout.
+    if (t.dupe && !t.force) continue;
     const amount = Math.round(num(t.amount) * 100) / 100;
-    const rec = { id: nextId('btx'), opDate: t.opDate, valDate: t.valDate || t.opDate, label: String(t.label || '').slice(0, 140), amount, debit: amount < 0 ? -amount : 0, credit: amount > 0 ? amount : 0, category: String(t.category || '').trim() || 'Divers', subCategory: '', bank: bank || t.bank || 'Autre', account: '', source: String(docName || 'import'), createdAt: new Date().toISOString() };
-    if (existing.has(txHash(rec))) continue;
+    const rec = { id: nextId('btx'), opDate: t.opDate, valDate: t.valDate || t.opDate, label: String(t.label || '').slice(0, 140), amount, debit: amount < 0 ? -amount : 0, credit: amount > 0 ? amount : 0, category: String(t.category || '').trim() || 'Divers', subCategory: String(t.subCategory || '').slice(0, 80), bank: bank || t.bank || 'Autre', account: '', source: String(docName || 'import'), docId, createdAt: new Date().toISOString() };
+    if (!t.force && existing.has(txHash(rec))) continue;
     existing.add(txHash(rec));
     db.bankTx.push(rec); added++;
   }
-  db.bankDocs.push({ id: nextId('bdoc'), name: String(docName || 'Relevé').slice(0, 120), bank: bank || 'Autre', importedAt: new Date().toISOString(), lines: added });
+  db.bankDocs.push({ id: docId, name: String(docName || 'Relevé').slice(0, 120), bank: bank || 'Autre', importedAt: new Date().toISOString(), lines: added });
   await save();
   res.json({ added });
 });
@@ -2572,6 +2584,17 @@ app.delete('/api/admin/bank-tx/:id', authRequired, adminRequired, async (req, re
   db.bankTx = db.bankTx.filter((x) => x.id !== req.params.id);
   await save();
   res.json({ ok: true });
+});
+// Supprimer un relevé importé (et toutes ses écritures).
+app.delete('/api/admin/bank-docs/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const doc = db.bankDocs.find((d) => d.id === req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Relevé introuvable' });
+  const before = db.bankTx.length;
+  db.bankTx = db.bankTx.filter((t) => (t.docId ? t.docId !== doc.id : t.source !== doc.name));
+  db.bankDocs = db.bankDocs.filter((d) => d.id !== doc.id);
+  await save();
+  res.json({ ok: true, removedTx: before - db.bankTx.length });
 });
 
 // Comptabilité de gestion + trésorerie + indicateurs + alertes.
