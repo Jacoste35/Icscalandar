@@ -4183,41 +4183,59 @@ function hrTab(tab) {
   if (tab === 'saisie') return hoursSaisie(body);
 }
 
-// Résumé : amplitudes réalisées par chauffeur (semaine + mois en cours).
+// Résumé : amplitudes réalisées par chauffeur, pour un mois sélectionnable
+// (par défaut le mois le plus récent présent dans les données importées) +
+// dernière semaine de ce mois.
+let _hrResumeMonth = null;
 function hoursResume(body) {
   const entries = _hours.entries, ampMax = _hours.amplitudeMax;
-  const today = new Date();
-  const wkStart = iso(isoWeekStart(today));
-  const moStart = iso(new Date(today.getFullYear(), today.getMonth(), 1));
-  // Agrège par chauffeur sur la semaine et le mois.
+  if (!entries.length) { body.innerHTML = `<div class="alert info">Aucune heure saisie. Importez un rapport d'activité ou renseignez les amplitudes dans l'onglet « Saisie ».</div>`; return; }
+  // Mois disponibles (les plus récents en premier).
+  const months = Array.from(new Set(entries.map((e) => (e.date || '').slice(0, 7)).filter(Boolean))).sort().reverse();
+  if (!_hrResumeMonth || !months.includes(_hrResumeMonth)) _hrResumeMonth = months[0];
+  const refMonth = _hrResumeMonth;
+  // Dernière semaine ISO présente dans ce mois.
+  let wkStart = null;
+  entries.forEach((e) => { if ((e.date || '').slice(0, 7) !== refMonth) return; const ws = iso(isoWeekStart(parseISO(e.date))); if (!wkStart || ws > wkStart) wkStart = ws; });
+  // Agrège par chauffeur sur le mois sélectionné et sa dernière semaine.
   const byUser = {};
   entries.forEach((e) => {
+    if ((e.date || '').slice(0, 7) !== refMonth) return;
     const u = byUser[e.userId] = byUser[e.userId] || { name: e.userName, week: { amp: 0, work: 0, days: 0, max: 0, over: 0 }, month: { amp: 0, work: 0, days: 0, max: 0, over: 0 } };
     const add = (acc) => { acc.amp += e.amplitude; acc.work += e.worked; acc.days += 1; acc.max = Math.max(acc.max, e.amplitude); if (e.amplitude > ampMax) acc.over += 1; };
-    if (e.date >= moStart) add(u.month);
-    if (e.date >= wkStart) add(u.week);
+    add(u.month);
+    if (iso(isoWeekStart(parseISO(e.date))) === wkStart) add(u.week);
   });
   const rows = Object.values(byUser).filter((u) => u.month.days > 0).sort((a, b) => b.month.amp - a.month.amp);
-  if (!rows.length) { body.innerHTML = `<div class="alert info">Aucune heure saisie ce mois-ci. Renseignez les amplitudes dans l'onglet « Saisie ».</div>`; return; }
+  const monthSel = `<label style="display:inline-flex;gap:.4rem;align-items:center;margin:0">Mois <select id="hr-resume-month" style="width:auto">${months.map((m) => `<option value="${m}" ${m === refMonth ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>`;
+  if (!rows.length) { body.innerHTML = `<div style="margin-bottom:.6rem">${monthSel}</div><div class="alert info">Aucune heure pour ${esc(refMonth)}.</div>`; bindResumeMonth(body); return; }
   // Totaux flotte.
   const tWeekAmp = rows.reduce((s, u) => s + u.week.amp, 0), tMonthAmp = rows.reduce((s, u) => s + u.month.amp, 0);
   const tOver = rows.reduce((s, u) => s + u.month.over, 0);
   body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.6rem">
+      <h3 style="margin:0">Amplitudes — ${esc(refMonth)}</h3>${monthSel}
+    </div>
     <div class="grid cols-4">
-      <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tWeekAmp)}</div><div class="label">Amplitude totale (semaine)</div></div>
+      <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tWeekAmp)}</div><div class="label">Amplitude totale (dernière semaine)</div></div>
       <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tMonthAmp)}</div><div class="label">Amplitude totale (mois)</div></div>
       <div class="stat"><div class="value" style="font-size:1.4rem">${rows.length}</div><div class="label">Chauffeurs suivis</div></div>
       <div class="stat ${tOver ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${tOver}</div><div class="label">Dépassements (> ${ampMax}h)</div></div>
     </div>
-    <div class="card"><h3>Amplitudes par chauffeur — semaine en cours</h3>
+    <div class="card"><h3>Amplitudes par chauffeur — dernière semaine du mois</h3>
       <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Moy./jour</th><th>Max</th></tr></thead>
       <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.week.days}</td><td>${hFmt(u.week.amp)}</td><td>${hFmt(u.week.work)}</td><td>${u.week.days ? hFmt(u.week.amp / u.week.days) : '—'}</td><td>${u.week.days ? `<span class="pill ${u.week.max > ampMax ? 'danger' : u.week.max > ampMax - 1 ? 'warn' : 'ok'}">${hFmt(u.week.max)}</span>` : '—'}</td></tr>`).join('')}</tbody></table></div>
     </div>
-    <div class="card"><h3>Amplitudes par chauffeur — mois en cours</h3>
+    <div class="card"><h3>Amplitudes par chauffeur — mois ${esc(refMonth)}</h3>
       <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Moy./jour</th><th>Max</th><th>Dépass.</th></tr></thead>
       <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.month.days}</td><td>${hFmt(u.month.amp)}</td><td>${hFmt(u.month.work)}</td><td>${hFmt(u.month.amp / u.month.days)}</td><td>${hFmt(u.month.max)}</td><td>${u.month.over ? `<span class="pill danger">${u.month.over}</span>` : '0'}</td></tr>`).join('')}</tbody></table></div>
       <p class="help">Amplitude = durée entre la prise et la fin de service (pauses comprises). Seuil d'alerte : ${ampMax}h.</p>
     </div>`;
+  bindResumeMonth(body);
+}
+function bindResumeMonth(body) {
+  const sel = body.querySelector('#hr-resume-month');
+  if (sel) sel.onchange = () => { _hrResumeMonth = sel.value; hoursResume(body); };
 }
 
 function hoursSaisie(body) {
@@ -4721,7 +4739,9 @@ function renderImportMapping() {
       for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
       if (reopened.size) toast(`Mois rouvert(s) : ${[...reopened].sort().join(', ')} — de nouvelles heures sup. peuvent être dues (voir « Reste dû »).`, 'warn');
-      _hImport = null; await loadHours(); hrTab('hsup');
+      // On réactualise toute la gestion des heures et on recadre le résumé sur
+      // le mois le plus récent importé.
+      _hImport = null; _hrResumeMonth = null; await loadHours(); hrTab('hsup');
     } catch (e) { toast(e.message, 'err'); }
   };
 }
