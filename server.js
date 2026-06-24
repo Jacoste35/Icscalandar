@@ -2608,7 +2608,24 @@ app.get('/api/staff/work-hours', authRequired, adminRequired, (req, res) => {
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35 });
+  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, salaryParams: db.settings.salaryParams || {} });
+});
+
+// Paramètres de paie par salarié (taux horaire, base mensualisée, cotisations,
+// paniers, heure de nuit…) pour l'estimation du salaire net.
+app.put('/api/staff/salary-params', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, params } = req.body || {};
+  if (!db.users.some((u) => u.id === userId)) return res.status(404).json({ error: 'Salarié introuvable' });
+  if (!params || typeof params !== 'object') return res.status(400).json({ error: 'Paramètres invalides' });
+  const num = (v) => Math.round((Number(v) || 0) * 10000) / 10000;
+  const keys = ['tauxHoraire', 'baseMois', 'cotisPct', 'exoHsPct', 'panierMidi', 'panierSoir', 'casseCroute', 'nuitParH', 'decoucher', 'pasPct'];
+  const clean = {};
+  keys.forEach((k) => { if (params[k] != null && params[k] !== '') clean[k] = Math.max(0, num(params[k])); });
+  if (!db.settings.salaryParams || typeof db.settings.salaryParams !== 'object') db.settings.salaryParams = {};
+  db.settings.salaryParams[userId] = clean;
+  await save();
+  res.json({ params: clean });
 });
 
 // Base hebdomadaire des heures supplémentaires (35 h légal par défaut).
@@ -2650,6 +2667,7 @@ app.post('/api/staff/hsup/transmit', authRequired, adminRequired, async (req, re
   u.balances.heuresSupp = Math.round(((u.balances.heuresSupp || 0) + eq) * 100) / 100;
   // transmittedEquiv = cumul des heures BRUTES déjà transmises (anti double-envoi).
   s.transmittedEquiv = Math.round(((s.transmittedEquiv || 0) + eq) * 100) / 100;
+  s.transmittedAt = new Date().toISOString(); // pour repérer une réouverture du mois
   await save();
   res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });
@@ -2685,8 +2703,10 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
   if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
   if (!Array.isArray(rows)) return res.status(400).json({ error: 'Données invalides' });
   let added = 0;
+  const touchedMonths = new Set();
   for (const r of rows) {
     if (!validDate(r.date)) continue;
+    touchedMonths.add(String(r.date).slice(0, 7));
     // Une seule entrée par salarié et par jour : on remplace.
     db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date === r.date));
     const r2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -2702,8 +2722,13 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
     });
     added++;
   }
+  // Réouverture : si l'import ajoute des heures sur un mois déjà transmis,
+  // ce mois redevient « ouvert » (de nouvelles HSUP peuvent être dues).
+  const reopened = db.hsupSettlements
+    .filter((s) => s.userId === userId && touchedMonths.has(s.month) && (s.transmittedEquiv || 0) > 0)
+    .map((s) => s.month);
   await save();
-  res.json({ added });
+  res.json({ added, reopened });
 });
 
 // SPA fallback
