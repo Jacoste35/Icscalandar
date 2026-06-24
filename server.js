@@ -2641,7 +2641,7 @@ app.get('/api/staff/work-hours', authRequired, adminRequired, (req, res) => {
   const since = req.query.from || '';
   const list = db.workHours.filter((h) => !since || h.date >= since).sort((a, b) => b.date.localeCompare(a.date));
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
-    .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId }))
+    .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId, balances: u.balances }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
   res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, salaryParams: db.settings.salaryParams || {} });
 });

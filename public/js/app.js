@@ -4163,8 +4163,8 @@ async function renderHours(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des heures</h1>
     <p>Suivi des amplitudes et du temps de travail des chauffeurs.</p></div></div>
     <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-htab="resume" class="active">Résumé des amplitudes</button>
-      <button data-htab="hsup">Heures supplémentaires</button>
+      <button data-htab="hsup" class="active">Gestion des heures supplémentaires</button>
+      <button data-htab="resume">Résumé des amplitudes</button>
       <button data-htab="import">Import rapport d'activité</button>
       <button data-htab="saisie">Saisie manuelle</button>
     </div>
@@ -4172,7 +4172,7 @@ async function renderHours(main) {
   const tabs = main.querySelector('#hr-tabs');
   tabs.querySelectorAll('[data-htab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); hrTab(b.dataset.htab); });
   await loadHours();
-  hrTab('resume');
+  hrTab('hsup');
 }
 async function loadHours() { _hours = await api('GET', '/staff/work-hours'); }
 function hrTab(tab) {
@@ -4285,6 +4285,9 @@ function equivRecup(h25, h50) { return Math.round((h25 * 1.25 + h50 * 1.5) * 100
 
 function hoursHsup(body) {
   const base = _hours.hsupBase || 35;
+  // Soldes par salarié (compteurs CP / CP N-1 / RCC / Récup) pour affichage.
+  const balById = {};
+  (_hours.drivers || []).forEach((d) => { balById[d.id] = d.balances || {}; });
   const byUser = {};
   _hours.entries.forEach((e) => { (byUser[e.userId] = byUser[e.userId] || { name: e.userName, days: [] }).days.push(e); });
   const ids = Object.keys(byUser);
@@ -4331,6 +4334,8 @@ function hoursHsup(body) {
     const detOpen = !!_vehOpen['det_' + id];
     const totWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
     const totPaid = monthCalc.reduce((s, c) => s + (c.paid || 0), 0);
+    const bal = balById[id] || {};
+    const balLine = `CP ${(bal.congesN || 0)} j · CP N-1 ${(bal.congesN1 || 0)} j · RCC ${hFmt(bal.rcc || 0)} · Récup ${hFmt(bal.heuresSupp || 0)}`;
     const rows = monthCalc.map((c) => `<tr>
       <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
       <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
@@ -4345,6 +4350,7 @@ function hoursHsup(body) {
       <div class="veh-card-head" data-toggle="hsup_${id}">
         <span class="veh-caret">${open ? '▾' : '▸'}</span>
         <strong>${esc(u.name)}</strong>
+        <span class="help" style="margin-left:.5rem">${balLine}</span>
         <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span><span class="pill ${totRemDue > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemDue)}<span class="help" style="opacity:.85"> (≈ ${(totRemEquivInfo / HPERDAY).toFixed(1)} j récup.)</span></span></span>
       </div>
       ${open ? `<div class="veh-card-body">
@@ -4353,6 +4359,7 @@ function hoursHsup(body) {
         <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
         <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Réalisé HSUP (h)</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <p class="help" style="margin:.3rem 0">« Réalisé HSUP », « Déjà payé » et « Transmis » sont modifiables directement (mettez 0 pour annuler). Corriger le <strong>Réalisé</strong> transmet l'écart au compteur du salarié ; <strong>trop-payer</strong> un mois (payé &gt; réalisé) décrémente son stock d'HSUP d'autant ; modifier « Transmis » ajuste aussi son compteur.</p>
+        <div class="alert ${(bal.heuresSupp || 0) > 0 ? 'info' : ''}" style="margin:.3rem 0">Compteur salarié (Récup / heures sup., chiffre réel après tous les calculs) : <strong>${hFmt(bal.heuresSupp || 0)}</strong> ≈ <strong>${((bal.heuresSupp || 0) / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</div>
         <div class="alert info" style="margin-top:.5rem">
           <strong>Reste à transmettre à ${esc(u.name)} : ${hFmt(totRemDue)}</strong> d'heures supplémentaires réalisées (heures brutes transmises au compteur du salarié).<br>
           <span class="help">Équivalence en récupération (à titre informatif, pour la direction) : ajustements légaux +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour. Soit ≈ <strong>${(totRemEquivInfo / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</span>
