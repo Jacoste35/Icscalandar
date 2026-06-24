@@ -2686,12 +2686,15 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
     if (!validDate(r.date)) continue;
     // Une seule entrée par salarié et par jour : on remplace.
     db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date === r.date));
+    const r2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
     db.workHours.push({
       id: nextId('wh'), userId, userName: `${u.firstName} ${u.lastName}`, date: r.date,
       start: String(r.start || ''), end: String(r.end || ''), breakMin: Number(r.breakMin) || 0,
-      amplitude: Math.round((Number(r.amplitude) || 0) * 100) / 100,
-      worked: Math.round((Number(r.worked) || 0) * 100) / 100,
-      absence: Math.round((Number(r.absence) || 0) * 100) / 100,
+      amplitude: r2(r.amplitude), worked: r2(r.worked), absence: r2(r.absence),
+      // Indemnités & événements repris du rapport d'activité.
+      nightHours: r2(r.nightHours), km: Math.round(Number(r.km) || 0),
+      mealMidi: r2(r.mealMidi), mealSoir: r2(r.mealSoir), casseCroute: r2(r.casseCroute), decoucher: r2(r.decoucher),
+      missions: String(r.missions || '').slice(0, 120), motif: String(r.motif || '').slice(0, 120), observations: String(r.observations || '').slice(0, 200),
       source: 'import',
     });
     added++;
