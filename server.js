@@ -2633,19 +2633,22 @@ app.put('/api/staff/hsup-settlement', authRequired, adminRequired, async (req, r
   res.json({ settlement: s });
 });
 
-// Transmettre la récupération due (équivalent majoré) au compteur du salarié.
+// Transmettre au compteur du salarié les HEURES SUPPLÉMENTAIRES RÉALISÉES qui
+// lui sont dues (heures brutes — PAS l'équivalent majoré en récupération, qui
+// reste purement informatif pour la direction).
 app.post('/api/staff/hsup/transmit', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const { userId, month, equivHours } = req.body || {};
   const u = db.users.find((x) => x.id === userId);
   if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
   if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return res.status(400).json({ error: 'Mois invalide' });
-  const eq = Math.round((Number(equivHours) || 0) * 100) / 100;
-  if (eq <= 0) return res.status(400).json({ error: 'Aucune récupération à transmettre' });
+  const eq = Math.round((Number(equivHours) || 0) * 100) / 100; // heures sup. brutes dues
+  if (eq <= 0) return res.status(400).json({ error: 'Aucune heure supplémentaire à transmettre' });
   let s = db.hsupSettlements.find((x) => x.userId === userId && x.month === month);
   if (!s) { s = { userId, month, paidHours: 0, transmittedEquiv: 0 }; db.hsupSettlements.push(s); }
-  // Crédite le compteur « Récupération / heures sup. » du salarié.
+  // Crédite le compteur « Récupération / heures sup. » du salarié (heures brutes).
   u.balances.heuresSupp = Math.round(((u.balances.heuresSupp || 0) + eq) * 100) / 100;
+  // transmittedEquiv = cumul des heures BRUTES déjà transmises (anti double-envoi).
   s.transmittedEquiv = Math.round(((s.transmittedEquiv || 0) + eq) * 100) / 100;
   await save();
   res.json({ settlement: s, newBalance: u.balances.heuresSupp });
