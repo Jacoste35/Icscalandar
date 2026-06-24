@@ -560,6 +560,7 @@ function renderView() {
 /* =========================================================================
    DASHBOARD — semaine en cours / à venir + soldes
    ========================================================================= */
+let _calEvents = []; // évènements du calendrier (pour l'édition du remplaçant au planning)
 async function renderDashboard(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Bonjour ${esc(State.user.firstName)} 👋</h1>
     <p>Voici un aperçu de votre situation et de l'équipe.</p></div></div>
@@ -569,6 +570,7 @@ async function renderDashboard(main) {
     await ensureHolidays(today.getFullYear());
     await ensureHolidays(today.getFullYear() + 1);
     const { events } = await api('GET', '/calendar');
+    _calEvents = events;
     const { user } = await api('GET', '/me');
     State.user = user;
     const b = user.balances;
@@ -683,6 +685,11 @@ async function renderDashboard(main) {
 
 // Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
 function bindDashboardActions(scope) {
+  // Ajouter / modifier le remplaçant directement depuis le planning d'accueil.
+  scope.querySelectorAll('[data-repl-cal]').forEach((b) => b.onclick = () => {
+    const ev = (_calEvents || []).find((x) => x.id === b.dataset.replCal);
+    if (ev) replacementModal(ev, scope, () => renderDashboard(document.getElementById('main')));
+  });
   // Composer un message (encadrement).
   const comp = scope.querySelector('#msg-send');
   if (comp) comp.onclick = async () => {
@@ -960,6 +967,7 @@ function colleaguesUpcomingHTML(team, events) {
 
 // Carte "qui est/était absent" pour une semaine donnée (lundi -> samedi).
 function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
+  const isAdmin = State.user && State.user.role === 'admin';
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
   const weekEnd = addDays(weekStart, 5);
   const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
@@ -969,7 +977,8 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
   weekAbs.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { ev }).ev = byUser[ev.userId].ev; (byUser[ev.userId].list = byUser[ev.userId].list || []).push(ev); });
   const detail = Object.values(byUser).map((o) => o.list.map((ev) => {
     const range = ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
-    return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td></tr>`;
+    const replCell = isAdmin ? `<td>${ev.replacedByName ? esc(ev.replacedByName) : '<span class="help">—</span>'} ${ev.code !== 'RET' ? `<button class="btn ghost sm" data-repl-cal="${ev.id}">${ev.replacedByName ? 'Modifier' : '+ Remplaçant'}</button>` : ''}</td>` : '';
+    return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td>${replCell}</tr>`;
   }).join('')).join('');
   return `
     <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
@@ -986,7 +995,7 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
         </div>
         ${renderDashWeekRows(weekAbs, weekDays)}
       </div>
-      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th></tr></thead><tbody>${detail}</tbody></table></div>` : ''}
+      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th>${isAdmin ? '<th>Remplaçant</th>' : ''}</tr></thead><tbody>${detail}</tbody></table></div>` : ''}
     </div>`;
 }
 
@@ -1108,7 +1117,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         <div id="ret-wrap" style="display:none"><label>Durée du retard</label>
           <select name="retardMinutes"><option value="30">30 minutes</option><option value="60">1 heure</option><option value="120">2 heures</option><option value="180">3 heures et plus</option></select></div>
         <label>Remplacé par (facultatif)</label>
-        <select name="replacedById"><option value="">— Personne —</option></select>
+        <select name="replacedById"><option value="">Pas de remplaçant</option></select>
         <p class="help" id="repl-note" style="display:none"></p>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
@@ -1165,7 +1174,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         const exceptId = f.userId.value;
         const current = f.replacedById.value;
         const annotate = (m) => { const c = replacerUnavailableClient(m, allEvents, s, e, exceptId); return c ? ` (pas disponible — ${c})` : ''; };
-        f.replacedById.innerHTML = `<option value="">— Personne —</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId && replacerAllowedClient(m)), current, annotate);
+        f.replacedById.innerHTML = `<option value="">Pas de remplaçant</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId && replacerAllowedClient(m)), current, annotate);
         if (![...f.replacedById.options].some((o) => o.value === current)) f.replacedById.value = '';
         replNote.style.display = (s && e) ? '' : 'none';
         replNote.textContent = (s && e) ? 'Seuls les salariés disponibles sur la période peuvent être choisis comme remplaçants.' : '';
@@ -5257,7 +5266,7 @@ async function editEventModal(req, body) {
       </div>
       <div class="row">
         <div><label>Type de congé</label><select id="ee-type">${typeOpts}</select></div>
-        <div><label>Remplaçant</label><select id="ee-repl"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById)}</select></div>
+        <div><label>Remplaçant</label><select id="ee-repl"><option value="">Pas de remplaçant</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById)}</select></div>
       </div>
       <div class="row">
         <div><label>Nombre de jours</label><input type="number" step="0.5" min="0" id="ee-days" value="${req.days || 0}"></div>
@@ -5310,7 +5319,7 @@ async function editEventModal(req, body) {
 }
 
 // Attribuer / changer le remplaçant d'une demande (depuis les demandes en attente).
-async function replacementModal(req, body) {
+async function replacementModal(req, body, onDone) {
   if (!req) return;
   let team = [], events = [];
   try { team = (await api('GET', '/team')).team; events = (await api('GET', '/calendar')).events; } catch (e) { toast(e.message, 'err'); return; }
@@ -5320,11 +5329,11 @@ async function replacementModal(req, body) {
     bodyHTML: `
       <p class="help">Période : ${fmtDate(req.startDate)} → ${fmtDate(req.endDate)}. Seuls les salariés disponibles sur cette période sont proposés.</p>
       <label>Remplaçant</label>
-      <select id="repl-sel"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId && replacerAllowedClient(m)), req.replacedById, annotate)}</select>`,
+      <select id="repl-sel"><option value="">Pas de remplaçant</option>${teamOptgroups(team.filter((m) => m.id !== req.userId && replacerAllowedClient(m)), req.replacedById, annotate)}</select>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="repl-save">Enregistrer</button>`,
     onMount: (ov) => {
       ov.querySelector('#repl-save').onclick = async () => {
-        try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: ov.querySelector('#repl-sel').value || null }); closeModal(); toast('Remplaçant mis à jour.', 'ok'); adminReqs(body); }
+        try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: ov.querySelector('#repl-sel').value || null }); closeModal(); toast('Remplaçant mis à jour.', 'ok'); if (onDone) onDone(); else adminReqs(body); }
         catch (e) { if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message); else toast(e.message, 'err'); }
       };
     },
