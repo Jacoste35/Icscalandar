@@ -4248,58 +4248,107 @@ function hoursSaisie(body) {
 }
 function hmToMinClient(s) { const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/); return m ? (Number(m[1]) * 60 + Number(m[2])) : null; }
 
-/* --- Heures supplémentaires : compteur par salarié (base hebdo paramétrable) - */
-let _hsupBase = 35;
+/* --- Heures supplémentaires : 25%/50%, paiement, transmission récupération --- */
 function isoWeekKey(d) { const x = isoWeekStart(d); return iso(x); }
+function getSettlement(userId, month) { return (_hours.settlements || []).find((s) => s.userId === userId && s.month === month) || { paidHours: 0, transmittedEquiv: 0 }; }
+// Répartit des HSUP brutes en 25% (8 premières) et 50% (au-delà).
+function splitHsup(h) { const h25 = Math.min(Math.max(0, h), 8); const h50 = Math.max(0, h - 8); return { h25, h50 }; }
+// Équivalent récupération (heures de repos majorées) : 1h25 et 1h30.
+function equivRecup(h25, h50) { return Math.round((h25 * 1.25 + h50 * 1.5) * 100) / 100; }
+
 function hoursHsup(body) {
-  // Agrège les entrées par salarié.
+  const base = _hours.hsupBase || 35;
   const byUser = {};
   _hours.entries.forEach((e) => { (byUser[e.userId] = byUser[e.userId] || { name: e.userName, days: [] }).days.push(e); });
   const ids = Object.keys(byUser);
   if (!ids.length) { body.innerHTML = `<div class="alert info">Aucune donnée. Importez un rapport d'activité ou saisissez des heures.</div>`; return; }
+
   const cards = ids.map((id) => {
-    const u = byUser[id];
-    u.days.sort((a, b) => a.date.localeCompare(b.date));
-    // Hebdo.
+    const u = byUser[id]; u.days.sort((a, b) => a.date.localeCompare(b.date));
+    // Semaines -> HSUP -> répartition 25/50 par semaine.
     const weeks = {};
     u.days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); (weeks[k] = weeks[k] || { worked: 0, days: 0 }); weeks[k].worked += e.worked || 0; weeks[k].days += 1; });
-    const weekRows = Object.keys(weeks).sort().map((k) => { const w = weeks[k]; const hsup = Math.max(0, w.worked - _hsupBase); return { k, worked: w.worked, days: w.days, hsup }; });
-    const totalHsup = weekRows.reduce((s, w) => s + w.hsup, 0);
-    const totalWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
-    // Mensuel (HSUP = somme des HSUP des semaines rattachées au mois du lundi).
+    const weekRows = Object.keys(weeks).sort().map((k) => { const w = weeks[k]; const hsup = Math.max(0, w.worked - base); const sp = splitHsup(hsup); return { k, worked: w.worked, days: w.days, hsup, h25: sp.h25, h50: sp.h50 }; });
+    // Agrégat mensuel (25/50 sommés sur les semaines du mois).
     const months = {};
-    weekRows.forEach((w) => { const m = w.k.slice(0, 7); (months[m] = months[m] || { worked: 0, hsup: 0 }); months[m].worked += w.worked; months[m].hsup += w.hsup; });
+    weekRows.forEach((w) => { const m = w.k.slice(0, 7); (months[m] = months[m] || { worked: 0, h25: 0, h50: 0 }); months[m].worked += w.worked; months[m].h25 += w.h25; months[m].h50 += w.h50; });
+    const monthKeys = Object.keys(months).sort();
+    // Calcul des restants par mois (après paiement) + transmission déjà faite.
+    let totRemEquiv = 0, totHsup = 0;
+    const monthCalc = monthKeys.map((m) => {
+      const mo = months[m]; const hsup = mo.h25 + mo.h50; totHsup += hsup;
+      const st = getSettlement(id, m);
+      // Paiement (heures brutes) imputé d'abord sur le 25% puis le 50%.
+      const remH25 = Math.max(0, mo.h25 - st.paidHours);
+      const remH50 = Math.max(0, mo.h50 - Math.max(0, st.paidHours - mo.h25));
+      const equipTot = equivRecup(mo.h25, mo.h50);
+      const remEquiv = Math.max(0, equivRecup(remH25, remH50) - (st.transmittedEquiv || 0));
+      totRemEquiv += remEquiv;
+      return { m, ...mo, hsup, equipTot, paid: st.paidHours || 0, transmitted: st.transmittedEquiv || 0, remEquiv };
+    });
     const open = !!_vehOpen['hsup_' + id];
+    const totWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
+    const rows = monthCalc.map((c) => `<tr>
+      <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
+      <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
+      <td>${hFmt(c.equipTot)} <span class="help">(${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
+      <td><input class="hsup-paid" data-uid="${id}" data-month="${c.m}" type="number" step="0.5" min="0" value="${c.paid}" style="width:70px"></td>
+      <td>${c.transmitted > 0 ? hFmt(c.transmitted) : '—'}</td>
+      <td><strong class="${c.remEquiv > 0 ? 'warn' : 'pos'}">${hFmt(c.remEquiv)}</strong> <span class="help">(${(c.remEquiv / HPERDAY).toFixed(2)} j)</span></td>
+      <td>${c.remEquiv > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remEquiv}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
+    </tr>`).join('');
     return `<div class="card veh-card">
       <div class="veh-card-head" data-toggle="hsup_${id}">
         <span class="veh-caret">${open ? '▾' : '▸'}</span>
         <strong>${esc(u.name)}</strong>
-        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} jours · ${hFmt(totalWorked)}</span><span class="pill ${totalHsup > 0 ? 'warn' : 'ok'}">Compteur HSUP : ${hFmt(totalHsup)}</span></span>
+        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span><span class="pill ${totRemEquiv > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemEquiv)} (${(totRemEquiv / HPERDAY).toFixed(1)} j)</span></span>
       </div>
       ${open ? `<div class="veh-card-body">
-        <h4 style="margin:.4rem 0 .3rem">Semaine par semaine</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>Base</th><th>HSUP</th></tr></thead>
-          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${_hsupBase}h</td><td>${w.hsup > 0 ? `<span class="pill warn">${hFmt(w.hsup)}</span>` : '—'}</td></tr>`).join('')}</tbody></table></div>
-        <h4 style="margin:.7rem 0 .3rem">Mois par mois</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP</th></tr></thead>
-          <tbody>${Object.keys(months).sort().map((m) => `<tr><td>${esc(m)}</td><td>${hFmt(months[m].worked)}</td><td>${months[m].hsup > 0 ? hFmt(months[m].hsup) : '—'}</td></tr>`).join('')}</tbody></table></div>
+        <h4 style="margin:.4rem 0 .3rem">Récapitulatif mois par mois</h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup.</th><th>Déjà payé (h)</th><th>Transmis</th><th>Reste dû</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="alert info" style="margin-top:.5rem">
+          <strong>Résumé en jours de récupération</strong> (ajustements légaux : +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour).<br>
+          Reste à transmettre à ${esc(u.name)} : <strong>${hFmt(totRemEquiv)}</strong> ≈ <strong>${(totRemEquiv / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.
+        </div>
+        <div style="margin:.5rem 0"><button class="btn ok" data-transmitall="${id}">Transmettre tout le reste dû au compteur de ${esc(u.name)}</button></div>
+        <h4 style="margin:.7rem 0 .3rem">Semaine par semaine</h4>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>HSUP</th><th>25%</th><th>50%</th></tr></thead>
+          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td></tr>`).join('')}</tbody></table></div>
         <h4 style="margin:.7rem 0 .3rem">Jour par jour</h4>
         <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Amplitude</th></tr></thead>
           <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${hFmt(e.amplitude)}</td></tr>`).join('')}</tbody></table></div>
       </div>` : ''}
     </div>`;
   }).join('');
+
   body.innerHTML = `
     <div class="card"><h3>Heures supplémentaires</h3>
       <div style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap">
-        <div><label>Base hebdomadaire (heures au-delà desquelles = HSUP)</label><input id="hsup-base" type="number" step="0.5" min="0" value="${_hsupBase}" style="width:120px"></div>
-        <button class="btn ghost" id="hsup-recalc">Recalculer</button>
+        <div><label>Base hebdomadaire (h au-delà = HSUP)</label><input id="hsup-base" type="number" step="0.5" min="0" value="${base}" style="width:120px"></div>
+        <button class="btn ghost" id="hsup-recalc">Enregistrer la base & recalculer</button>
       </div>
-      <p class="help">Les heures supplémentaires sont calculées par semaine (au-delà de la base), puis cumulées par mois et au total. Base légale en France : 35 h/semaine.</p>
+      <p class="help">HSUP calculées par semaine (au-delà de la base, 35 h légal), réparties en <strong>+25%</strong> (8 premières heures) et <strong>+50%</strong>. « Déjà payé » réduit le reste dû ; « Transmettre » crédite le compteur Récupération du salarié (il pourra alors poser sa récup).</p>
     </div>
     ${cards}`;
-  document.getElementById('hsup-recalc').onclick = () => { _hsupBase = Number(document.getElementById('hsup-base').value) || 35; hrTab('hsup'); };
+  document.getElementById('hsup-recalc').onclick = async () => { try { await api('PUT', '/staff/hsup-base', { base: document.getElementById('hsup-base').value }); await loadHours(); hrTab('hsup'); } catch (e) { toast(e.message, 'err'); } };
   body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; hoursHsup(body); });
+  body.querySelectorAll('.hsup-paid').forEach((inp) => inp.onchange = async () => {
+    try { await api('PUT', '/staff/hsup-settlement', { userId: inp.dataset.uid, month: inp.dataset.month, paidHours: inp.value }); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-transmit]').forEach((b) => b.onclick = async () => {
+    if (!confirm(`Transmettre ${hFmt(+b.dataset.eq)} de récupération au compteur du salarié ?`)) return;
+    try { const r = await api('POST', '/staff/hsup/transmit', { userId: b.dataset.transmit, month: b.dataset.month, equivHours: b.dataset.eq }); toast(`Transmis. Nouveau solde récup. : ${hFmt(r.newBalance)}.`, 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-transmitall]').forEach((b) => b.onclick = async () => {
+    const id = b.dataset.transmitall;
+    const btns = Array.from(body.querySelectorAll(`[data-transmit="${id}"]`));
+    if (!btns.length) { toast('Rien à transmettre.', 'info'); return; }
+    if (!confirm('Transmettre tout le reste dû de ce salarié à son compteur de récupération ?')) return;
+    try { for (const bt of btns) await api('POST', '/staff/hsup/transmit', { userId: id, month: bt.dataset.month, equivHours: bt.dataset.eq }); toast('Récupération transmise.', 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
 }
 
 /* --- Import d'un rapport d'activité (.xlsx) -------------------------------- */
