@@ -4313,7 +4313,9 @@ function hoursHsup(body) {
         <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span><span class="pill ${totRemDue > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemDue)}<span class="help" style="opacity:.85"> (≈ ${(totRemEquivInfo / HPERDAY).toFixed(1)} j récup.)</span></span></span>
       </div>
       ${open ? `<div class="veh-card-body">
-        <h4 style="margin:.4rem 0 .3rem">Récapitulatif mois par mois</h4>
+        <h4 style="margin:.4rem 0 .3rem">Synthèse du salarié</h4>
+        ${synthSalarie(u.days, base)}
+        <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
         <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <div class="alert info" style="margin-top:.5rem">
           <strong>Reste à transmettre à ${esc(u.name)} : ${hFmt(totRemDue)}</strong> d'heures supplémentaires réalisées (heures brutes transmises au compteur du salarié).<br>
@@ -4365,6 +4367,72 @@ function hoursHsup(body) {
 }
 
 // Synthèse mensuelle des indemnités & événements (paniers, nuit, découcher, km).
+// Synthèse d'un salarié : totaux de la période en cours (dernier mois importé)
+// + tendance sur le trimestre glissant (3 derniers mois) pour voir s'il a plus
+// ou moins travaillé.
+function synthSalarie(days, base) {
+  base = base || 35;
+  if (!days || !days.length) return '<p class="help">—</p>';
+  // Agrégats mensuels : heures + indemnités/événements.
+  const m = {};
+  const bucket = () => ({ worked: 0, days: 0, hsup: 0, night: 0, midi: 0, soir: 0, casse: 0, dec: 0, km: 0, abs: 0 });
+  days.forEach((e) => {
+    const k = (e.date || '').slice(0, 7); if (!k) return;
+    const o = m[k] = m[k] || bucket();
+    o.worked += e.worked || 0; o.days += 1; o.night += e.nightHours || 0;
+    o.midi += e.mealMidi || 0; o.soir += e.mealSoir || 0; o.casse += e.casseCroute || 0;
+    o.dec += e.decoucher || 0; o.km += e.km || 0; o.abs += e.absence || 0;
+  });
+  // HSUP par semaine (au-delà de la base) imputées au mois de la semaine.
+  const weeks = {};
+  days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); weeks[k] = (weeks[k] || 0) + (e.worked || 0); });
+  Object.keys(weeks).forEach((wk) => { const mk = wk.slice(0, 7); const o = m[mk] = m[mk] || bucket(); o.hsup += Math.max(0, weeks[wk] - base); });
+  const keys = Object.keys(m).sort();
+  if (!keys.length) return '<p class="help">—</p>';
+  const cur = m[keys[keys.length - 1]]; const curK = keys[keys.length - 1];
+  // Fenêtre glissante : 3 derniers mois.
+  const win = keys.slice(-3); const winData = win.map((k) => m[k]);
+  const totW = winData.reduce((s, o) => s + o.worked, 0);
+  const totH = winData.reduce((s, o) => s + o.hsup, 0);
+  const avgW = totW / winData.length;
+  const lastW = winData[winData.length - 1].worked;
+  const firstW = winData[0].worked;
+  const diffAvg = avgW ? Math.round(((lastW - avgW) / avgW) * 100) : 0;
+  const diffFirst = firstW ? Math.round(((lastW - firstW) / firstW) * 100) : 0;
+  const verdict = diffAvg > 2 ? 'plus' : (diffAvg < -2 ? 'moins' : 'autant');
+  const vcls = diffAvg > 2 ? 'warn' : (diffAvg < -2 ? 'pos' : '');
+  // Mini graphe heures travaillées par mois (toute la période).
+  const allW = keys.map((k) => ({ l: k.slice(2), v: m[k].worked }));
+  const maxW = Math.max(1, ...allW.map((i) => i.v));
+  const bars = `<div class="bars">${allW.map((i) => { const h = Math.round((i.v / maxW) * 100); const isCur = i.l === curK.slice(2); return `<div class="bar-col"><div class="bar-wrap"><div class="bar ${isCur ? 'pos' : ''}" style="height:${h}%;${isCur ? '' : 'background:var(--accent,#6b7cff);opacity:.55'}" title="${hFmt(i.v)}"></div></div><div class="bar-lbl">${esc(i.l)}</div><div class="bar-val">${hFmt(i.v)}</div></div>`; }).join('')}</div>`;
+  const tile = (lbl, val) => `<div class="stat" style="min-width:96px;padding:.4rem .6rem"><div class="value" style="font-size:1.05rem">${val}</div><div class="label">${lbl}</div></div>`;
+  const arrow = (pct) => pct > 2 ? `<span class="warn">▲ +${pct}%</span>` : (pct < -2 ? `<span class="pos">▼ ${pct}%</span>` : '<span class="help">≈</span>');
+  return `
+    <div class="alert info" style="margin:.2rem 0 .5rem">
+      <strong>Période en cours — ${esc(curK)}</strong>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.45rem">
+        ${tile('Jours travaillés', cur.days)}
+        ${tile('Heures travaillées', hFmt(cur.worked))}
+        ${tile('Heures sup.', cur.hsup ? hFmt(cur.hsup) : '—')}
+        ${tile('Heures de nuit', cur.night ? hFmt(cur.night) : '—')}
+        ${tile('Paniers midi', cur.midi || '—')}
+        ${tile('Paniers soir', cur.soir || '—')}
+        ${tile('Casse-croûte', cur.casse || '—')}
+        ${tile('Découcher', cur.dec || '—')}
+        ${tile('Kilomètres', cur.km ? cur.km.toLocaleString('fr-FR') : '—')}
+        ${tile('Absences', cur.abs ? hFmt(cur.abs) : '—')}
+      </div>
+    </div>
+    <h4 style="margin:.6rem 0 .3rem">Tendance sur le trimestre glissant (${winData.length} dernier(s) mois)</h4>
+    <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Jours</th><th>Travaillé</th><th>Évol.</th><th>HSUP</th><th>Nuit</th><th>Paniers (m/s)</th><th>Km</th></tr></thead>
+      <tbody>${win.map((k, i) => { const o = m[k]; const prev = i > 0 ? m[win[i - 1]].worked : null; const pct = prev ? Math.round(((o.worked - prev) / prev) * 100) : null; return `<tr><td>${esc(k)}</td><td>${o.days}</td><td>${hFmt(o.worked)}</td><td>${pct === null ? '—' : arrow(pct)}</td><td>${o.hsup ? hFmt(o.hsup) : '—'}</td><td>${o.night ? hFmt(o.night) : '—'}</td><td>${(o.midi || 0)}/${(o.soir || 0)}</td><td>${o.km ? o.km.toLocaleString('fr-FR') : '—'}</td></tr>`; }).join('')}</tbody></table></div>
+    ${allW.length > 1 ? `<div style="margin:.5rem 0">${bars}</div>` : ''}
+    <div class="alert ${vcls || 'info'}" style="margin-top:.4rem">
+      Trimestre glissant : <strong>${hFmt(totW)}</strong> travaillées (moyenne <strong>${hFmt(avgW)}</strong>/mois, dont <strong>${hFmt(totH)}</strong> d'heures sup.).<br>
+      Le mois en cours est <strong>${diffAvg >= 0 ? '+' : ''}${diffAvg}%</strong> par rapport à la moyenne du trimestre et <strong>${diffFirst >= 0 ? '+' : ''}${diffFirst}%</strong> par rapport au 1ᵉʳ mois de la fenêtre — le chauffeur a travaillé <strong>${verdict}</strong> ce mois-ci.
+    </div>`;
+}
+
 function indMonthsHTML(days) {
   const m = {};
   days.forEach((e) => { const k = (e.date || '').slice(0, 7); const o = m[k] = m[k] || { midi: 0, soir: 0, casse: 0, dec: 0, night: 0, km: 0, abs: 0 }; o.midi += e.mealMidi || 0; o.soir += e.mealSoir || 0; o.casse += e.casseCroute || 0; o.dec += e.decoucher || 0; o.night += e.nightHours || 0; o.km += e.km || 0; o.abs += e.absence || 0; });
