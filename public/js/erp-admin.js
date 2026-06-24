@@ -82,7 +82,9 @@
     top.appendChild(close);
 
     const tabs = E('div', 'erp-tabs');
-    [['dashboard', 'Tableau de bord'], ['invoices', 'Facturation'], ['documents', 'Documents'],
+    [['dashboard', 'Tableau de bord'], ['tours', 'Tournées'], ['invoices', 'Facturation'],
+     ['cashflow', 'Trésorerie'], ['closing', 'Clôture'], ['documents', 'Documents'],
+     ['rh', 'RH'], ['expenses', 'Frais'], ['stock', 'Réappro'],
      ['compliance', 'Conformité'], ['audit', 'Journal']].forEach(([id, label]) => {
       const b = E('button'); b.textContent = label; b.dataset.tab = id;
       if (id === current) b.classList.add('active');
@@ -99,8 +101,14 @@
     bodyEl.innerHTML = 'Chargement…';
     try {
       if (tab === 'dashboard') return renderDashboard(await api('GET', '/dashboard'));
+      if (tab === 'tours') return renderTours(await api('GET', '/meta'), await api('GET', '/tours/analytics?ym=' + ymNow()));
       if (tab === 'invoices') return renderInvoices(await api('GET', '/invoices'));
-      if (tab === 'documents') return renderDocuments(await api('GET', '/templates'), await api('GET', '/compliance'));
+      if (tab === 'cashflow') return renderCashflow(await api('GET', '/cashflow'), await api('GET', '/recurring'));
+      if (tab === 'closing') return renderClosing();
+      if (tab === 'documents') return renderDocuments(await api('GET', '/templates'), await api('GET', '/meta'));
+      if (tab === 'rh') return renderRh(await api('GET', '/meta'), await api('GET', '/staff-docs'));
+      if (tab === 'expenses') return renderExpenses(await api('GET', '/meta'), await api('GET', '/expenses'));
+      if (tab === 'stock') return renderStock(await api('GET', '/restock'));
       if (tab === 'compliance') return renderCompliance(await api('GET', '/compliance'));
       if (tab === 'audit') return renderAudit(await api('GET', '/audit'));
     } catch (e) { bodyEl.innerHTML = `<div class="erp-alert critique">Erreur : ${e.message}</div>`; }
@@ -209,8 +217,22 @@
       <div class="erp-row">
         <button class="erp-btn" id="dc-gen">Générer le brouillon</button>
         <button class="erp-btn ghost" id="dc-save" style="display:none">Valider &amp; enregistrer (sanction)</button>
+        <button class="erp-btn ghost" id="dc-pack">📦 Pack départ (3 documents)</button>
       </div>`;
     bodyEl.appendChild(form);
+    form.querySelector('#dc-pack').onclick = async () => {
+      const userId = form.querySelector('#dc-user').value;
+      if (!userId) return alert('Sélectionnez un salarié.');
+      const lastDay = prompt('Dernier jour travaillé (AAAA-MM-JJ) :', new Date().toISOString().slice(0, 10));
+      if (!lastDay) return;
+      const motif = prompt('Motif de la rupture :', 'Rupture conventionnelle') || '';
+      try {
+        const { docs } = await api('POST', '/documents/pack-depart', { userId, lastDay, motif });
+        const w = window.open('', '_blank');
+        w.document.write(docs.map((d) => `<h2>${d.label}</h2>${d.html}<hr style="page-break-after:always">`).join(''));
+        w.document.close();
+      } catch (e) { alert('Erreur : ' + e.message); }
+    };
     const preview = E('div', 'erp-card'); preview.style.display = 'none'; preview.style.background = '#fff'; preview.style.color = '#1e293b';
     bodyEl.appendChild(preview);
 
@@ -221,7 +243,11 @@
       const motif = form.querySelector('#dc-motif').value;
       const faits = form.querySelector('#dc-faits').value;
       const u = users.find((x) => x.id === userId);
-      const vars = { motif, faits, salarie: u ? { fullName: u.name, lastName: (u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: '', hireDate: '', poste: 'conducteur VL' } : {} };
+      const vars = {
+        motif, faits,
+        salarie: u ? { fullName: u.name, lastName: (u.lastName || u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: u.address || '', birthDate: u.birthDate || '', hireDate: u.hireDate || '', poste: 'conducteur VL ≤ 3,5 T', coefficient: '110M' } : {},
+        contrat: { type: 'CDI', lieu: 'Éterville (14930) et déplacements', horaires: '151,67 h/mois (35 h hebdomadaires)', remuneration: 'selon grille — à compléter', periodeEssai: '1 mois', motif: motif, terme: '', objet: motif, clause: faits, dateEffet: '', lastDay: '', detail: '' },
+      };
       try {
         const { html } = await api('POST', '/documents/render', { type, vars });
         preview.innerHTML = `<div contenteditable="true" style="outline:none">${html}</div>`;
@@ -298,6 +324,173 @@
       tb.appendChild(tr);
     });
     bodyEl.appendChild(tbl);
+  }
+
+  const ymNow = () => new Date().toISOString().slice(0, 10).slice(0, 7);
+  const opt = (v, l, sel) => `<option value="${v}"${sel ? ' selected' : ''}>${l}</option>`;
+
+  /* ---- MODULE 1 : Tournées -------------------------------------------- */
+  function renderTours(meta, an) {
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(E('h3', 'erp', 'Saisir un retour de tournée'));
+    const f = E('div');
+    f.innerHTML = `
+      <div class="erp-row">
+        <input id="t-date" type="date" value="${new Date().toISOString().slice(0, 10)}">
+        <select id="t-user">${(meta.users || []).map((u) => opt(u.id, u.name)).join('')}</select>
+        <select id="t-veh"><option value="">— véhicule —</option>${(meta.vehicles || []).map((v) => opt(v.id, (v.plate || v.name))).join('')}</select>
+        <select id="t-ctr"><option value="">— contrat —</option>${(meta.contracts || []).map((c) => opt(c.id, c.client)).join('')}</select>
+      </div>
+      <div class="erp-row">
+        <input id="t-km1" type="number" placeholder="Km début" style="width:110px">
+        <input id="t-km2" type="number" placeholder="Km fin" style="width:110px">
+        <input id="t-pp" type="number" placeholder="Pts prévus" style="width:110px">
+        <input id="t-pd" type="number" placeholder="Pts livrés" style="width:110px">
+        <input id="t-pf" type="number" placeholder="Pts échec" style="width:110px">
+        <input id="t-pick" type="number" placeholder="Ramassages" style="width:120px">
+        <input id="t-fuel" type="number" placeholder="Litres (opt.)" style="width:120px">
+      </div>
+      <div class="erp-row">
+        <input id="t-fr" placeholder="Motif d'échec" style="min-width:220px">
+        <input id="t-inc" placeholder="Incident (opt.)" style="min-width:220px">
+        <button class="erp-btn" id="t-save">Enregistrer le retour</button>
+      </div>`;
+    bodyEl.appendChild(f);
+    f.querySelector('#t-save').onclick = async () => {
+      try {
+        await api('POST', '/tours', {
+          date: f.querySelector('#t-date').value, userId: f.querySelector('#t-user').value, vehicleId: f.querySelector('#t-veh').value, contractId: f.querySelector('#t-ctr').value,
+          kmStart: +f.querySelector('#t-km1').value, kmEnd: +f.querySelector('#t-km2').value,
+          pointsPlanned: +f.querySelector('#t-pp').value, pointsDelivered: +f.querySelector('#t-pd').value, pointsFailed: +f.querySelector('#t-pf').value,
+          pickups: +f.querySelector('#t-pick').value, fuelLiters: +f.querySelector('#t-fuel').value,
+          failReason: f.querySelector('#t-fr').value, incident: f.querySelector('#t-inc').value,
+        });
+        load('tours');
+      } catch (e) { alert('Erreur : ' + e.message); }
+    };
+    bodyEl.appendChild(E('h3', 'erp', `Analyse du mois (${an.ym}) — marge ${euro(an.totals.marge)}`));
+    const tbl = E('table', 'erp');
+    tbl.innerHTML = `<thead><tr><th>Date</th><th>Chauffeur</th><th>Client</th><th>Km</th><th>Pts</th><th>Recette</th><th>Coût</th><th>Marge</th><th></th></tr></thead><tbody></tbody>`;
+    const tb = tbl.querySelector('tbody');
+    (an.rows || []).forEach((r) => {
+      const tr = E('tr'); if (r.marge < 0) tr.style.background = 'rgba(239,68,68,.18)';
+      tr.innerHTML = `<td>${r.date}</td><td>${r.userName || ''}</td><td>${r.client}</td><td>${r.km}</td><td>${r.points}</td><td>${euro(r.recette)}</td><td>${euro(r.coutTotal)}</td><td><strong>${euro(r.marge)}</strong></td><td><button class="erp-btn ghost" data-del>✕</button></td>`;
+      tr.querySelector('[data-del]').onclick = async () => { await api('DELETE', '/tours/' + r.id); load('tours'); };
+      tb.appendChild(tr);
+    });
+    bodyEl.appendChild(tbl);
+    bodyEl.appendChild(barRow('Marge par client', (an.byClient || []).map((c) => ({ label: c.key, value: c.marge }))));
+  }
+
+  // Mini-graphe SVG inline (barres horizontales, valeurs +/-).
+  function barRow(title, items) {
+    const wrap = E('div'); wrap.appendChild(E('h3', 'erp', title));
+    if (!items.length) { wrap.appendChild(E('div', null, '—')); return wrap; }
+    const max = Math.max(1, ...items.map((i) => Math.abs(i.value)));
+    items.forEach((i) => {
+      const row = E('div'); row.style.cssText = 'display:grid;grid-template-columns:150px 1fr auto;gap:8px;align-items:center;margin:4px 0';
+      const w = Math.round(Math.abs(i.value) / max * 100);
+      row.innerHTML = `<span style="color:#94a3b8;font-size:12px">${i.label}</span><span style="background:#0f172a;border-radius:5px;overflow:hidden"><span style="display:block;height:14px;width:${w}%;background:${i.value < 0 ? '#ef4444' : '#22c55e'}"></span></span><span style="${i.value < 0 ? 'color:#ef4444' : ''}">${euro(i.value)}</span>`;
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
+  /* ---- MODULE 5 : Trésorerie prévisionnelle --------------------------- */
+  function renderCashflow(fc, rec) {
+    bodyEl.innerHTML = '';
+    if (fc.anyNegative) bodyEl.appendChild(E('div', 'erp-alert critique', `<span class="badge">critique</span><div>Trésorerie projetée négative — solde minimum ${euro(fc.lowestBalance)}.</div>`));
+    bodyEl.appendChild(E('h3', 'erp', `Prévision ${fc.weeks} semaines (départ ${euro(fc.start)})`));
+    const tbl = E('table', 'erp');
+    tbl.innerHTML = `<thead><tr><th>Sem.</th><th>Du</th><th>Encaiss.</th><th>Décaiss.</th><th>Solde projeté</th></tr></thead><tbody></tbody>`;
+    const tb = tbl.querySelector('tbody');
+    fc.buckets.forEach((b) => { const tr = E('tr'); if (b.negative) tr.style.background = 'rgba(239,68,68,.18)'; tr.innerHTML = `<td>${b.week}</td><td>${b.from}</td><td>${euro(b.in)}</td><td>${euro(b.out)}</td><td><strong>${euro(b.balance)}</strong></td>`; tb.appendChild(tr); });
+    bodyEl.appendChild(tbl);
+    bodyEl.appendChild(E('h3', 'erp', 'Charges récurrentes'));
+    const f = E('div'); f.innerHTML = `<div class="erp-row"><input id="rc-label" placeholder="Libellé (Loyer, URSSAF…)" style="min-width:200px"><input id="rc-amt" type="number" placeholder="Montant €" style="width:130px"><input id="rc-day" type="number" placeholder="Jour" style="width:90px" value="5"><button class="erp-btn" id="rc-add">+ Ajouter</button></div>`;
+    bodyEl.appendChild(f);
+    f.querySelector('#rc-add').onclick = async () => { try { await api('POST', '/recurring', { label: f.querySelector('#rc-label').value, amount: +f.querySelector('#rc-amt').value, dayOfMonth: +f.querySelector('#rc-day').value }); load('cashflow'); } catch (e) { alert(e.message); } };
+    const tbl2 = E('table', 'erp'); tbl2.innerHTML = `<thead><tr><th>Libellé</th><th>Montant</th><th>Jour</th><th></th></tr></thead><tbody></tbody>`;
+    (rec.recurring || []).forEach((x) => { const tr = E('tr'); tr.innerHTML = `<td>${x.label}</td><td>${euro(x.amount)}</td><td>${x.dayOfMonth}</td><td><button class="erp-btn ghost" data-del>✕</button></td>`; tr.querySelector('[data-del]').onclick = async () => { await api('DELETE', '/recurring/' + x.id); load('cashflow'); }; tbl2.querySelector('tbody').appendChild(tr); });
+    bodyEl.appendChild(tbl2);
+  }
+
+  /* ---- MODULE 6 : Clôture mensuelle ----------------------------------- */
+  function renderClosing() {
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(E('h3', 'erp', 'Clôture mensuelle en 1 clic'));
+    const f = E('div'); f.innerHTML = `<div class="erp-row"><input id="cl-ym" type="month" value="${ymNow()}"><button class="erp-btn ghost" id="cl-preview">Aperçu</button><button class="erp-btn" id="cl-run">Exécuter la clôture</button></div>`;
+    bodyEl.appendChild(f);
+    const out = E('div'); bodyEl.appendChild(out);
+    const run = async (preview) => {
+      const ym = f.querySelector('#cl-ym').value;
+      try {
+        const r = await api('POST', `/closing/${ym}${preview ? '?preview=1' : ''}`);
+        out.innerHTML = `<div class="erp-grid" style="margin-top:10px">
+          ${['CA', 'Charges', 'Résultat', 'Marge tournées', 'À encaisser'].map((k, i) => `<div class="erp-card"><div class="k">${k}</div><div class="v">${euro([r.recap.ca, r.recap.charges, r.recap.resultat, r.recap.margeTournees, r.recap.aEncaisser][i])}</div></div>`).join('')}</div>
+          <p>${preview ? 'APERÇU — rien n\'a été enregistré.' : 'Clôture exécutée.'} Factures brouillon : <strong>${r.draftInvoices.length}</strong> · Relances préparées : <strong>${r.overdue.length}</strong> · Lignes de paie : <strong>${r.payroll.length}</strong></p>`;
+      } catch (e) { alert('Erreur : ' + e.message); }
+    };
+    f.querySelector('#cl-preview').onclick = () => run(true);
+    f.querySelector('#cl-run').onclick = () => { if (confirm('Exécuter la clôture (génère les factures brouillon) ?')) run(false); };
+  }
+
+  /* ---- MODULE 7 : Frais / IK ------------------------------------------ */
+  function renderExpenses(meta, d) {
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(E('div', 'erp-alert info', `<span class="badge">info</span><div>${(d.ikScale && d.ikScale.note) || 'Vérifiez le barème IK sur impots.gouv.fr.'}</div>`));
+    bodyEl.appendChild(E('h3', 'erp', 'Nouvelle note de frais'));
+    const f = E('div'); f.innerHTML = `<div class="erp-row">
+      <select id="x-user">${(meta.users || []).map((u) => opt(u.id, u.name)).join('')}</select>
+      <select id="x-type">${opt('ik', 'Indemnité km (IK)')}${opt('frais', 'Frais réel')}</select>
+      <input id="x-km" type="number" placeholder="Km (si IK)" style="width:110px">
+      <input id="x-cv" type="number" placeholder="CV fiscaux" style="width:110px" value="5">
+      <input id="x-amt" type="number" placeholder="Montant € (si frais)" style="width:150px">
+      <input id="x-note" placeholder="Note" style="min-width:160px">
+      <button class="erp-btn" id="x-add">Ajouter</button></div>`;
+    bodyEl.appendChild(f);
+    f.querySelector('#x-add').onclick = async () => { try { await api('POST', '/expenses', { userId: f.querySelector('#x-user').value, type: f.querySelector('#x-type').value, km: +f.querySelector('#x-km').value, cv: +f.querySelector('#x-cv').value, amount: +f.querySelector('#x-amt').value, note: f.querySelector('#x-note').value }); load('expenses'); } catch (e) { alert(e.message); } };
+    const names = {}; (meta.users || []).forEach((u) => names[u.id] = u.name);
+    const tbl = E('table', 'erp'); tbl.innerHTML = `<thead><tr><th>Date</th><th>Salarié</th><th>Type</th><th>Km</th><th>Montant</th><th>Statut</th><th></th></tr></thead><tbody></tbody>`;
+    (d.expenses || []).forEach((x) => { const tr = E('tr'); tr.innerHTML = `<td>${x.date}</td><td>${names[x.userId] || ''}</td><td>${x.type}</td><td>${x.km || '—'}</td><td><strong>${euro(x.amount)}</strong></td><td><span class="pill ${x.status === 'approved' ? 'paid' : x.status === 'rejected' ? 'sent' : 'draft'}">${x.status}</span></td><td class="erp-row" style="margin:0">${x.status !== 'approved' ? '<button class="erp-btn ghost" data-ok>Valider</button>' : ''}<button class="erp-btn ghost" data-del>✕</button></td>`; const ok = tr.querySelector('[data-ok]'); if (ok) ok.onclick = async () => { await api('POST', `/expenses/${x.id}/status`, { status: 'approved' }); load('expenses'); }; tr.querySelector('[data-del]').onclick = async () => { await api('DELETE', '/expenses/' + x.id); load('expenses'); }; tbl.querySelector('tbody').appendChild(tr); });
+    bodyEl.appendChild(tbl);
+  }
+
+  /* ---- MODULE 8 : RH / coffre-fort ------------------------------------ */
+  function renderRh(meta, d) {
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(E('h3', 'erp', 'Coffre-fort salarié (métadonnées)'));
+    const f = E('div'); f.innerHTML = `<div class="erp-row">
+      <select id="r-user">${(meta.users || []).map((u) => opt(u.id, u.name)).join('')}</select>
+      <input id="r-label" placeholder="Document (Permis B, RIB, Visite médicale…)" style="min-width:240px">
+      <input id="r-file" placeholder="Nom de fichier (réf.)" style="min-width:160px">
+      <input id="r-exp" type="date" title="Échéance (optionnel)">
+      <button class="erp-btn" id="r-add">Ajouter</button></div>
+      <p style="color:#94a3b8;font-size:12px">Une échéance renseignée crée automatiquement une alerte de conformité. (Stockage du fichier binaire prévu avec PostgreSQL.)</p>`;
+    bodyEl.appendChild(f);
+    f.querySelector('#r-add').onclick = async () => { try { await api('POST', '/staff-docs', { userId: f.querySelector('#r-user').value, label: f.querySelector('#r-label').value, fileName: f.querySelector('#r-file').value, expiry: f.querySelector('#r-exp').value }); load('rh'); } catch (e) { alert(e.message); } };
+    const names = {}; (d.users || []).forEach((u) => names[u.id] = u.name);
+    const tbl = E('table', 'erp'); tbl.innerHTML = `<thead><tr><th>Salarié</th><th>Document</th><th>Fichier</th><th>Échéance</th><th></th></tr></thead><tbody></tbody>`;
+    (d.docs || []).forEach((x) => { const tr = E('tr'); tr.innerHTML = `<td>${names[x.userId] || ''}</td><td>${x.label}</td><td>${x.fileName || '—'}</td><td>${x.expiry || '—'}</td><td><button class="erp-btn ghost" data-del>✕</button></td>`; tr.querySelector('[data-del]').onclick = async () => { await api('DELETE', '/staff-docs/' + x.id); load('rh'); }; tbl.querySelector('tbody').appendChild(tr); });
+    bodyEl.appendChild(tbl);
+  }
+
+  /* ---- MODULE 9 : Réappro pièces -------------------------------------- */
+  function renderStock(d) {
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(E('h3', 'erp', `Pièces sous le seuil (${(d.items || []).length})`));
+    if (!d.items.length) { bodyEl.appendChild(E('div', null, 'Aucune pièce à réapprovisionner.')); return; }
+    const tbl = E('table', 'erp'); tbl.innerHTML = `<thead><tr><th>Pièce</th><th>Réf.</th><th>Stock</th><th>Seuil</th><th>Fournisseur</th></tr></thead><tbody></tbody>`;
+    (d.items || []).forEach((p) => { const tr = E('tr'); tr.innerHTML = `<td>${p.name}</td><td>${p.ref || '—'}</td><td>${p.qty} ${p.unit || ''}</td><td>${p.seuilMini}</td><td>${p.fournisseur || '—'}</td>`; tbl.querySelector('tbody').appendChild(tr); });
+    bodyEl.appendChild(tbl);
+    const btn = E('button', 'erp-btn', 'Générer le bon de commande'); btn.style.marginTop = '12px';
+    btn.onclick = async () => {
+      try {
+        const { html } = await api('POST', '/restock/order', { fournisseur: (d.items[0].fournisseur || 'Fournisseur'), parts: d.items.map((p) => ({ ref: p.ref, name: p.name, qte: Math.max(1, (p.seuilMini * 2) - p.qty), unitPrice: p.unitPrice })) });
+        const w = window.open('', '_blank'); w.document.write(html); w.document.close();
+      } catch (e) { alert(e.message); }
+    };
+    bodyEl.appendChild(btn);
   }
 
   // ---- Démarrage : on attend que l'app soit chargée et que l'on soit admin
