@@ -391,8 +391,50 @@ function mount(app, deps) {
     res.json({ acks: list.sort((a, b) => b.at.localeCompare(a.at)) });
   }));
 
+  // Document imprimable (publipostage -> page HTML complète -> PDF navigateur).
+  r.post('/documents/print', guard, withData(async (req, res, data) => {
+    const { type, vars, title, html: rawHtml } = req.body || {};
+    let inner = rawHtml;
+    if (!inner) {
+      const tpl = data.settings.erpTemplates[type];
+      if (!tpl) return res.status(404).send('Modèle inconnu');
+      inner = templates.render(tpl.body, Object.assign({ company: data.settings.company, date: new Date().toLocaleDateString('fr-FR') }, vars || {}));
+    }
+    res.type('html').send(printableDoc(title || (data.settings.erpTemplates[type] && data.settings.erpTemplates[type].label) || 'Document', inner));
+  }));
+
+  // Justificatif de frais / IK imprimable.
+  r.get('/expenses/:id/print', guard, withData(async (req, res, data) => {
+    const exp = data.erp.expenses.find((x) => x.id === req.params.id);
+    if (!exp) return res.status(404).send('Note de frais introuvable');
+    const u = (data.users || []).find((x) => x.id === exp.userId);
+    res.type('html').send(invoicing.renderExpenseHtml(exp, u, data.settings.company, data.settings.ikScale));
+  }));
+
   app.use('/api/admin/erp', r);
   console.log('ERP : routeur monté sur /api/admin/erp');
+}
+
+// Enrobe un fragment de publipostage dans une page A4 imprimable (en-tête société).
+function printableDoc(title, inner) {
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${esc(title)}</title>
+<style>
+  @page { margin: 20mm; }
+  body { font: 13px/1.6 'Times New Roman', Georgia, serif; color:#111; max-width:780px; margin:0 auto; padding:10px; }
+  .lh { border-bottom:2px solid #111; padding-bottom:8px; margin-bottom:18px; }
+  .lh-co { font-weight:700; font-size:16px; }
+  .lh-ad { color:#444; font-size:12px; }
+  h2 { text-align:center; font-size:17px; }
+  p { margin:9px 0; text-align:justify; }
+  .addr { margin-left:55%; }
+  .meta { color:#333; font-size:12px; }
+  .sign { margin-top:34px; }
+  table { border-collapse:collapse; }
+  @media print { .noprint { display:none; } }
+</style></head><body>
+${inner}
+<p class="noprint" style="margin-top:26px;text-align:center"><button onclick="window.print()" style="padding:8px 16px;font-size:14px;cursor:pointer">Imprimer / Enregistrer en PDF</button></p>
+</body></html>`;
 }
 
 module.exports = { mount };
