@@ -4277,7 +4277,7 @@ function hmToMinClient(s) { const m = String(s || '').match(/^(\d{1,2}):(\d{2})$
 
 /* --- Heures supplémentaires : 25%/50%, paiement, transmission récupération --- */
 function isoWeekKey(d) { const x = isoWeekStart(d); return iso(x); }
-function getSettlement(userId, month) { return (_hours.settlements || []).find((s) => s.userId === userId && s.month === month) || { paidHours: 0, transmittedEquiv: 0 }; }
+function getSettlement(userId, month) { return (_hours.settlements || []).find((s) => s.userId === userId && s.month === month) || { paidHours: 0, transmittedEquiv: 0, realizedAdj: 0, overpayApplied: 0 }; }
 // Répartit des HSUP brutes en 25% (8 premières) et 50% (au-delà).
 function splitHsup(h) { const h25 = Math.min(Math.max(0, h), 8); const h50 = Math.max(0, h - 8); return { h25, h50 }; }
 // Équivalent récupération (heures de repos majorées) : 1h25 et 1h30.
@@ -4319,8 +4319,11 @@ function hoursHsup(body) {
       const remDue = Math.round((dueH25 + dueH50) * 100) / 100; // HSUP réalisées restant dues (brutes)
       const equipTot = equivRecup(mo.h25, mo.h50);              // info : équiv. récup. du mois
       const remEquivInfo = equivRecup(dueH25, dueH50);          // info : équiv. récup. du reste dû
+      const realizedAdj = st.realizedAdj || 0;                  // correction manuelle du réalisé
+      const effRealized = Math.round((hsup + realizedAdj) * 100) / 100; // réalisé corrigé (affiché)
+      const overpay = Math.max(0, Math.round((paid - hsup) * 100) / 100); // trop-payé (payé > réalisé)
       totRemDue += remDue; totRemEquivInfo += remEquivInfo;
-      return { m, ...mo, hsup, equipTot, paid, transmitted, remDue, remEquivInfo };
+      return { m, ...mo, hsup, equipTot, paid, transmitted, remDue, remEquivInfo, realizedAdj, effRealized, overpay };
     });
     const open = !!_vehOpen['hsup_' + id];
     const jourOpen = !!_vehOpen['jour_' + id];
@@ -4331,8 +4334,9 @@ function hoursHsup(body) {
     const rows = monthCalc.map((c) => `<tr>
       <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
       <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
+      <td><input class="hsup-realized" data-uid="${id}" data-month="${c.m}" data-computed="${c.hsup}" data-old="${c.realizedAdj}" type="number" step="0.5" min="0" value="${c.effRealized}" style="width:74px" title="Réalisé corrigé : l'écart avec le réalisé importé (${hFmt(c.hsup)}) est transmis au compteur du salarié">${c.realizedAdj ? `<div class="help">ajust. ${c.realizedAdj > 0 ? '+' : ''}${hFmt(c.realizedAdj)}</div>` : ''}</td>
       <td><span class="help">${hFmt(c.equipTot)} (${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
-      <td><input class="hsup-paid" data-uid="${id}" data-month="${c.m}" type="number" step="0.5" min="0" value="${c.paid}" style="width:70px"></td>
+      <td><input class="hsup-paid" data-uid="${id}" data-month="${c.m}" data-computed="${c.hsup}" type="number" step="0.5" min="0" value="${c.paid}" style="width:70px">${c.overpay > 0 ? `<div class="help" style="color:var(--danger)">trop-payé ${hFmt(c.overpay)} → −${hFmt(c.overpay)} au stock</div>` : ''}</td>
       <td><input class="hsup-transmitted" data-uid="${id}" data-month="${c.m}" data-old="${c.transmitted}" type="number" step="0.5" min="0" value="${c.transmitted}" style="width:70px" title="Modifie ce qui a déjà été transmis au compteur du salarié (ajuste son solde)"></td>
       <td><strong class="${c.remDue > 0 ? 'warn' : 'pos'}">${hFmt(c.remDue)}</strong>${c.remDue > 0 ? ` <span class="help">(≈ ${(c.remEquivInfo / HPERDAY).toFixed(2)} j récup.)</span>` : ''}</td>
       <td>${c.remDue > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remDue}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
@@ -4347,8 +4351,8 @@ function hoursHsup(body) {
         <h4 style="margin:.4rem 0 .3rem">Synthèse du salarié</h4>
         ${synthSalarie(u.days, base, id)}
         <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-        <p class="help" style="margin:.3rem 0">« Déjà payé » et « Transmis » sont modifiables directement (mettez 0 pour annuler). Modifier « Transmis » ajuste automatiquement le compteur Récupération du salarié.</p>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Réalisé HSUP (h)</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        <p class="help" style="margin:.3rem 0">« Réalisé HSUP », « Déjà payé » et « Transmis » sont modifiables directement (mettez 0 pour annuler). Corriger le <strong>Réalisé</strong> transmet l'écart au compteur du salarié ; <strong>trop-payer</strong> un mois (payé &gt; réalisé) décrémente son stock d'HSUP d'autant ; modifier « Transmis » ajuste aussi son compteur.</p>
         <div class="alert info" style="margin-top:.5rem">
           <strong>Reste à transmettre à ${esc(u.name)} : ${hFmt(totRemDue)}</strong> d'heures supplémentaires réalisées (heures brutes transmises au compteur du salarié).<br>
           <span class="help">Équivalence en récupération (à titre informatif, pour la direction) : ajustements légaux +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour. Soit ≈ <strong>${(totRemEquivInfo / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</span>
@@ -4379,8 +4383,18 @@ function hoursHsup(body) {
   document.getElementById('hsup-recalc').onclick = async () => { try { await api('PUT', '/staff/hsup-base', { base: document.getElementById('hsup-base').value }); await loadHours(); hrTab('hsup'); } catch (e) { toast(e.message, 'err'); } };
   body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; hoursHsup(body); });
   body.querySelectorAll('.hsup-paid').forEach((inp) => inp.onchange = async () => {
-    try { await api('PUT', '/staff/hsup-settlement', { userId: inp.dataset.uid, month: inp.dataset.month, paidHours: inp.value }); await loadHours(); hoursHsup(body); }
+    try { const r = await api('PUT', '/staff/hsup-settlement', { userId: inp.dataset.uid, month: inp.dataset.month, paidHours: inp.value, computedRealized: Number(inp.dataset.computed) || 0 }); if (r.newBalance != null) toast(`Enregistré. Solde récup. : ${hFmt(r.newBalance)}.`, 'ok'); await loadHours(); hoursHsup(body); }
     catch (e) { toast(e.message, 'err'); }
+  });
+  // Correction du réalisé d'un mois : l'écart est transmis au compteur du salarié.
+  body.querySelectorAll('.hsup-realized').forEach((inp) => inp.onchange = async () => {
+    const computed = Number(inp.dataset.computed) || 0, oldAdj = Number(inp.dataset.old) || 0;
+    const entered = Number(inp.value) || 0, newAdj = Math.round((entered - computed) * 100) / 100;
+    if (newAdj === oldAdj) return;
+    const d = Math.round((newAdj - oldAdj) * 100) / 100;
+    if (!confirm(`Corriger le réalisé de ${hFmt(computed + oldAdj)} à ${hFmt(entered)} ? L'écart (${d >= 0 ? '+' : ''}${hFmt(d)}) sera transmis au compteur du salarié.`)) { inp.value = computed + oldAdj; return; }
+    try { const r = await api('PUT', '/staff/hsup-settlement', { userId: inp.dataset.uid, month: inp.dataset.month, realizedAdj: newAdj, computedRealized: computed }); toast(`Réalisé corrigé. Nouveau solde récup. : ${hFmt(r.newBalance)}.`, 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); inp.value = computed + oldAdj; }
   });
   // Correction du nombre d'heures déjà transmises (ajuste le solde Récup. du salarié).
   body.querySelectorAll('.hsup-transmitted').forEach((inp) => inp.onchange = async () => {
