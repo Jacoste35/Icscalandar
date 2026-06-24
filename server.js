@@ -105,6 +105,9 @@ function displayCode(req) {
 //   RCP -> heures supplémentaires (heures) = compteur de récupération
 //   RCC -> compteur RCC dédié (jours)
 function deductionFor(r) {
+  // Absences importées rétroactivement : visibles au planning mais SANS décompte
+  // de solde (les compteurs sont gérés à part).
+  if (r.noDeduct) return null;
   if (r.category === 'CP') return { balance: r.pool === 'N1' ? 'congesN1' : 'congesN', amount: r.days };
   if (r.category === 'RCP') return { balance: 'heuresSupp', amount: r.hours };
   if (r.category === 'RCC') return { balance: 'rcc', amount: r.hours };
@@ -2772,7 +2775,7 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
   const u = db.users.find((x) => x.id === userId);
   if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
   if (!Array.isArray(rows)) return res.status(400).json({ error: 'Données invalides' });
-  let added = 0;
+  let added = 0, planned = 0;
   const touchedMonths = new Set();
   for (const r of rows) {
     if (!validDate(r.date)) continue;
@@ -2780,6 +2783,28 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
     // Une seule entrée par salarié et par jour : on remplace.
     db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date === r.date));
     const r2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
+    // Absence saisie : on l'ajoute aussi au PLANNING (rétroactif) pour voir qui
+    // était présent/absent à cette date — sans décompte de solde, et seulement
+    // si aucun évènement ne couvre déjà ce jour.
+    if (r2(r.absence) > 0) {
+      const ds = r.date;
+      const exists = db.requests.some((x) => x.userId === userId && x.category !== 'RET' && x.status !== 'rejected' && x.startDate <= ds && x.endDate >= ds);
+      if (!exists) {
+        const code = (r.absCat && categoryByCode(r.absCat) && r.absCat !== 'DCP') ? r.absCat : 'CP';
+        const cat = categoryByCode(code);
+        const wd = holidays.countWorkingDays(ds, ds);
+        db.requests.push({
+          id: nextId('request'), userId, category: code, pool: code === 'CP' ? 'N' : null,
+          startDate: ds, endDate: ds, reason: (cat ? cat.label : 'Absence') + ' (import)',
+          retardMinutes: null, days: wd, hours: r2(wd * HOURS_PER_DAY),
+          status: 'approved', createdAt: new Date().toISOString(), decidedAt: new Date().toISOString(),
+          decidedBy: req.user.id, createdBy: req.user.id, replacedById: null, replacedByName: null,
+          adminNote: 'Absence importée depuis le rapport d’activité (rétroactif, sans décompte de solde)',
+          source: 'import', noDeduct: true,
+        });
+        planned++;
+      }
+    }
     db.workHours.push({
       id: nextId('wh'), userId, userName: `${u.firstName} ${u.lastName}`, date: r.date,
       start: String(r.start || ''), end: String(r.end || ''), breakMin: Number(r.breakMin) || 0,
@@ -2798,7 +2823,7 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
     .filter((s) => s.userId === userId && touchedMonths.has(s.month) && (s.transmittedEquiv || 0) > 0)
     .map((s) => s.month);
   await save();
-  res.json({ added, reopened });
+  res.json({ added, reopened, planned });
 });
 
 // SPA fallback
