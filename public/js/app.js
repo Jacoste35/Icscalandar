@@ -988,7 +988,8 @@ function colleaguesUpcomingHTML(team, events) {
   // Salarié : congés à venir de son groupe.
   if (!myGroup) return replBlock;
   const mates = new Set(team.filter((m) => m.groupId === myGroup && m.id !== State.user.id).map((m) => m.id));
-  const upcoming = events.filter((e) => mates.has(e.userId) && e.endDate >= t && e.category !== 'RET')
+  // Côté salarié, on masque les demandes de CP en attente (DCP).
+  const upcoming = events.filter((e) => mates.has(e.userId) && e.endDate >= t && e.category !== 'RET' && e.code !== 'DCP')
     .sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(0, 30);
   return `${replBlock}
     <div class="card" style="border-left:5px solid ${g ? g.color : 'var(--brand-2)'}">
@@ -3419,9 +3420,19 @@ async function finImport(body) {
     try { _importPreview = await api('POST', '/admin/bank-import', { text, bank: document.getElementById('im-bank').value }); renderImportPreview(); }
     catch (e) { toast(e.message, 'err'); }
   };
-  // Documents déjà importés.
-  try { const { docs } = await api('GET', '/admin/bank-tx'); const el = document.getElementById('im-docs');
-    el.innerHTML = docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Banque</th><th>Lignes</th><th>Importé le</th></tr></thead><tbody>${docs.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.bank)}</td><td>${d.lines}</td><td>${fmtDateTime(d.importedAt)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun relevé importé.</p>';
+  // Documents déjà importés (supprimables s'ils sont incorrects).
+  await renderImportDocs();
+}
+async function renderImportDocs() {
+  const el = document.getElementById('im-docs'); if (!el) return;
+  try {
+    const { docs } = await api('GET', '/admin/bank-tx');
+    el.innerHTML = docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Banque</th><th>Lignes</th><th>Importé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.bank)}</td><td>${d.lines}</td><td>${fmtDateTime(d.importedAt)}</td><td><button class="btn danger sm" data-docdel="${d.id}" data-docname="${esc(d.name)}" title="Supprimer ce relevé et ses écritures">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun relevé importé.</p>';
+    el.querySelectorAll('[data-docdel]').forEach((b) => b.onclick = async () => {
+      if (!confirm(`Supprimer le relevé « ${b.dataset.docname} » et toutes ses écritures ? Cette action est irréversible.`)) return;
+      try { const r = await api('DELETE', `/admin/bank-docs/${b.dataset.docdel}`); toast(`Relevé supprimé (${r.removedTx} écriture(s) retirée(s)).`, 'ok'); await renderImportDocs(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
   } catch (e) {}
 }
 
@@ -3429,6 +3440,7 @@ function renderImportPreview() {
   const p = _importPreview; const el = document.getElementById('im-preview');
   const meta = _finMeta;
   const catSel = (val, i) => `<select data-imrow="${i}">${['', ...meta.categories].map((c) => `<option ${c === val ? 'selected' : ''}>${esc(c || '— à vérifier —')}</option>`).join('')}</select>`;
+  const importable = p.transactions.filter((t) => !t.dupe || t.force).length;
   el.innerHTML = `<div class="card">
     <h3>Validation de l'import — ${p.bank}</h3>
     <div class="grid cols-4">
@@ -3437,11 +3449,21 @@ function renderImportPreview() {
       <div class="stat ${p.toVerify ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${p.toVerify}</div><div class="label">À vérifier</div></div>
       <div class="stat"><div class="value" style="font-size:1.4rem">${p.duplicates}</div><div class="label">Doublons</div></div>
     </div>
-    <div class="table-wrap" style="max-height:50vh;overflow:auto;margin-top:.6rem"><table class="veh-table"><thead><tr><th>Date</th><th>Libellé</th><th>Montant</th><th>Catégorie</th></tr></thead>
-      <tbody>${p.transactions.map((t, i) => `<tr class="${t.dupe ? 'lvl-overdue' : ''}"><td>${fmtDate(t.opDate)}</td><td>${esc(t.label)}${t.dupe ? ' <span class="pill danger">doublon</span>' : ''}</td><td class="${t.amount >= 0 ? 'pos' : 'neg'}">${eur(t.amount)}</td><td>${t.dupe ? '<span class="help">ignoré</span>' : catSel(t.category, i)}</td></tr>`).join('')}</tbody></table></div>
-    <div style="margin-top:.7rem"><button class="btn accent" id="im-confirm">Confirmer l'import (${p.detected - p.duplicates} écritures)</button></div>
+    <p class="help" style="margin:.5rem 0 0">Une ligne inutile peut être <strong>supprimée</strong> (✕). Un <strong>doublon</strong> réellement présent sur le relevé peut être <strong>conservé</strong> (puis justifié) pour être importé malgré tout.</p>
+    <div class="table-wrap" style="max-height:50vh;overflow:auto;margin-top:.6rem"><table class="veh-table"><thead><tr><th>Date</th><th>Libellé</th><th>Montant</th><th>Catégorie / Justification</th><th></th></tr></thead>
+      <tbody>${p.transactions.map((t, i) => {
+        const isDupe = t.dupe && !t.force;
+        const catCell = isDupe
+          ? `<span class="help">doublon ignoré</span> <button class="btn ghost sm" data-imkeep="${i}">Conserver</button>`
+          : `${catSel(t.category, i)}${t.dupe && t.force ? ` <input data-imjust="${i}" placeholder="justification" value="${esc(t.subCategory || '')}" style="width:150px">` : ''}`;
+        return `<tr class="${isDupe ? 'lvl-overdue' : ''}"><td>${fmtDate(t.opDate)}</td><td>${esc(t.label)}${t.dupe ? ` <span class="pill ${t.force ? 'ok' : 'danger'}">${t.force ? 'conservé' : 'doublon'}</span>` : ''}</td><td class="${t.amount >= 0 ? 'pos' : 'neg'}">${eur(t.amount)}</td><td>${catCell}</td><td><button class="btn ghost sm" data-imdel="${i}" title="Supprimer cette ligne">✕</button></td></tr>`;
+      }).join('')}</tbody></table></div>
+    <div style="margin-top:.7rem"><button class="btn accent" id="im-confirm">Confirmer l'import (${importable} écriture(s))</button></div>
   </div>`;
   el.querySelectorAll('[data-imrow]').forEach((s) => s.onchange = () => { const i = +s.dataset.imrow; p.transactions[i].category = s.value.startsWith('—') ? '' : s.value; });
+  el.querySelectorAll('[data-imjust]').forEach((inp) => inp.onchange = () => { p.transactions[+inp.dataset.imjust].subCategory = inp.value; });
+  el.querySelectorAll('[data-imkeep]').forEach((b) => b.onclick = () => { p.transactions[+b.dataset.imkeep].force = true; renderImportPreview(); });
+  el.querySelectorAll('[data-imdel]').forEach((b) => b.onclick = () => { p.transactions.splice(+b.dataset.imdel, 1); renderImportPreview(); });
   document.getElementById('im-confirm').onclick = async () => {
     try { const r = await api('POST', '/admin/bank-confirm', { transactions: p.transactions, bank: p.bank, docName: 'Relevé ' + p.bank + ' ' + iso(new Date()) }); toast(r.added + ' écritures importées.', 'ok'); _importPreview = null; finTab('treso'); }
     catch (e) { toast(e.message, 'err'); }
@@ -3479,6 +3501,7 @@ async function finTreso(body) {
     <div class="card"><h3>Évolution du résultat mensuel</h3>${barChart(ov.months.map((m) => ({ ym: m.ym, result: m.result })), 'result', 'ym')}</div>
     <div class="card"><h3>Répartition des dépenses</h3>
       <div class="table-wrap"><table class="veh-table"><tbody>${ov.expenseByCat.map((e) => `<tr><td>${esc(e.cat)}</td><td>${eur(e.v)}</td><td>${ov.totals.expense > 0 ? (e.v / ov.totals.expense * 100).toFixed(1) : 0} %</td></tr>`).join('')}</tbody></table></div>
+      ${expenseBarsHTML(ov.expenseByCat, ov.totals.expense)}
     </div>`;
   document.getElementById('tr-start-save').onclick = async () => {
     try { await api('PUT', '/admin/treasury-start', { balance: document.getElementById('tr-start').value }); _finMeta = null; toast('Solde enregistré.', 'ok'); finTab('treso'); }
@@ -3491,15 +3514,17 @@ async function finRules(body) {
   const m2 = await api('GET', '/admin/finance-meta'); _finMeta = m2;
   let rules = m2.rules.slice();
   const render = () => {
+    const sensOpts = (sel) => `<option value="" ${!sel ? 'selected' : ''}>Auto (selon le montant)</option><option value="debit" ${sel === 'debit' ? 'selected' : ''}>Débit (dépense)</option><option value="credit" ${sel === 'credit' ? 'selected' : ''}>Crédit (recette)</option>`;
     body.innerHTML = `<div class="card"><h3>Règles de catégorisation automatique</h3>
-      <p class="help">Si un libellé contient le mot-clé, l'écriture reçoit la catégorie. Les corrections que vous faites sur les écritures sont aussi mémorisées (apprentissage).</p>
-      <div id="rl-list">${rules.map((r, i) => `<div class="kit-line"><input data-rkw="${i}" value="${esc(r.kw)}" placeholder="mot-clé"><select data-rcat="${i}">${m2.categories.map((c) => `<option ${c === r.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="btn ghost sm" data-rdel="${i}">✕</button></div>`).join('')}</div>
+      <p class="help">Si un libellé contient le mot-clé, l'écriture reçoit la catégorie. Vous pouvez <strong>créer votre propre catégorie</strong> (saisie libre) et préciser si elle s'applique au <strong>débit</strong> ou au <strong>crédit</strong> selon le type d'opération. Les corrections faites sur les écritures sont aussi mémorisées (apprentissage).</p>
+      <datalist id="fin-cats">${m2.categories.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+      <div id="rl-list">${rules.map((r, i) => `<div class="kit-line" style="flex-wrap:wrap"><input data-rkw="${i}" value="${esc(r.kw)}" placeholder="mot-clé (ex. AXA)"><input data-rcat="${i}" list="fin-cats" value="${esc(r.cat || '')}" placeholder="catégorie (libre)" style="min-width:160px"><select data-rsens="${i}">${sensOpts(r.sens)}</select><button class="btn ghost sm" data-rdel="${i}">✕</button></div>`).join('')}</div>
       <div style="display:flex;gap:.4rem;margin-top:.5rem"><button class="btn ghost sm" id="rl-add">+ Ajouter une règle</button><button class="btn accent sm" id="rl-save">Enregistrer</button></div>
     </div>`;
-    const collect = () => Array.from(body.querySelectorAll('[data-rkw]')).map((inp, i) => ({ kw: inp.value.trim(), cat: body.querySelector(`[data-rcat="${i}"]`).value })).filter((r) => r.kw);
-    body.querySelector('#rl-add').onclick = () => { rules = collect().concat({ kw: '', cat: m2.categories[0] }); render(); };
+    const collect = () => Array.from(body.querySelectorAll('[data-rkw]')).map((inp, i) => ({ kw: inp.value.trim(), cat: body.querySelector(`[data-rcat="${i}"]`).value.trim(), sens: body.querySelector(`[data-rsens="${i}"]`).value })).filter((r) => r.kw && r.cat);
+    body.querySelector('#rl-add').onclick = () => { rules = collect().concat({ kw: '', cat: '', sens: '' }); render(); };
     body.querySelectorAll('[data-rdel]').forEach((b) => b.onclick = () => { rules = collect().filter((_, i) => i !== +b.dataset.rdel); render(); });
-    body.querySelector('#rl-save').onclick = async () => { try { await api('PUT', '/admin/cat-rules', { rules: collect() }); toast('Règles enregistrées.', 'ok'); } catch (e) { toast(e.message, 'err'); } };
+    body.querySelector('#rl-save').onclick = async () => { try { await api('PUT', '/admin/cat-rules', { rules: collect() }); _finMeta = null; toast('Règles enregistrées.', 'ok'); } catch (e) { toast(e.message, 'err'); } };
   };
   render();
 }
@@ -3526,6 +3551,18 @@ function barChart(items, valueKey, labelKey) {
   return `<div class="bars">${items.map((i) => {
     const val = i[valueKey]; const h = Math.round((Math.abs(val) / max) * 100);
     return `<div class="bar-col"><div class="bar-wrap"><div class="bar ${val >= 0 ? 'pos' : 'neg'}" style="height:${h}%" title="${eur(val)}"></div></div><div class="bar-lbl">${esc(i[labelKey])}</div><div class="bar-val ${val >= 0 ? 'pos' : 'neg'}">${eur(val)}</div></div>`;
+  }).join('')}</div>`;
+}
+
+// Graphique en barres horizontales de la répartition des dépenses (visuel par pôle).
+function expenseBarsHTML(items, total) {
+  if (!items || !items.length) return '<p class="help" style="margin-top:.6rem">Aucune dépense à représenter.</p>';
+  const max = Math.max(1, ...items.map((e) => e.v));
+  const colors = ['#6b7cff', '#22c55e', '#f59e0b', '#ef4444', '#0ea5e9', '#a855f7', '#14b8a6', '#f97316', '#84cc16', '#ec4899', '#64748b'];
+  return `<div style="display:flex;flex-direction:column;gap:.35rem;margin-top:.7rem">${items.map((e, i) => {
+    const pct = total > 0 ? (e.v / total * 100) : 0;
+    const w = Math.round((e.v / max) * 100);
+    return `<div style="display:grid;grid-template-columns:130px 1fr auto;gap:.5rem;align-items:center"><span class="help" style="text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(e.cat)}">${esc(e.cat)}</span><span style="background:var(--border,#eee);border-radius:5px;overflow:hidden"><span style="display:block;height:15px;width:${w}%;background:${colors[i % colors.length]}"></span></span><span style="white-space:nowrap"><strong>${eur(e.v)}</strong> <span class="help">${pct.toFixed(1)} %</span></span></div>`;
   }).join('')}</div>`;
 }
 
