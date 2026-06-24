@@ -2775,11 +2775,38 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
   const u = db.users.find((x) => x.id === userId);
   if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
   if (!Array.isArray(rows)) return res.status(400).json({ error: 'Données invalides' });
-  let added = 0, planned = 0;
+  let added = 0, planned = 0, kmUpdated = 0, kmFlagged = 0;
   const touchedMonths = new Set();
+  const DAILY_KM_MAX = 1200; // au-delà : anomalie probable (erreur de saisie)
+  const normVeh = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '');
+  const recomputeOdo = (v) => {
+    const sum = db.vehicleKmLog.filter((l) => l.vehicleId === v.id).reduce((s, l) => s + (l.km || 0), 0);
+    const odo = Math.round((Number(v.baseKm) || 0) + sum);
+    if (odo > (Number(v.km) || 0)) v.km = odo; // l'odomètre ne recule jamais
+  };
   for (const r of rows) {
     if (!validDate(r.date)) continue;
     touchedMonths.add(String(r.date).slice(0, 7));
+    // Kilométrage relevé dans le rapport : rattaché au véhicule identifié, avec
+    // détection d'anomalie (validation admin avant prise en compte).
+    const km = Math.round(Number(r.km) || 0);
+    const ident = normVeh(r.vehName || r.vehPlate);
+    if (km !== 0 && ident) {
+      const v = db.vehicles.find((x) => { const np = normVeh(x.plate), nn = normVeh(x.name); return (np && (np === ident || ident.includes(np) || np.includes(ident))) || (nn && (nn === ident || ident.includes(nn) || nn.includes(ident))); });
+      if (v) {
+        const anomaly = km < 0 || km > DAILY_KM_MAX;
+        if (anomaly) {
+          db.kmAnomalies = db.kmAnomalies.filter((a) => !(a.vehicleId === v.id && a.date === r.date && a.userId === userId));
+          db.kmAnomalies.push({ id: nextId('kmano'), vehicleId: v.id, vehicleName: v.name, plate: v.plate || '', date: r.date, km, userId, userName: `${u.firstName} ${u.lastName}`, reason: km < 0 ? 'Kilométrage négatif' : `Distance journalière anormale (> ${DAILY_KM_MAX} km)`, createdAt: new Date().toISOString() });
+          kmFlagged++;
+        } else {
+          db.vehicleKmLog = db.vehicleKmLog.filter((l) => !(l.vehicleId === v.id && l.date === r.date && l.userId === userId));
+          db.vehicleKmLog.push({ id: nextId('kmlog'), vehicleId: v.id, date: r.date, km, userId, userName: `${u.firstName} ${u.lastName}`, source: 'import' });
+          recomputeOdo(v);
+          kmUpdated++;
+        }
+      }
+    }
     // Une seule entrée par salarié et par jour : on remplace.
     db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date === r.date));
     const r2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
@@ -2823,7 +2850,40 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
     .filter((s) => s.userId === userId && touchedMonths.has(s.month) && (s.transmittedEquiv || 0) > 0)
     .map((s) => s.month);
   await save();
-  res.json({ added, reopened, planned });
+  res.json({ added, reopened, planned, kmUpdated, kmFlagged });
+});
+
+// Anomalies de kilométrage en attente de validation (encadrement).
+app.get('/api/staff/km-anomalies', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  res.json({ anomalies: db.kmAnomalies.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
+});
+
+// Valider (appliquer) ou écarter une anomalie de kilométrage.
+app.post('/api/admin/km-anomalies/:id/resolve', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const a = db.kmAnomalies.find((x) => x.id === req.params.id);
+  if (!a) return res.status(404).json({ error: 'Anomalie introuvable' });
+  const { apply } = req.body || {};
+  if (apply) {
+    const v = db.vehicles.find((x) => x.id === a.vehicleId);
+    if (v) {
+      db.vehicleKmLog = db.vehicleKmLog.filter((l) => !(l.vehicleId === v.id && l.date === a.date && l.userId === a.userId));
+      db.vehicleKmLog.push({ id: nextId('kmlog'), vehicleId: v.id, date: a.date, km: a.km, userId: a.userId, userName: a.userName, source: 'import-validé' });
+      const sum = db.vehicleKmLog.filter((l) => l.vehicleId === v.id).reduce((s, l) => s + (l.km || 0), 0);
+      const odo = Math.round((Number(v.baseKm) || 0) + sum);
+      if (odo > (Number(v.km) || 0)) v.km = odo;
+    }
+  }
+  db.kmAnomalies = db.kmAnomalies.filter((x) => x.id !== a.id);
+  await save();
+  res.json({ ok: true });
+});
+
+// Historique des km par véhicule (graphique + tableau de la flotte).
+app.get('/api/staff/vehicle-km', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  res.json({ log: db.vehicleKmLog.slice(), vehicles: db.vehicles.map((v) => ({ id: v.id, name: v.name, plate: v.plate, km: v.km, baseKm: v.baseKm })) });
 });
 
 // SPA fallback

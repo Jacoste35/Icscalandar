@@ -560,6 +560,9 @@ function renderView() {
 /* =========================================================================
    DASHBOARD — semaine en cours / à venir + soldes
    ========================================================================= */
+let _calEvents = []; // évènements du calendrier (pour l'édition du remplaçant au planning)
+let _previewUserId = null; // aperçu « en tant que » : id du salarié prévisualisé (admin)
+let _previewMode = false;  // vrai pendant le rendu d'un aperçu (lecture seule)
 async function renderDashboard(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Bonjour ${esc(State.user.firstName)} 👋</h1>
     <p>Voici un aperçu de votre situation et de l'équipe.</p></div></div>
@@ -569,21 +572,37 @@ async function renderDashboard(main) {
     await ensureHolidays(today.getFullYear());
     await ensureHolidays(today.getFullYear() + 1);
     const { events } = await api('GET', '/calendar');
+    _calEvents = events;
     const { user } = await api('GET', '/me');
     State.user = user;
-    const b = user.balances;
+    // Aperçu « en tant que » : un admin peut afficher (en lecture seule) l'espace
+    // d'un salarié. viewUser = le salarié prévisualisé, sinon soi-même.
+    let viewUser = user, previewList = [];
+    _previewMode = false;
+    if (user.role === 'admin') {
+      try { previewList = (await api('GET', '/admin/users')).users.filter((u) => u.status === 'active'); } catch (e) {}
+      if (_previewUserId) { const pu = previewList.find((u) => u.id === _previewUserId); if (pu) { viewUser = pu; _previewMode = true; } else { _previewUserId = null; } }
+    }
+    const b = viewUser.balances;
 
     const curStart = startOfWeekMonday(today);
     const prevStart = addDays(curStart, -7);   // semaine précédente
     const next1 = addDays(curStart, 7);        // +1
     const next2 = addDays(curStart, 14);       // +2
 
-    const isAdmin = State.user.role === 'admin';
-    const staff = isStaff();
+    const realAdmin = user.role === 'admin';
+    const isAdmin = viewUser.role === 'admin';
+    const staff = viewUser.role === 'admin' || viewUser.role === 'responsable';
     // Le groupe Président n'est pas éligible aux compteurs CP / CP N-1 / RCC /
     // HSUP ni au suivi des retards : on les masque de son espace.
-    const isPresident = (State.user.groupId === 'grp_president');
+    const isPresident = (viewUser.groupId === 'grp_president');
     const { team } = await api('GET', '/team').catch(() => ({ team: [] }));
+    // Sélecteur d'aperçu (admin) + bandeau lecture seule.
+    const previewBar = realAdmin ? `<div class="card" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;${_previewMode ? 'border-left:5px solid #f59e0b' : ''}">
+      <strong>👁️ Afficher un aperçu en tant que</strong>
+      <select id="dash-preview" style="width:auto"><option value="">— Mon affichage —</option>${previewList.map((u) => `<option value="${u.id}" ${u.id === _previewUserId ? 'selected' : ''}>${esc(u.lastName)} ${esc(u.firstName)}</option>`).join('')}</select>
+      ${_previewMode ? `<span class="pill warn">Lecture seule — vous voyez l'espace de ${esc(viewUser.firstName)} ${esc(viewUser.lastName)}</span> <button class="btn ghost sm" id="dash-preview-exit">Revenir à mon affichage</button>` : ''}
+    </div>` : '';
 
     // Priorité de pose des congés (administrateur uniquement)
     let priorityPanel = '';
@@ -604,7 +623,7 @@ async function renderDashboard(main) {
     }
 
     // Mes retards (compteurs glissants) + classement (encadrement)
-    const myRetards = events.filter((e) => e.userId === State.user.id && e.category === 'RET' && e.status === 'approved');
+    const myRetards = events.filter((e) => e.userId === viewUser.id && e.category === 'RET' && e.status === 'approved');
     const retardCards = isPresident ? '' : `<div class="grid cols-4">
       ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
       ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
@@ -621,8 +640,10 @@ async function renderDashboard(main) {
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
     }
-    if (State.user.role === 'admin') {
+    let kmAnomalyPanel = '';
+    if (isAdmin) {
       try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
+      try { const { anomalies } = await api('GET', '/staff/km-anomalies'); kmAnomalyPanel = kmAnomalyHTML(anomalies); } catch (e) {}
     }
 
     // Camions nécessitant un entretien (visible de TOUS les salariés).
@@ -634,7 +655,7 @@ async function renderDashboard(main) {
     try { const { messages } = await api('GET', '/messages'); messagesPanel = messagesPanelHTML(messages); } catch (e) {}
 
     // Cumul des congés / récup / RCC déjà pris (indicatif).
-    const mineApproved = events.filter((e) => e.userId === State.user.id && e.status === 'approved');
+    const mineApproved = events.filter((e) => e.userId === viewUser.id && e.status === 'approved');
     const takenCP = Math.round(mineApproved.filter((e) => e.category === 'CP').reduce((s, e) => s + (e.days || 0), 0) * 100) / 100;
     const takenRCP = Math.round(mineApproved.filter((e) => e.category === 'RCP').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
     const takenRCC = Math.round(mineApproved.filter((e) => e.category === 'RCC').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
@@ -645,11 +666,12 @@ async function renderDashboard(main) {
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
     const colleaguesPanel = colleaguesUpcomingHTML(team, events);
 
-    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(State.user.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
+    const anc = viewUser.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 ${_previewMode ? 'Ancienneté' : 'Votre ancienneté'} : ${ancienneteText(viewUser.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(viewUser.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(viewUser.hireDate)}</p></div>` : '';
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
     dashBody.innerHTML = `
+      ${previewBar}
       ${anc}
       ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
@@ -659,6 +681,7 @@ async function renderDashboard(main) {
       </div>`}
       ${philo}
       ${messagesPanel}
+      ${kmAnomalyPanel}
       ${stockAlertPanel}
       ${needsMaintPanel}
       ${disciplinePanel}
@@ -675,7 +698,13 @@ async function renderDashboard(main) {
       ${dashWeekCard('Semaine en cours', curStart, events, true)}
       ${dashWeekCard('Semaine à venir (+1)', next1, events)}
       ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
-    bindDashboardActions(dashBody);
+    // Sélecteur d'aperçu (toujours actif pour l'admin).
+    const psel = dashBody.querySelector('#dash-preview');
+    if (psel) psel.onchange = () => { _previewUserId = psel.value || null; renderDashboard(document.getElementById('main')); };
+    const pexit = dashBody.querySelector('#dash-preview-exit');
+    if (pexit) pexit.onclick = () => { _previewUserId = null; renderDashboard(document.getElementById('main')); };
+    // En aperçu (lecture seule), on ne câble aucune action modifiante.
+    if (!_previewMode) bindDashboardActions(dashBody);
   } catch (e) {
     document.getElementById('dash-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
@@ -683,6 +712,20 @@ async function renderDashboard(main) {
 
 // Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
 function bindDashboardActions(scope) {
+  // Ajouter / modifier le remplaçant directement depuis le planning d'accueil.
+  scope.querySelectorAll('[data-repl-cal]').forEach((b) => b.onclick = () => {
+    const ev = (_calEvents || []).find((x) => x.id === b.dataset.replCal);
+    if (ev) replacementModal(ev, scope, () => renderDashboard(document.getElementById('main')));
+  });
+  // Valider / écarter une anomalie de kilométrage.
+  scope.querySelectorAll('[data-kmano-apply]').forEach((b) => b.onclick = async () => {
+    try { await api('POST', `/admin/km-anomalies/${b.dataset.kmanoApply}/resolve`, { apply: true }); toast('Kilométrage validé, odomètre mis à jour.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-kmano-reject]').forEach((b) => b.onclick = async () => {
+    try { await api('POST', `/admin/km-anomalies/${b.dataset.kmanoReject}/resolve`, { apply: false }); toast('Anomalie écartée.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   // Composer un message (encadrement).
   const comp = scope.querySelector('#msg-send');
   if (comp) comp.onclick = async () => {
@@ -959,7 +1002,19 @@ function colleaguesUpcomingHTML(team, events) {
 }
 
 // Carte "qui est/était absent" pour une semaine donnée (lundi -> samedi).
+// Alerte d'accueil : anomalies de kilométrage relevées à l'import (validation admin).
+function kmAnomalyHTML(anomalies) {
+  if (!anomalies || !anomalies.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--danger)">
+    <h3 style="margin:0 0 .3rem">🚗 Anomalies de kilométrage à vérifier (${anomalies.length})</h3>
+    <p class="help" style="margin-top:0">Relevés suspects (erreur de saisie possible). <strong>Validez</strong> pour mettre à jour l'odomètre du véhicule, ou <strong>écartez</strong>.</p>
+    <div class="table-wrap"><table><thead><tr><th>Véhicule</th><th>Date</th><th>Km relevé</th><th>Chauffeur</th><th>Anomalie</th><th></th></tr></thead>
+      <tbody>${anomalies.map((a) => `<tr><td><strong>${esc(a.vehicleName)}</strong>${a.plate ? ` (${esc(a.plate)})` : ''}</td><td>${fmtDate(a.date)}</td><td>${kmFmt(a.km)}</td><td>${esc(a.userName)}</td><td class="help">${esc(a.reason)}</td><td style="white-space:nowrap"><button class="btn ok sm" data-kmano-apply="${a.id}">Valider</button> <button class="btn ghost sm" data-kmano-reject="${a.id}">Écarter</button></td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+
 function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
+  const isAdmin = State.user && State.user.role === 'admin' && !_previewMode;
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
   const weekEnd = addDays(weekStart, 5);
   const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
@@ -969,7 +1024,8 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
   weekAbs.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { ev }).ev = byUser[ev.userId].ev; (byUser[ev.userId].list = byUser[ev.userId].list || []).push(ev); });
   const detail = Object.values(byUser).map((o) => o.list.map((ev) => {
     const range = ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
-    return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td></tr>`;
+    const replCell = isAdmin ? `<td>${ev.replacedByName ? esc(ev.replacedByName) : '<span class="help">—</span>'} ${ev.code !== 'RET' ? `<button class="btn ghost sm" data-repl-cal="${ev.id}">${ev.replacedByName ? 'Modifier' : '+ Remplaçant'}</button>` : ''}</td>` : '';
+    return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td>${replCell}</tr>`;
   }).join('')).join('');
   return `
     <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
@@ -986,7 +1042,7 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
         </div>
         ${renderDashWeekRows(weekAbs, weekDays)}
       </div>
-      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th></tr></thead><tbody>${detail}</tbody></table></div>` : ''}
+      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th>${isAdmin ? '<th>Remplaçant</th>' : ''}</tr></thead><tbody>${detail}</tbody></table></div>` : ''}
     </div>`;
 }
 
@@ -1108,7 +1164,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         <div id="ret-wrap" style="display:none"><label>Durée du retard</label>
           <select name="retardMinutes"><option value="30">30 minutes</option><option value="60">1 heure</option><option value="120">2 heures</option><option value="180">3 heures et plus</option></select></div>
         <label>Remplacé par (facultatif)</label>
-        <select name="replacedById"><option value="">— Personne —</option></select>
+        <select name="replacedById"><option value="">Pas de remplaçant</option></select>
         <p class="help" id="repl-note" style="display:none"></p>
         <div class="row">
           <div><label>Du</label><input type="date" name="startDate" required value="${prefillDate||''}"></div>
@@ -1165,7 +1221,7 @@ async function adminAssignModal(prefillDate, prefillUserId) {
         const exceptId = f.userId.value;
         const current = f.replacedById.value;
         const annotate = (m) => { const c = replacerUnavailableClient(m, allEvents, s, e, exceptId); return c ? ` (pas disponible — ${c})` : ''; };
-        f.replacedById.innerHTML = `<option value="">— Personne —</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId && replacerAllowedClient(m)), current, annotate);
+        f.replacedById.innerHTML = `<option value="">Pas de remplaçant</option>` + teamOptgroups(team.filter((m) => m.id !== exceptId && replacerAllowedClient(m)), current, annotate);
         if (![...f.replacedById.options].some((o) => o.value === current)) f.replacedById.value = '';
         replNote.style.display = (s && e) ? '' : 'none';
         replNote.textContent = (s && e) ? 'Seuls les salariés disponibles sur la période peuvent être choisis comme remplaçants.' : '';
@@ -2930,6 +2986,44 @@ function modelOptions(selected) {
 }
 
 // Onglet « Flotte » : ajout / modification / suppression des véhicules (admin).
+// Suivi du kilométrage : graphique d'évolution + tableau des km parcourus par
+// véhicule (moyennes pour l'entretien et les commandes de stock).
+async function loadFleetKm() {
+  const el = document.getElementById('flt-km'); if (!el) return;
+  try {
+    const { log, vehicles } = await api('GET', '/staff/vehicle-km');
+    el.className = '';
+    el.innerHTML = `<h3 style="margin:1rem 0 .3rem">📈 Évolution des kilomètres par véhicule</h3>
+      <p class="help" style="margin-top:0">Relevés issus des rapports d'activité importés — pour estimer les moyennes et ajuster l'entretien et les commandes de stock.</p>
+      ${fleetKmHTML(vehicles, log)}`;
+  } catch (e) { el.className = ''; el.innerHTML = `<p class="help">Suivi kilométrique indisponible.</p>`; }
+}
+function fleetKmHTML(vehicles, log) {
+  const byVeh = {};
+  (log || []).forEach((l) => { (byVeh[l.vehicleId] = byVeh[l.vehicleId] || []).push(l); });
+  const cards = (vehicles || []).map((v) => {
+    const entries = (byVeh[v.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+    if (!entries.length) return '';
+    const months = {}; const byDriver = {};
+    entries.forEach((l) => { const k = (l.date || '').slice(0, 7); months[k] = (months[k] || 0) + (l.km || 0); byDriver[l.userName || '—'] = (byDriver[l.userName || '—'] || 0) + (l.km || 0); });
+    const mkeys = Object.keys(months).sort();
+    const totals = mkeys.map((k) => months[k]);
+    const tot = totals.reduce((s, x) => s + x, 0);
+    const avg = Math.round(tot / mkeys.length);
+    const maxv = Math.max(1, ...totals);
+    const bars = `<div class="bars">${mkeys.map((k) => { const val = months[k]; const h = Math.round((val / maxv) * 100); return `<div class="bar-col"><div class="bar-wrap"><div class="bar pos" style="height:${h}%" title="${kmFmt(val)}"></div></div><div class="bar-lbl">${esc(k.slice(2))}</div><div class="bar-val">${val.toLocaleString('fr-FR')}</div></div>`; }).join('')}</div>`;
+    const mrows = mkeys.map((k) => `<tr><td>${esc(k)}</td><td>${kmFmt(months[k])}</td></tr>`).join('');
+    const drivers = Object.keys(byDriver).sort((a, b) => byDriver[b] - byDriver[a]).map((n) => `${esc(n)} : ${kmFmt(byDriver[n])}`).join(' · ');
+    return `<div class="card zoom-hover">
+      <h4 style="margin:.1rem 0 .3rem">🚐 ${esc(v.name)}${v.plate ? ` (${esc(v.plate)})` : ''} — odomètre ${kmFmt(v.km)}</h4>
+      ${mkeys.length > 1 ? `<div style="margin:.4rem 0">${bars}</div>` : ''}
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Km parcourus</th></tr></thead><tbody>${mrows}<tr><th>Total</th><th>${kmFmt(tot)}</th></tr><tr><th>Moyenne / mois</th><th>${kmFmt(avg)}</th></tr></tbody></table></div>
+      <p class="help" style="margin:.3rem 0 0">Par chauffeur : ${drivers || '—'}</p>
+    </div>`;
+  }).filter(Boolean).join('');
+  return cards || '<p class="help">Aucun relevé de kilométrage importé pour le moment (importez un rapport contenant une colonne véhicule + kilomètres).</p>';
+}
+
 function vehTabFleet(body) {
   const vehicles = _veh.vehicles;
   body.innerHTML = `
@@ -2958,7 +3052,9 @@ function vehTabFleet(body) {
           <td><button class="toggle ${v.active !== false ? 'on' : 'off'}" data-toggleactive="${v.id}" data-active="${v.active !== false ? '1' : '0'}" title="Actif / inactif">${v.active !== false ? 'ON' : 'OFF'}</button></td>
           <td style="white-space:nowrap"><button class="btn ghost sm" data-carnet="${v.id}">Carnet</button> <button class="btn ghost sm" data-editv="${v.id}">Modifier</button> <button class="btn ghost sm" data-delv="${v.id}">✕</button></td>
         </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
-    </div>`;
+    </div>
+    <div id="flt-km" class="empty">Chargement du suivi kilométrique…</div>`;
+  loadFleetKm();
   document.getElementById('fl-add').onclick = async () => {
     const payload = {
       assignedUserId: document.getElementById('fl-user').value || null,
@@ -4718,8 +4814,10 @@ function extractActivityReport(rows) {
   if (hdr < 0) throw new Error('En-têtes non reconnus (Employé / Total travail).');
   const H = rows[hdr];
   const col = (name) => H.findIndex((c) => typeof c === 'string' && c.trim().startsWith(name));
+  const colAny = (names) => { for (const n of names) { const i = col(n); if (i >= 0) return i; } return -1; };
   const cE = col('Employé'), cJ = col('Jour'), cD = col('Début'), cF = col('Fin'), cP = col('Pause'), cT = col('Total travail'), cA = col('Amplitude'), cAbs = col('Heures congés');
   const cNight = col('Heures au tarif nuit'), cKm = col('Nombre de kilomètres'), cMidi = col('Repas midi'), cSoir = col('Repas soir'), cDec = col('Découcher'), cCasse = col('Casse'), cMiss = col('Mission'), cMot = col('Motif'), cObs = col('Observations');
+  const cVeh = colAny(['Véhicule', 'Vehicule', 'Immatriculation', 'Plaque', 'Tournée']); // pour le suivi du kilométrage
   const hN = (i) => (i >= 0 && typeof r[i] === 'number') ? Math.round(r[i] * 24 * 100) / 100 : 0; // fraction de jour -> heures
   const nb = (i) => (i >= 0 && typeof r[i] === 'number') ? r[i] : 0;
   const str = (i) => (i >= 0 && typeof r[i] === 'string') ? r[i].replace(/\s+/g, ' ').trim() : '';
@@ -4739,6 +4837,7 @@ function extractActivityReport(rows) {
       mealMidi: nb(cMidi), mealSoir: nb(cSoir), casseCroute: nb(cCasse), decoucher: nb(cDec),
       missions: str(cMiss), motif: str(cMot), observations: str(cObs),
       absCat: hN(cAbs) > 0 ? mapMotifToCat(str(cMot)) : null, // pour l'ajout rétroactif au planning
+      vehName: str(cVeh), // identifiant véhicule (pour le suivi du kilométrage)
     };
     (employees[cur] = employees[cur] || []).push(rec);
     if (!minD || date < minD) minD = date; if (!maxD || date > maxD) maxD = date;
@@ -4817,11 +4916,13 @@ function renderImportMapping() {
   document.getElementById('hi-import').onclick = async () => {
     const maps = Array.from(el.querySelectorAll('[data-mapname]')).map((s) => ({ name: s.dataset.mapname, userId: s.value })).filter((m) => m.userId);
     if (!maps.length) { toast('Associez au moins un salarié.', 'err'); return; }
-    let total = 0, planned = 0; const reopened = new Set();
+    let total = 0, planned = 0, kmUp = 0, kmFlag = 0; const reopened = new Set();
     try {
-      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
+      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); kmUp += (r.kmUpdated || 0); kmFlag += (r.kmFlagged || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
       if (planned) toast(`${planned} absence(s) ajoutée(s) au planning (rétroactif).`, 'ok');
+      if (kmUp) toast(`${kmUp} relevé(s) de kilométrage pris en compte.`, 'ok');
+      if (kmFlag) toast(`${kmFlag} anomalie(s) de kilométrage à vérifier sur l'accueil.`, 'warn');
       if (reopened.size) toast(`Mois rouvert(s) : ${[...reopened].sort().join(', ')} — de nouvelles heures sup. peuvent être dues (voir « Reste dû »).`, 'warn');
       // Détecte les journées de travail manquantes, justifie via le planning ou
       // demande le type d'absence, puis réactualise toute la gestion des heures.
@@ -5257,7 +5358,7 @@ async function editEventModal(req, body) {
       </div>
       <div class="row">
         <div><label>Type de congé</label><select id="ee-type">${typeOpts}</select></div>
-        <div><label>Remplaçant</label><select id="ee-repl"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById)}</select></div>
+        <div><label>Remplaçant</label><select id="ee-repl"><option value="">Pas de remplaçant</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById)}</select></div>
       </div>
       <div class="row">
         <div><label>Nombre de jours</label><input type="number" step="0.5" min="0" id="ee-days" value="${req.days || 0}"></div>
@@ -5310,7 +5411,7 @@ async function editEventModal(req, body) {
 }
 
 // Attribuer / changer le remplaçant d'une demande (depuis les demandes en attente).
-async function replacementModal(req, body) {
+async function replacementModal(req, body, onDone) {
   if (!req) return;
   let team = [], events = [];
   try { team = (await api('GET', '/team')).team; events = (await api('GET', '/calendar')).events; } catch (e) { toast(e.message, 'err'); return; }
@@ -5320,11 +5421,11 @@ async function replacementModal(req, body) {
     bodyHTML: `
       <p class="help">Période : ${fmtDate(req.startDate)} → ${fmtDate(req.endDate)}. Seuls les salariés disponibles sur cette période sont proposés.</p>
       <label>Remplaçant</label>
-      <select id="repl-sel"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId && replacerAllowedClient(m)), req.replacedById, annotate)}</select>`,
+      <select id="repl-sel"><option value="">Pas de remplaçant</option>${teamOptgroups(team.filter((m) => m.id !== req.userId && replacerAllowedClient(m)), req.replacedById, annotate)}</select>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="repl-save">Enregistrer</button>`,
     onMount: (ov) => {
       ov.querySelector('#repl-save').onclick = async () => {
-        try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: ov.querySelector('#repl-sel').value || null }); closeModal(); toast('Remplaçant mis à jour.', 'ok'); adminReqs(body); }
+        try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: ov.querySelector('#repl-sel').value || null }); closeModal(); toast('Remplaçant mis à jour.', 'ok'); if (onDone) onDone(); else adminReqs(body); }
         catch (e) { if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message); else toast(e.message, 'err'); }
       };
     },
