@@ -4731,6 +4731,7 @@ function extractActivityReport(rows) {
       nightHours: hN(cNight), km: Math.round(nb(cKm)),
       mealMidi: nb(cMidi), mealSoir: nb(cSoir), casseCroute: nb(cCasse), decoucher: nb(cDec),
       missions: str(cMiss), motif: str(cMot), observations: str(cObs),
+      absCat: hN(cAbs) > 0 ? mapMotifToCat(str(cMot)) : null, // pour l'ajout rétroactif au planning
     };
     (employees[cur] = employees[cur] || []).push(rec);
     if (!minD || date < minD) minD = date; if (!maxD || date > maxD) maxD = date;
@@ -4740,6 +4741,22 @@ function extractActivityReport(rows) {
 // Normalise un nom (minuscules, sans accents, ponctuation -> espaces).
 function normNm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
 function nmTokens(s) { return normNm(s).split(' ').filter((t) => t.length > 1); }
+// Devine le code de catégorie d'absence à partir d'un motif libre (par défaut CP).
+function mapMotifToCat(motif) {
+  const n = normNm(motif);
+  const cats = (State.categories || []).filter((c) => c.selectable !== false && c.code !== 'RET');
+  const has = (code) => cats.some((c) => c.code === code);
+  if (n) {
+    for (const c of cats) if (normNm(c.code) === n) return c.code;
+    for (const c of cats) { const l = normNm(c.label); if (l && (n.includes(l) || l.includes(n))) return c.code; }
+    if (/malad/.test(n)) return has('AM') ? 'AM' : 'CP';
+    if (/accident/.test(n)) return has('AT') ? 'AT' : 'CP';
+    if (/recup/.test(n)) return has('RCP') ? 'RCP' : 'CP';
+    if (/rtt/.test(n)) return has('RTT') ? 'RTT' : 'CP';
+    if (/conge|cp/.test(n)) return 'CP';
+  }
+  return 'CP';
+}
 // Tente d'associer un nom du fichier à un salarié (compare noms ET prénoms).
 function matchDriverId(fileName, drivers) {
   const fileTokens = new Set(nmTokens(fileName));
@@ -4793,10 +4810,11 @@ function renderImportMapping() {
   document.getElementById('hi-import').onclick = async () => {
     const maps = Array.from(el.querySelectorAll('[data-mapname]')).map((s) => ({ name: s.dataset.mapname, userId: s.value })).filter((m) => m.userId);
     if (!maps.length) { toast('Associez au moins un salarié.', 'err'); return; }
-    let total = 0; const reopened = new Set();
+    let total = 0, planned = 0; const reopened = new Set();
     try {
-      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; (r.reopened || []).forEach((mo) => reopened.add(mo)); }
+      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
+      if (planned) toast(`${planned} absence(s) ajoutée(s) au planning (rétroactif).`, 'ok');
       if (reopened.size) toast(`Mois rouvert(s) : ${[...reopened].sort().join(', ')} — de nouvelles heures sup. peuvent être dues (voir « Reste dû »).`, 'warn');
       // Détecte les journées de travail manquantes, justifie via le planning ou
       // demande le type d'absence, puis réactualise toute la gestion des heures.
@@ -4830,7 +4848,7 @@ function justifForDate(reqs, userId, ds) {
 }
 // Construit une ligne d'absence (journée complète) à importer dans les heures.
 function absenceRow(ds, cat, fromPlanning) {
-  return { date: ds, worked: 0, amplitude: 0, absence: HPERDAY, motif: catLabel(cat) + (fromPlanning ? ' (planning)' : ''), missions: '', start: '', end: '', breakMin: 0 };
+  return { date: ds, worked: 0, amplitude: 0, absence: HPERDAY, motif: catLabel(cat) + (fromPlanning ? ' (planning)' : ''), absCat: cat, missions: '', start: '', end: '', breakMin: 0 };
 }
 // Orchestration : justifie automatiquement via le planning, sinon demande.
 async function handleMissingDays(maps) {
@@ -4871,10 +4889,10 @@ function missingDaysModal(items, done) {
       ov.querySelector('#mi-save').onclick = async () => {
         const byUser = {};
         ov.querySelectorAll('[data-mi]').forEach((s) => { if (s.value) (byUser[s.dataset.uid] = byUser[s.dataset.uid] || []).push(absenceRow(s.dataset.date, s.value, false)); });
-        let n = 0;
-        try { for (const uid of Object.keys(byUser)) { const r = await api('POST', '/staff/work-hours/import', { userId: uid, rows: byUser[uid] }); n += r.added; } }
+        let n = 0, planned = 0;
+        try { for (const uid of Object.keys(byUser)) { const r = await api('POST', '/staff/work-hours/import', { userId: uid, rows: byUser[uid] }); n += r.added; planned += (r.planned || 0); } }
         catch (e) { toast(e.message, 'err'); return; }
-        closeModal(); if (n) toast(`${n} absence(s) enregistrée(s).`, 'ok'); done();
+        closeModal(); if (n) toast(`${n} absence(s) enregistrée(s)${planned ? `, ${planned} ajoutée(s) au planning` : ''}.`, 'ok'); done();
       };
     },
   });
