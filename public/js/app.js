@@ -396,6 +396,9 @@ function navSections() {
       { id: 'fleet', icon: '🚚', label: 'Gestion de la flotte' },
       { id: 'stocks', icon: '📦', label: 'Gestion des stocks' },
       { id: 'finance', icon: '💶', label: 'Contrôle financier' },
+      { id: 'docmgmt', icon: '📄', label: 'Gestion documentaire' },
+      { id: 'billing', icon: '🧾', label: 'Gestion de la facturation' },
+      { id: 'justif', icon: '🧮', label: 'Gestion des justificatifs' },
       { id: 'tender', icon: '📐', label: 'Estimation appel d\'offre' },
       { id: 'contracts', icon: '📑', label: 'Contrats donneurs d\'ordre' },
     ] });
@@ -552,6 +555,9 @@ function renderView() {
   if (v === 'stocks') return renderStocks(main);
   if (v === 'fleet') return renderFleet(main);
   if (v === 'finance') return renderFinance(main);
+  if (v === 'docmgmt') return renderDocMgmt(main);
+  if (v === 'billing') return renderBilling(main);
+  if (v === 'justif') return renderJustif(main);
   if (v === 'tender') return renderTender(main);
   if (v === 'contracts') return renderContracts(main);
   if (v === 'hours') return renderHours(main);
@@ -3354,6 +3360,197 @@ function expenseListModal(row, body) {
 /* =========================================================================
    FINANCIÈRE (administrateur) : recettes, charges, TVA, clients, projection
    ========================================================================= */
+/* =========================================================================
+   ERP intégré — Gestion documentaire / facturation / justificatifs
+   ========================================================================= */
+// Ouvre une réponse HTML d'une route ERP (authentifiée) dans un onglet imprimable.
+async function erpOpenHtml(method, path, body) {
+  const opts = { method, headers: { Authorization: 'Bearer ' + State.token } };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch('/api' + path, opts);
+  if (!res.ok) { toast('Génération impossible.', 'err'); return; }
+  const html = await res.text();
+  const w = window.open('', '_blank');
+  if (w) { w.document.open(); w.document.write(html); w.document.close(); }
+  else { const url = URL.createObjectURL(new Blob([html], { type: 'text/html' })); window.open(url, '_blank'); }
+}
+
+// --- Gestion documentaire (génération + PDF des courriers/contrats) ----------
+async function renderDocMgmt(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion documentaire</h1>
+    <p>Générez vos courriers et contrats (publipostage) et exportez-les en PDF.</p></div></div>
+    <div id="dm-body" class="empty">Chargement…</div>`;
+  let templates, meta;
+  try { templates = (await api('GET', '/admin/erp/templates')).templates; meta = await api('GET', '/admin/erp/meta'); }
+  catch (e) { document.getElementById('dm-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const cats = {};
+  Object.entries(templates).forEach(([k, v]) => { (cats[v.category || 'Autres'] = cats[v.category || 'Autres'] || []).push([k, v.label]); });
+  const optgroups = Object.keys(cats).map((c) => `<optgroup label="${esc(c)}">${cats[c].map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</optgroup>`).join('');
+  const userOpts = (meta.users || []).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+  const body = document.getElementById('dm-body'); body.className = '';
+  body.innerHTML = `<div class="card"><h3>Générer un document</h3>
+      <div class="grid2">
+        <div><label>Type de document</label><select id="dm-type">${optgroups}</select></div>
+        <div><label>Salarié concerné (si applicable)</label><select id="dm-user"><option value="">—</option>${userOpts}</select></div>
+      </div>
+      <div class="grid2">
+        <div><label>Motif / objet</label><input id="dm-motif" placeholder="ex. retards répétés / poste de conducteur"></div>
+        <div><label>Champ libre (faits, clause, rémunération…)</label><input id="dm-faits" placeholder="précisions à insérer"></div>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+        <button class="btn accent" id="dm-gen">Aperçu</button>
+        <button class="btn" id="dm-pdf">⬇️ Exporter en PDF</button>
+        <button class="btn ok" id="dm-pack">📦 Pack départ (3 documents)</button>
+        <button class="btn ghost" id="dm-sanction" style="display:none">Enregistrer comme avertissement (dossier salarié)</button>
+      </div>
+      <p class="help">Le brouillon est éditable avant export. La structure juridique (CCN Transports routiers IDCC 16) est automatique ; vous remplissez les champs.</p>
+    </div>
+    <div id="dm-preview"></div>`;
+  const collectVars = () => {
+    const uid = body.querySelector('#dm-user').value; const u = (meta.users || []).find((x) => x.id === uid);
+    const motif = body.querySelector('#dm-motif').value, faits = body.querySelector('#dm-faits').value;
+    return {
+      motif, faits,
+      salarie: u ? { fullName: u.name, lastName: (u.lastName || u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: u.address || '', birthDate: u.birthDate || '', hireDate: u.hireDate || '', poste: 'conducteur VL ≤ 3,5 T', coefficient: '110M' } : {},
+      contrat: { type: 'CDI', lieu: 'Éterville (14930) et déplacements', horaires: '151,67 h/mois (35 h hebdomadaires)', remuneration: faits || 'selon grille — à compléter', motif, objet: motif, clause: faits, dateEffet: '', terme: '', lastDay: '', detail: faits },
+    };
+  };
+  const showSanctionBtn = () => { body.querySelector('#dm-sanction').style.display = body.querySelector('#dm-type').value === 'avertissement' ? 'inline-block' : 'none'; };
+  body.querySelector('#dm-type').onchange = showSanctionBtn; showSanctionBtn();
+  body.querySelector('#dm-gen').onclick = async () => {
+    try { const { html } = await api('POST', '/admin/erp/documents/render', { type: body.querySelector('#dm-type').value, vars: collectVars() });
+      body.querySelector('#dm-preview').innerHTML = `<div class="card"><div contenteditable="true" style="background:#fff;color:#111;padding:18px;border-radius:8px;outline:none">${html}</div></div>`;
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelector('#dm-pdf').onclick = () => erpOpenHtml('POST', '/admin/erp/documents/print', { type: body.querySelector('#dm-type').value, vars: collectVars() });
+  body.querySelector('#dm-pack').onclick = async () => {
+    const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
+    const lastDay = prompt('Dernier jour travaillé (AAAA-MM-JJ) :', iso(new Date())); if (!lastDay) return;
+    const motif = prompt('Motif de la rupture :', 'Rupture conventionnelle') || '';
+    try { const { docs } = await api('POST', '/admin/erp/documents/pack-depart', { userId: uid, lastDay, motif });
+      const w = window.open('', '_blank'); w.document.write(docs.map((d) => `<h2 style="font-family:sans-serif">${esc(d.label)}</h2>${d.html}<hr style="page-break-after:always">`).join('') + '<button class="noprint" onclick="window.print()">Imprimer / PDF</button>'); w.document.close();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelector('#dm-sanction').onclick = async () => {
+    const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
+    try { await api('POST', '/admin/erp/documents/save-sanction', { userId: uid, type: 'Avertissement', motif: body.querySelector('#dm-motif').value }); toast('Avertissement enregistré au dossier du salarié.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+// --- Gestion de la facturation (factures conformes + PDF) --------------------
+async function renderBilling(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion de la facturation</h1>
+    <p>Émettez des factures conformes (mentions légales) et exportez-les en PDF.</p></div></div>
+    <div id="bl-body" class="empty">Chargement…</div>`;
+  let inv, co;
+  try { inv = await api('GET', '/admin/erp/invoices'); co = (await api('GET', '/admin/erp/company')).company; }
+  catch (e) { document.getElementById('bl-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const body = document.getElementById('bl-body'); body.className = '';
+  const f = (id, lbl, v, ph) => `<div><label>${lbl}</label><input id="${id}" value="${esc(v || '')}" placeholder="${ph || ''}"></div>`;
+  body.innerHTML = `
+    <div class="card"><h3>Coordonnées légales (mentions obligatoires sur la facture)</h3>
+      <div class="grid2">
+        ${f('co-legal', 'Dénomination', co.legal)}${f('co-forme', 'Forme juridique', co.formeJuridique)}
+        ${f('co-capital', 'Capital social', co.capital, '1 000 €')}${f('co-address', 'Adresse', co.address)}
+        ${f('co-siret', 'SIRET', co.siret, '14 chiffres')}${f('co-rcs', 'RCS', co.rcs, 'RCS Caen 820 323 350')}
+        ${f('co-ape', 'Code APE/NAF', co.ape, '4941A')}${f('co-tva', 'N° TVA intracom.', co.tva, 'FR..')}
+        ${f('co-iban', 'IBAN', co.iban)}${f('co-bic', 'BIC', co.bic)}
+        ${f('co-penalty', 'Taux pénalités retard (%/an)', co.penaltyRate, 'laisser vide = taux légal')}${f('co-contact', 'Contact (email/tél.)', co.contact)}
+      </div>
+      <label class="veh-check" style="margin-top:.5rem"><input type="checkbox" id="co-franchise" ${co.tvaFranchise ? 'checked' : ''}> Franchise en base de TVA (art. 293 B du CGI)</label>
+      <div style="margin-top:.5rem"><button class="btn ok" id="co-save">Enregistrer les coordonnées</button></div>
+    </div>
+    <div class="card"><h3>Nouvelle facture</h3>
+      <div class="grid2">
+        <div><label>Client (donneur d'ordre)</label><input id="iv-client" list="iv-contracts" placeholder="ex. GLS"><datalist id="iv-contracts">${(inv.contracts || []).map((c) => `<option value="${esc(c.client || c.name || '')}">`).join('')}</datalist></div>
+        <div><label>Adresse client</label><input id="iv-addr" placeholder="adresse du client"></div>
+        <div><label>Période / prestation</label><input id="iv-period" placeholder="${iso(new Date()).slice(0, 7)}"></div>
+        <div><label>TVA (%)</label><input id="iv-vat" type="number" value="${co.tvaFranchise ? 0 : (co.vatRate || 20)}" style="width:90px"></div>
+      </div>
+      <div id="iv-lines" style="margin-top:.5rem"></div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+        <button class="btn ghost sm" id="iv-add">+ Ligne</button>
+        <button class="btn accent" id="iv-create">Créer la facture</button>
+        <label class="veh-check" style="margin:0"><input type="checkbox" id="iv-avoir"> Facture d'avoir (montants négatifs)</label>
+      </div>
+    </div>
+    <div class="card"><h3>Factures émises</h3><div id="iv-list"></div></div>`;
+  body.querySelector('#co-save').onclick = async () => {
+    try { await api('PUT', '/admin/erp/company', { legal: val('#co-legal'), formeJuridique: val('#co-forme'), capital: val('#co-capital'), address: val('#co-address'), siret: val('#co-siret'), rcs: val('#co-rcs'), ape: val('#co-ape'), tva: val('#co-tva'), iban: val('#co-iban'), bic: val('#co-bic'), penaltyRate: val('#co-penalty'), contact: val('#co-contact'), tvaFranchise: body.querySelector('#co-franchise').checked }); toast('Coordonnées enregistrées.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  function val(s) { return body.querySelector(s).value; }
+  const linesBox = body.querySelector('#iv-lines');
+  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><input class="il-q" type="number" value="${q}" style="width:80px" title="Qté"><input class="il-pu" type="number" value="${pu}" style="width:120px" title="P.U. HT"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => row.remove(); linesBox.appendChild(row); };
+  addLine('Prestation de livraison', 21, 560);
+  body.querySelector('#iv-add').onclick = () => addLine();
+  body.querySelector('#iv-create').onclick = async () => {
+    const lines = [...linesBox.querySelectorAll('.impact-row')].map((r) => ({ designation: r.querySelector('.il-d').value, quantite: +r.querySelector('.il-q').value, prixUnitaire: +r.querySelector('.il-pu').value })).filter((l) => l.designation);
+    if (!val('#iv-client') || !lines.length) { toast('Client et au moins une ligne requis.', 'err'); return; }
+    const payload = { client: val('#iv-client'), clientAddress: val('#iv-addr'), period: val('#iv-period'), vatRate: +val('#iv-vat'), lines };
+    try { await api('POST', body.querySelector('#iv-avoir').checked ? '/admin/erp/invoices/avoir' : '/admin/erp/invoices', payload); toast('Facture créée.', 'ok'); renderBilling(main); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const list = body.querySelector('#iv-list');
+  list.innerHTML = (inv.invoices || []).length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>N°</th><th>Client</th><th>Date</th><th>TTC</th><th>Statut</th><th></th></tr></thead><tbody>${(inv.invoices || []).map((i) => `<tr><td>${esc(i.number)}</td><td>${esc(i.client)}</td><td>${esc(i.date)}</td><td>${eur(i.totalTTC)}</td><td><span class="pill ${i.status === 'paid' ? 'ok' : i.status === 'sent' ? 'warn' : ''}">${i.status}</span></td><td style="white-space:nowrap"><button class="btn ghost sm" data-pdf="${i.id}">PDF</button>${i.status !== 'paid' ? ` <button class="btn ghost sm" data-sent="${i.id}">Envoyée</button> <button class="btn ok sm" data-paid="${i.id}">Payée</button>` : ''} <button class="btn danger sm" data-del="${i.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucune facture.</p>';
+  list.querySelectorAll('[data-pdf]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/invoices/' + b.dataset.pdf + '/print'));
+  list.querySelectorAll('[data-sent]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/invoices/' + b.dataset.sent + '/status', { status: 'sent' }); renderBilling(main); });
+  list.querySelectorAll('[data-paid]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/invoices/' + b.dataset.paid + '/status', { status: 'paid' }); renderBilling(main); });
+  list.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette facture ?')) return; await api('DELETE', '/admin/erp/invoices/' + b.dataset.del); renderBilling(main); });
+}
+
+// --- Gestion des justificatifs (frais / IK conformes + PDF) ------------------
+async function renderJustif(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des justificatifs</h1>
+    <p>Notes de frais et indemnités kilométriques (barème éditable), avec export PDF conforme.</p></div></div>
+    <div id="ju-body" class="empty">Chargement…</div>`;
+  let d, meta;
+  try { d = await api('GET', '/admin/erp/expenses'); meta = await api('GET', '/admin/erp/meta'); }
+  catch (e) { document.getElementById('ju-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const names = {}; (meta.users || []).forEach((u) => names[u.id] = u.name);
+  const body = document.getElementById('ju-body'); body.className = '';
+  const sc = d.ikScale || { note: '', brackets: [] };
+  body.innerHTML = `
+    <div class="alert info">${esc(sc.note || 'Vérifiez le barème en vigueur sur impots.gouv.fr.')} L'indemnité kilométrique est forfaitaire et calculée par arithmétique pure à partir du barème ci-dessous.</div>
+    <div class="card"><h3>Nouveau justificatif</h3>
+      <div class="grid2">
+        <div><label>Salarié</label><select id="ju-user">${(meta.users || []).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></div>
+        <div><label>Date</label><input id="ju-date" type="date" value="${iso(new Date())}"></div>
+        <div><label>Type</label><select id="ju-type"><option value="ik">Indemnité kilométrique (IK)</option><option value="frais">Frais réel</option></select></div>
+        <div><label>Puissance fiscale (CV)</label><input id="ju-cv" type="number" value="5" style="width:90px"></div>
+        <div><label>Distance (km, si IK)</label><input id="ju-km" type="number" placeholder="km"></div>
+        <div><label>Montant € (si frais réel)</label><input id="ju-amt" type="number" placeholder="montant"></div>
+      </div>
+      <div class="grid2"><div style="grid-column:1/-1"><label>Objet / note</label><input id="ju-note" placeholder="déplacement, motif…"></div></div>
+      <div style="margin-top:.5rem"><button class="btn accent" id="ju-add">Calculer & enregistrer</button></div>
+    </div>
+    <div class="card"><h3>Barème kilométrique (éditable)</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Jusqu'à CV</th><th>≤5000 km (€/km)</th><th>5001-20000 (€/km)</th><th>+ forfait (€)</th><th>&gt;20000 (€/km)</th></tr></thead>
+      <tbody id="ik-rows">${(sc.brackets || []).map((b, i) => `<tr><td><input data-ik="${i}" data-k="cvMax" type="number" value="${b.cvMax}" style="width:70px"></td><td><input data-ik="${i}" data-k="a" type="number" step="0.001" value="${b.a}" style="width:90px"></td><td><input data-ik="${i}" data-k="b" type="number" step="0.001" value="${b.b}" style="width:90px"></td><td><input data-ik="${i}" data-k="c" type="number" value="${b.c}" style="width:90px"></td><td><input data-ik="${i}" data-k="d" type="number" step="0.001" value="${b.d}" style="width:90px"></td></tr>`).join('')}</tbody></table></div>
+      <div style="margin-top:.5rem"><button class="btn ghost" id="ik-save">Enregistrer le barème</button></div>
+    </div>
+    <div class="card"><h3>Justificatifs enregistrés</h3><div id="ju-list"></div></div>`;
+  body.querySelector('#ju-add').onclick = async () => {
+    try { await api('POST', '/admin/erp/expenses', { userId: body.querySelector('#ju-user').value, date: body.querySelector('#ju-date').value, type: body.querySelector('#ju-type').value, cv: +body.querySelector('#ju-cv').value, km: +body.querySelector('#ju-km').value, amount: +body.querySelector('#ju-amt').value, note: body.querySelector('#ju-note').value }); toast('Justificatif enregistré.', 'ok'); renderJustif(main); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelector('#ik-save').onclick = async () => {
+    const rows = {}; body.querySelectorAll('[data-ik]').forEach((inp) => { const i = inp.dataset.ik; (rows[i] = rows[i] || {})[inp.dataset.k] = +inp.value; });
+    const brackets = Object.keys(rows).sort((a, b) => a - b).map((i) => rows[i]);
+    try { await api('PUT', '/admin/erp/ik-scale', { brackets, note: sc.note }); toast('Barème enregistré.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const list = body.querySelector('#ju-list');
+  list.innerHTML = (d.expenses || []).length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Salarié</th><th>Type</th><th>Km</th><th>Montant</th><th>Statut</th><th></th></tr></thead><tbody>${(d.expenses || []).slice().reverse().map((x) => `<tr><td>${esc(x.date)}</td><td>${esc(names[x.userId] || '')}</td><td>${esc(x.type)}</td><td>${x.km || '—'}</td><td><strong>${eur(x.amount)}</strong></td><td><span class="pill ${x.status === 'approved' ? 'ok' : ''}">${x.status}</span></td><td style="white-space:nowrap"><button class="btn ghost sm" data-pdf="${x.id}">PDF</button>${x.status !== 'approved' ? ` <button class="btn ok sm" data-ok="${x.id}">Valider</button>` : ''} <button class="btn danger sm" data-del="${x.id}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun justificatif.</p>';
+  list.querySelectorAll('[data-pdf]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/expenses/' + b.dataset.pdf + '/print'));
+  list.querySelectorAll('[data-ok]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/expenses/' + b.dataset.ok + '/status', { status: 'approved' }); renderJustif(main); });
+  list.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api('DELETE', '/admin/erp/expenses/' + b.dataset.del); renderJustif(main); });
+}
+
 async function renderFinance(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Contrôle financier</h1>
