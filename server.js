@@ -2672,14 +2672,32 @@ app.put('/api/staff/hsup-base', authRequired, adminRequired, async (req, res) =>
 // Indiquer les HSUP déjà payées (en heures brutes) pour un salarié / un mois.
 app.put('/api/staff/hsup-settlement', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { userId, month, paidHours } = req.body || {};
-  if (!db.users.some((u) => u.id === userId)) return res.status(404).json({ error: 'Salarié introuvable' });
+  const { userId, month, paidHours, realizedAdj, computedRealized } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
   if (!/^\d{4}-\d{2}$/.test(String(month || ''))) return res.status(400).json({ error: 'Mois invalide' });
   let s = db.hsupSettlements.find((x) => x.userId === userId && x.month === month);
   if (!s) { s = { userId, month, paidHours: 0, transmittedEquiv: 0 }; db.hsupSettlements.push(s); }
-  s.paidHours = Math.max(0, Math.round((Number(paidHours) || 0) * 100) / 100);
+  const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  if (paidHours != null) s.paidHours = Math.max(0, r2(paidHours));
+  // Correction manuelle du réalisé : l'écart est transmis directement au
+  // compteur HSUP du salarié (incrémente ou décrémente son stock).
+  if (realizedAdj != null) {
+    const newAdj = r2(realizedAdj);
+    const delta = newAdj - (s.realizedAdj || 0);
+    if (delta) u.balances.heuresSupp = r2((u.balances.heuresSupp || 0) + delta);
+    s.realizedAdj = newAdj;
+  }
+  // Trop-payé : si le payé dépasse le réalisé (importé), l'excédent est retiré
+  // du stock d'HSUP du salarié (delta-tracé pour rester idempotent).
+  if (computedRealized != null) {
+    const overpay = Math.max(0, r2(s.paidHours - r2(computedRealized)));
+    const overDelta = overpay - (s.overpayApplied || 0);
+    if (overDelta) u.balances.heuresSupp = r2((u.balances.heuresSupp || 0) - overDelta);
+    s.overpayApplied = overpay;
+  }
   await save();
-  res.json({ settlement: s });
+  res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });
 
 // Transmettre au compteur du salarié les HEURES SUPPLÉMENTAIRES RÉALISÉES qui
