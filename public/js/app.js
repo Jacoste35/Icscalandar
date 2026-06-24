@@ -640,8 +640,10 @@ async function renderDashboard(main) {
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
     }
+    let kmAnomalyPanel = '';
     if (isAdmin) {
       try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
+      try { const { anomalies } = await api('GET', '/staff/km-anomalies'); kmAnomalyPanel = kmAnomalyHTML(anomalies); } catch (e) {}
     }
 
     // Camions nécessitant un entretien (visible de TOUS les salariés).
@@ -679,6 +681,7 @@ async function renderDashboard(main) {
       </div>`}
       ${philo}
       ${messagesPanel}
+      ${kmAnomalyPanel}
       ${stockAlertPanel}
       ${needsMaintPanel}
       ${disciplinePanel}
@@ -713,6 +716,15 @@ function bindDashboardActions(scope) {
   scope.querySelectorAll('[data-repl-cal]').forEach((b) => b.onclick = () => {
     const ev = (_calEvents || []).find((x) => x.id === b.dataset.replCal);
     if (ev) replacementModal(ev, scope, () => renderDashboard(document.getElementById('main')));
+  });
+  // Valider / écarter une anomalie de kilométrage.
+  scope.querySelectorAll('[data-kmano-apply]').forEach((b) => b.onclick = async () => {
+    try { await api('POST', `/admin/km-anomalies/${b.dataset.kmanoApply}/resolve`, { apply: true }); toast('Kilométrage validé, odomètre mis à jour.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-kmano-reject]').forEach((b) => b.onclick = async () => {
+    try { await api('POST', `/admin/km-anomalies/${b.dataset.kmanoReject}/resolve`, { apply: false }); toast('Anomalie écartée.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
   });
   // Composer un message (encadrement).
   const comp = scope.querySelector('#msg-send');
@@ -990,6 +1002,17 @@ function colleaguesUpcomingHTML(team, events) {
 }
 
 // Carte "qui est/était absent" pour une semaine donnée (lundi -> samedi).
+// Alerte d'accueil : anomalies de kilométrage relevées à l'import (validation admin).
+function kmAnomalyHTML(anomalies) {
+  if (!anomalies || !anomalies.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--danger)">
+    <h3 style="margin:0 0 .3rem">🚗 Anomalies de kilométrage à vérifier (${anomalies.length})</h3>
+    <p class="help" style="margin-top:0">Relevés suspects (erreur de saisie possible). <strong>Validez</strong> pour mettre à jour l'odomètre du véhicule, ou <strong>écartez</strong>.</p>
+    <div class="table-wrap"><table><thead><tr><th>Véhicule</th><th>Date</th><th>Km relevé</th><th>Chauffeur</th><th>Anomalie</th><th></th></tr></thead>
+      <tbody>${anomalies.map((a) => `<tr><td><strong>${esc(a.vehicleName)}</strong>${a.plate ? ` (${esc(a.plate)})` : ''}</td><td>${fmtDate(a.date)}</td><td>${kmFmt(a.km)}</td><td>${esc(a.userName)}</td><td class="help">${esc(a.reason)}</td><td style="white-space:nowrap"><button class="btn ok sm" data-kmano-apply="${a.id}">Valider</button> <button class="btn ghost sm" data-kmano-reject="${a.id}">Écarter</button></td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+
 function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
   const isAdmin = State.user && State.user.role === 'admin' && !_previewMode;
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
@@ -2963,6 +2986,44 @@ function modelOptions(selected) {
 }
 
 // Onglet « Flotte » : ajout / modification / suppression des véhicules (admin).
+// Suivi du kilométrage : graphique d'évolution + tableau des km parcourus par
+// véhicule (moyennes pour l'entretien et les commandes de stock).
+async function loadFleetKm() {
+  const el = document.getElementById('flt-km'); if (!el) return;
+  try {
+    const { log, vehicles } = await api('GET', '/staff/vehicle-km');
+    el.className = '';
+    el.innerHTML = `<h3 style="margin:1rem 0 .3rem">📈 Évolution des kilomètres par véhicule</h3>
+      <p class="help" style="margin-top:0">Relevés issus des rapports d'activité importés — pour estimer les moyennes et ajuster l'entretien et les commandes de stock.</p>
+      ${fleetKmHTML(vehicles, log)}`;
+  } catch (e) { el.className = ''; el.innerHTML = `<p class="help">Suivi kilométrique indisponible.</p>`; }
+}
+function fleetKmHTML(vehicles, log) {
+  const byVeh = {};
+  (log || []).forEach((l) => { (byVeh[l.vehicleId] = byVeh[l.vehicleId] || []).push(l); });
+  const cards = (vehicles || []).map((v) => {
+    const entries = (byVeh[v.id] || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+    if (!entries.length) return '';
+    const months = {}; const byDriver = {};
+    entries.forEach((l) => { const k = (l.date || '').slice(0, 7); months[k] = (months[k] || 0) + (l.km || 0); byDriver[l.userName || '—'] = (byDriver[l.userName || '—'] || 0) + (l.km || 0); });
+    const mkeys = Object.keys(months).sort();
+    const totals = mkeys.map((k) => months[k]);
+    const tot = totals.reduce((s, x) => s + x, 0);
+    const avg = Math.round(tot / mkeys.length);
+    const maxv = Math.max(1, ...totals);
+    const bars = `<div class="bars">${mkeys.map((k) => { const val = months[k]; const h = Math.round((val / maxv) * 100); return `<div class="bar-col"><div class="bar-wrap"><div class="bar pos" style="height:${h}%" title="${kmFmt(val)}"></div></div><div class="bar-lbl">${esc(k.slice(2))}</div><div class="bar-val">${val.toLocaleString('fr-FR')}</div></div>`; }).join('')}</div>`;
+    const mrows = mkeys.map((k) => `<tr><td>${esc(k)}</td><td>${kmFmt(months[k])}</td></tr>`).join('');
+    const drivers = Object.keys(byDriver).sort((a, b) => byDriver[b] - byDriver[a]).map((n) => `${esc(n)} : ${kmFmt(byDriver[n])}`).join(' · ');
+    return `<div class="card zoom-hover">
+      <h4 style="margin:.1rem 0 .3rem">🚐 ${esc(v.name)}${v.plate ? ` (${esc(v.plate)})` : ''} — odomètre ${kmFmt(v.km)}</h4>
+      ${mkeys.length > 1 ? `<div style="margin:.4rem 0">${bars}</div>` : ''}
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Km parcourus</th></tr></thead><tbody>${mrows}<tr><th>Total</th><th>${kmFmt(tot)}</th></tr><tr><th>Moyenne / mois</th><th>${kmFmt(avg)}</th></tr></tbody></table></div>
+      <p class="help" style="margin:.3rem 0 0">Par chauffeur : ${drivers || '—'}</p>
+    </div>`;
+  }).filter(Boolean).join('');
+  return cards || '<p class="help">Aucun relevé de kilométrage importé pour le moment (importez un rapport contenant une colonne véhicule + kilomètres).</p>';
+}
+
 function vehTabFleet(body) {
   const vehicles = _veh.vehicles;
   body.innerHTML = `
@@ -2991,7 +3052,9 @@ function vehTabFleet(body) {
           <td><button class="toggle ${v.active !== false ? 'on' : 'off'}" data-toggleactive="${v.id}" data-active="${v.active !== false ? '1' : '0'}" title="Actif / inactif">${v.active !== false ? 'ON' : 'OFF'}</button></td>
           <td style="white-space:nowrap"><button class="btn ghost sm" data-carnet="${v.id}">Carnet</button> <button class="btn ghost sm" data-editv="${v.id}">Modifier</button> <button class="btn ghost sm" data-delv="${v.id}">✕</button></td>
         </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
-    </div>`;
+    </div>
+    <div id="flt-km" class="empty">Chargement du suivi kilométrique…</div>`;
+  loadFleetKm();
   document.getElementById('fl-add').onclick = async () => {
     const payload = {
       assignedUserId: document.getElementById('fl-user').value || null,
@@ -4751,8 +4814,10 @@ function extractActivityReport(rows) {
   if (hdr < 0) throw new Error('En-têtes non reconnus (Employé / Total travail).');
   const H = rows[hdr];
   const col = (name) => H.findIndex((c) => typeof c === 'string' && c.trim().startsWith(name));
+  const colAny = (names) => { for (const n of names) { const i = col(n); if (i >= 0) return i; } return -1; };
   const cE = col('Employé'), cJ = col('Jour'), cD = col('Début'), cF = col('Fin'), cP = col('Pause'), cT = col('Total travail'), cA = col('Amplitude'), cAbs = col('Heures congés');
   const cNight = col('Heures au tarif nuit'), cKm = col('Nombre de kilomètres'), cMidi = col('Repas midi'), cSoir = col('Repas soir'), cDec = col('Découcher'), cCasse = col('Casse'), cMiss = col('Mission'), cMot = col('Motif'), cObs = col('Observations');
+  const cVeh = colAny(['Véhicule', 'Vehicule', 'Immatriculation', 'Plaque', 'Tournée']); // pour le suivi du kilométrage
   const hN = (i) => (i >= 0 && typeof r[i] === 'number') ? Math.round(r[i] * 24 * 100) / 100 : 0; // fraction de jour -> heures
   const nb = (i) => (i >= 0 && typeof r[i] === 'number') ? r[i] : 0;
   const str = (i) => (i >= 0 && typeof r[i] === 'string') ? r[i].replace(/\s+/g, ' ').trim() : '';
@@ -4772,6 +4837,7 @@ function extractActivityReport(rows) {
       mealMidi: nb(cMidi), mealSoir: nb(cSoir), casseCroute: nb(cCasse), decoucher: nb(cDec),
       missions: str(cMiss), motif: str(cMot), observations: str(cObs),
       absCat: hN(cAbs) > 0 ? mapMotifToCat(str(cMot)) : null, // pour l'ajout rétroactif au planning
+      vehName: str(cVeh), // identifiant véhicule (pour le suivi du kilométrage)
     };
     (employees[cur] = employees[cur] || []).push(rec);
     if (!minD || date < minD) minD = date; if (!maxD || date > maxD) maxD = date;
@@ -4850,11 +4916,13 @@ function renderImportMapping() {
   document.getElementById('hi-import').onclick = async () => {
     const maps = Array.from(el.querySelectorAll('[data-mapname]')).map((s) => ({ name: s.dataset.mapname, userId: s.value })).filter((m) => m.userId);
     if (!maps.length) { toast('Associez au moins un salarié.', 'err'); return; }
-    let total = 0, planned = 0; const reopened = new Set();
+    let total = 0, planned = 0, kmUp = 0, kmFlag = 0; const reopened = new Set();
     try {
-      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
+      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); kmUp += (r.kmUpdated || 0); kmFlag += (r.kmFlagged || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
       if (planned) toast(`${planned} absence(s) ajoutée(s) au planning (rétroactif).`, 'ok');
+      if (kmUp) toast(`${kmUp} relevé(s) de kilométrage pris en compte.`, 'ok');
+      if (kmFlag) toast(`${kmFlag} anomalie(s) de kilométrage à vérifier sur l'accueil.`, 'warn');
       if (reopened.size) toast(`Mois rouvert(s) : ${[...reopened].sort().join(', ')} — de nouvelles heures sup. peuvent être dues (voir « Reste dû »).`, 'warn');
       // Détecte les journées de travail manquantes, justifie via le planning ou
       // demande le type d'absence, puis réactualise toute la gestion des heures.
