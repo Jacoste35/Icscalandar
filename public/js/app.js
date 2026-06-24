@@ -4324,7 +4324,10 @@ function hoursHsup(body) {
     });
     const open = !!_vehOpen['hsup_' + id];
     const jourOpen = !!_vehOpen['jour_' + id];
+    const semOpen = !!_vehOpen['sem_' + id];
+    const detOpen = !!_vehOpen['det_' + id];
     const totWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
+    const totPaid = monthCalc.reduce((s, c) => s + (c.paid || 0), 0);
     const rows = monthCalc.map((c) => `<tr>
       <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
       <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
@@ -4351,11 +4354,11 @@ function hoursHsup(body) {
           <span class="help">Équivalence en récupération (à titre informatif, pour la direction) : ajustements légaux +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour. Soit ≈ <strong>${(totRemEquivInfo / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</span>
         </div>
         <div style="margin:.5rem 0"><button class="btn ok" data-transmitall="${id}">Transmettre tout le reste dû au compteur de ${esc(u.name)}</button></div>
-        <h4 style="margin:.7rem 0 .3rem">Semaine par semaine <span class="help">— supprimez une semaine mal attribuée</span></h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>HSUP</th><th>25%</th><th>50%</th><th></th></tr></thead>
-          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td><td>${w.ids && w.ids.length ? `<button class="btn ghost sm" data-delweek="${w.ids.join(',')}" data-uid="${id}" title="Supprimer la semaine">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
-        <h4 style="margin:.7rem 0 .3rem">Détail par mois (indemnités & estimation de salaire)</h4>
-        ${monthsDetailHTML(u.days, base, id)}
+        <h4 style="margin:.7rem 0 .3rem;cursor:pointer" data-toggle="sem_${id}"><span class="veh-caret">${semOpen ? '▾' : '▸'}</span> Semaine par semaine <span class="help">— supprimez une semaine mal attribuée</span></h4>
+        ${semOpen ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Semaine du</th><th>Jours</th><th>Travaillé</th><th>HSUP</th><th>25%</th><th>50%</th><th></th></tr></thead>
+          <tbody>${weekRows.map((w) => `<tr class="${w.hsup > 0 ? 'lvl-soon' : ''}"><td>${fmtDate(w.k)}</td><td>${w.days}</td><td>${hFmt(w.worked)}</td><td>${w.hsup > 0 ? hFmt(w.hsup) : '—'}</td><td>${w.h25 > 0 ? hFmt(w.h25) : '—'}</td><td>${w.h50 > 0 ? hFmt(w.h50) : '—'}</td><td>${w.ids && w.ids.length ? `<button class="btn ghost sm" data-delweek="${w.ids.join(',')}" data-uid="${id}" title="Supprimer la semaine">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
+        <h4 style="margin:.7rem 0 .3rem;cursor:pointer" data-toggle="det_${id}"><span class="veh-caret">${detOpen ? '▾' : '▸'}</span> Détail par mois (indemnités & estimation de salaire) <span class="help">— ${hFmt(totPaid)} payé(s) saisi(s)</span></h4>
+        ${detOpen ? monthsDetailHTML(u.days, base, id) : ''}
         <h4 style="margin:.7rem 0 .3rem;cursor:pointer" data-toggle="jour_${id}"><span class="veh-caret">${jourOpen ? '▾' : '▸'}</span> Jour par jour <span class="help">— supprimez une saisie mal attribuée</span></h4>
         ${jourOpen ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Service</th><th>Travaillé</th><th>Nuit</th><th>Ampl.</th><th>R.midi</th><th>R.soir</th><th>Casse-cr.</th><th>Découch.</th><th>Km</th><th>Mission</th><th>Absence</th><th></th></tr></thead>
           <tbody>${u.days.map((e) => `<tr><td>${fmtDate(e.date)}</td><td>${e.start && e.end ? esc(e.start) + '–' + esc(e.end) : '—'}</td><td>${hFmt(e.worked)}</td><td>${e.nightHours ? hFmt(e.nightHours) : '—'}</td><td>${hFmt(e.amplitude)}</td><td>${e.mealMidi || '—'}</td><td>${e.mealSoir || '—'}</td><td>${e.casseCroute || '—'}</td><td>${e.decoucher || '—'}</td><td>${e.km || '—'}</td><td>${esc(e.missions || '—')}</td><td>${e.absence ? hFmt(e.absence) + (e.motif ? ' (' + esc(e.motif) + ')' : '') : '—'}</td><td>${e.id ? `<button class="btn ghost sm" data-delday="${e.id}" data-uid="${id}" title="Supprimer cette saisie">🗑</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
@@ -4781,11 +4784,86 @@ function renderImportMapping() {
       for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
       if (reopened.size) toast(`Mois rouvert(s) : ${[...reopened].sort().join(', ')} — de nouvelles heures sup. peuvent être dues (voir « Reste dû »).`, 'warn');
-      // On réactualise toute la gestion des heures et on recadre le résumé sur
-      // le mois le plus récent importé.
-      _hImport = null; _hrResumeMonth = null; await loadHours(); hrTab('hsup');
+      // Détecte les journées de travail manquantes, justifie via le planning ou
+      // demande le type d'absence, puis réactualise toute la gestion des heures.
+      await handleMissingDays(maps);
     } catch (e) { toast(e.message, 'err'); }
   };
+}
+
+// Recharge la gestion des heures et recadre le résumé sur le mois importé.
+function finalizeImport() { _hImport = null; _hrResumeMonth = null; loadHours().then(() => hrTab('hsup')); }
+
+// Journées OUVRÉES (lun-ven, hors fériés) sans aucune saisie entre la 1re et la
+// dernière date du fichier d'un salarié.
+function computeMissingDays(rows) {
+  const dates = new Set((rows || []).map((r) => r.date).filter(Boolean));
+  if (!dates.size) return [];
+  const sorted = [...dates].sort();
+  let d = parseISO(sorted[0]); const end = parseISO(sorted[sorted.length - 1]);
+  const missing = [];
+  while (d <= end) {
+    const ds = iso(d), dow = d.getDay();
+    if (dow !== 0 && dow !== 6 && !State.holidays[ds] && !dates.has(ds)) missing.push(ds);
+    d = addDays(d, 1);
+  }
+  return missing;
+}
+// Cherche une absence approuvée du salarié couvrant la date (justification planning).
+function justifForDate(reqs, userId, ds) {
+  const r = (reqs || []).find((x) => x.userId === userId && x.status === 'approved' && x.category !== 'RET' && x.startDate <= ds && x.endDate >= ds);
+  return r ? r.category : null;
+}
+// Construit une ligne d'absence (journée complète) à importer dans les heures.
+function absenceRow(ds, cat, fromPlanning) {
+  return { date: ds, worked: 0, amplitude: 0, absence: HPERDAY, motif: catLabel(cat) + (fromPlanning ? ' (planning)' : ''), missions: '', start: '', end: '', breakMin: 0 };
+}
+// Orchestration : justifie automatiquement via le planning, sinon demande.
+async function handleMissingDays(maps) {
+  // S'assure que les jours fériés des années concernées sont chargés.
+  const years = new Set();
+  maps.forEach((m) => (_hImport.employees[m.name] || []).forEach((r) => { if (r.date) years.add(Number(r.date.slice(0, 4))); }));
+  for (const y of years) { try { await ensureHolidays(y); } catch (e) {} }
+  let reqs = [];
+  try { reqs = (await api('GET', '/admin/requests')).requests || []; } catch (e) {}
+  const justified = {}; const unresolved = [];
+  for (const m of maps) {
+    for (const ds of computeMissingDays(_hImport.employees[m.name])) {
+      const cat = justifForDate(reqs, m.userId, ds);
+      if (cat) (justified[m.userId] = justified[m.userId] || []).push(absenceRow(ds, cat, true));
+      else unresolved.push({ userId: m.userId, name: m.name, date: ds });
+    }
+  }
+  let auto = 0;
+  for (const uid of Object.keys(justified)) { try { const r = await api('POST', '/staff/work-hours/import', { userId: uid, rows: justified[uid] }); auto += r.added; } catch (e) {} }
+  if (auto) toast(`${auto} absence(s) justifiée(s) ajoutée(s) depuis le planning.`, 'ok');
+  if (unresolved.length) missingDaysModal(unresolved, finalizeImport);
+  else finalizeImport();
+}
+// Menu contextuel : indiquer le type d'absence des journées manquantes non justifiées.
+function missingDaysModal(items, done) {
+  const dows = ['dim', 'lun', 'mar', 'mer', 'jeu', 'ven', 'sam'];
+  const catOpts = `<option value="">— Ignorer —</option>` + State.categories.filter((c) => c.selectable !== false && c.code !== 'RET').map((c) => `<option value="${c.code}">${esc(c.code)} — ${esc(catLabel(c.code))}</option>`).join('');
+  const rows = items.map((it, i) => `<tr><td>${esc(it.name)}</td><td>${fmtDate(it.date)} <span class="help">${dows[parseISO(it.date).getDay()]}</span></td><td><select data-mi="${i}" data-uid="${it.userId}" data-date="${it.date}">${catOpts}</select></td></tr>`).join('');
+  modal({
+    title: `Journées manquantes (${items.length})`,
+    bodyHTML: `<p class="help">Ces journées ouvrées n'ont ni heures ni absence dans le fichier, et aucune justification n'a été trouvée dans le planning. Indiquez le type d'absence (ou « Ignorer »).</p>
+      <label>Appliquer à toutes les lignes : <select id="mi-all" style="width:auto">${catOpts}</select></label>
+      <div class="table-wrap" style="margin-top:.6rem;max-height:50vh;overflow:auto"><table class="veh-table"><thead><tr><th>Salarié</th><th>Date</th><th>Type d'absence</th></tr></thead><tbody>${rows}</tbody></table></div>`,
+    footHTML: `<button class="btn ghost" id="mi-skip">Tout ignorer</button><button class="btn accent" id="mi-save">Enregistrer les absences</button>`,
+    onMount: (ov) => {
+      ov.querySelector('#mi-all').onchange = (e) => { const v = e.target.value; ov.querySelectorAll('[data-mi]').forEach((s) => s.value = v); };
+      ov.querySelector('#mi-skip').onclick = () => { closeModal(); done(); };
+      ov.querySelector('#mi-save').onclick = async () => {
+        const byUser = {};
+        ov.querySelectorAll('[data-mi]').forEach((s) => { if (s.value) (byUser[s.dataset.uid] = byUser[s.dataset.uid] || []).push(absenceRow(s.dataset.date, s.value, false)); });
+        let n = 0;
+        try { for (const uid of Object.keys(byUser)) { const r = await api('POST', '/staff/work-hours/import', { userId: uid, rows: byUser[uid] }); n += r.added; } }
+        catch (e) { toast(e.message, 'err'); return; }
+        closeModal(); if (n) toast(`${n} absence(s) enregistrée(s).`, 'ok'); done();
+      };
+    },
+  });
 }
 
 /* =========================================================================
