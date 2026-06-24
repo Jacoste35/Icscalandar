@@ -4274,41 +4274,50 @@ function hoursHsup(body) {
     weekRows.forEach((w) => { const m = w.k.slice(0, 7); (months[m] = months[m] || { worked: 0, h25: 0, h50: 0 }); months[m].worked += w.worked; months[m].h25 += w.h25; months[m].h50 += w.h50; });
     const monthKeys = Object.keys(months).sort();
     // Calcul des restants par mois (après paiement) + transmission déjà faite.
-    let totRemEquiv = 0, totHsup = 0;
+    // On NE transmet et NE compte dans le « Reste dû » que les HSUP réalisées
+    // (heures brutes). L'équivalence en récupération majorée n'est qu'indicative
+    // (à titre informatif pour la direction).
+    let totRemDue = 0, totHsup = 0, totRemEquivInfo = 0;
     const monthCalc = monthKeys.map((m) => {
       const mo = months[m]; const hsup = mo.h25 + mo.h50; totHsup += hsup;
       const st = getSettlement(id, m);
+      const paid = st.paidHours || 0;
+      const transmitted = st.transmittedEquiv || 0; // heures BRUTES déjà transmises au compteur
       // Paiement (heures brutes) imputé d'abord sur le 25% puis le 50%.
-      const remH25 = Math.max(0, mo.h25 - st.paidHours);
-      const remH50 = Math.max(0, mo.h50 - Math.max(0, st.paidHours - mo.h25));
-      const equipTot = equivRecup(mo.h25, mo.h50);
-      const remEquiv = Math.max(0, equivRecup(remH25, remH50) - (st.transmittedEquiv || 0));
-      totRemEquiv += remEquiv;
-      return { m, ...mo, hsup, equipTot, paid: st.paidHours || 0, transmitted: st.transmittedEquiv || 0, remEquiv };
+      const remH25 = Math.max(0, mo.h25 - paid);
+      const remH50 = Math.max(0, mo.h50 - Math.max(0, paid - mo.h25));
+      // Transmission déjà faite (heures brutes) imputée d'abord sur le 25% puis le 50%.
+      const dueH25 = Math.max(0, remH25 - transmitted);
+      const dueH50 = Math.max(0, remH50 - Math.max(0, transmitted - remH25));
+      const remDue = Math.round((dueH25 + dueH50) * 100) / 100; // HSUP réalisées restant dues (brutes)
+      const equipTot = equivRecup(mo.h25, mo.h50);              // info : équiv. récup. du mois
+      const remEquivInfo = equivRecup(dueH25, dueH50);          // info : équiv. récup. du reste dû
+      totRemDue += remDue; totRemEquivInfo += remEquivInfo;
+      return { m, ...mo, hsup, equipTot, paid, transmitted, remDue, remEquivInfo };
     });
     const open = !!_vehOpen['hsup_' + id];
     const totWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
     const rows = monthCalc.map((c) => `<tr>
       <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
       <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
-      <td>${hFmt(c.equipTot)} <span class="help">(${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
+      <td><span class="help">${hFmt(c.equipTot)} (${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
       <td><input class="hsup-paid" data-uid="${id}" data-month="${c.m}" type="number" step="0.5" min="0" value="${c.paid}" style="width:70px"></td>
       <td>${c.transmitted > 0 ? hFmt(c.transmitted) : '—'}</td>
-      <td><strong class="${c.remEquiv > 0 ? 'warn' : 'pos'}">${hFmt(c.remEquiv)}</strong> <span class="help">(${(c.remEquiv / HPERDAY).toFixed(2)} j)</span></td>
-      <td>${c.remEquiv > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remEquiv}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
+      <td><strong class="${c.remDue > 0 ? 'warn' : 'pos'}">${hFmt(c.remDue)}</strong>${c.remDue > 0 ? ` <span class="help">(≈ ${(c.remEquivInfo / HPERDAY).toFixed(2)} j récup.)</span>` : ''}</td>
+      <td>${c.remDue > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remDue}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
     </tr>`).join('');
     return `<div class="card veh-card">
       <div class="veh-card-head" data-toggle="hsup_${id}">
         <span class="veh-caret">${open ? '▾' : '▸'}</span>
         <strong>${esc(u.name)}</strong>
-        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span><span class="pill ${totRemEquiv > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemEquiv)} (${(totRemEquiv / HPERDAY).toFixed(1)} j)</span></span>
+        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span><span class="pill ${totRemDue > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemDue)}<span class="help" style="opacity:.85"> (≈ ${(totRemEquivInfo / HPERDAY).toFixed(1)} j récup.)</span></span></span>
       </div>
       ${open ? `<div class="veh-card-body">
         <h4 style="margin:.4rem 0 .3rem">Récapitulatif mois par mois</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup.</th><th>Déjà payé (h)</th><th>Transmis</th><th>Reste dû</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <div class="alert info" style="margin-top:.5rem">
-          <strong>Résumé en jours de récupération</strong> (ajustements légaux : +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour).<br>
-          Reste à transmettre à ${esc(u.name)} : <strong>${hFmt(totRemEquiv)}</strong> ≈ <strong>${(totRemEquiv / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.
+          <strong>Reste à transmettre à ${esc(u.name)} : ${hFmt(totRemDue)}</strong> d'heures supplémentaires réalisées (heures brutes transmises au compteur du salarié).<br>
+          <span class="help">Équivalence en récupération (à titre informatif, pour la direction) : ajustements légaux +25% de la 36ᵉ à la 43ᵉ h, +50% au-delà ; 1 h sup. = 1 h + majoration de repos ; ${HPERDAY} h = 1 jour. Soit ≈ <strong>${(totRemEquivInfo / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</span>
         </div>
         <div style="margin:.5rem 0"><button class="btn ok" data-transmitall="${id}">Transmettre tout le reste dû au compteur de ${esc(u.name)}</button></div>
         <h4 style="margin:.7rem 0 .3rem">Semaine par semaine</h4>
@@ -4330,7 +4339,7 @@ function hoursHsup(body) {
         <div><label>Base hebdomadaire (h au-delà = HSUP)</label><input id="hsup-base" type="number" step="0.5" min="0" value="${base}" style="width:120px"></div>
         <button class="btn ghost" id="hsup-recalc">Enregistrer la base & recalculer</button>
       </div>
-      <p class="help">HSUP calculées par semaine (au-delà de la base, 35 h légal), réparties en <strong>+25%</strong> (8 premières heures) et <strong>+50%</strong>. « Déjà payé » réduit le reste dû ; « Transmettre » crédite le compteur Récupération du salarié (il pourra alors poser sa récup).</p>
+      <p class="help">HSUP calculées par semaine (au-delà de la base, 35 h légal), réparties en <strong>+25%</strong> (8 premières heures) et <strong>+50%</strong>. « Déjà payé » réduit le reste dû ; « Transmettre » crédite le compteur Récupération du salarié avec le <strong>nombre d'heures supplémentaires réalisées</strong> qui lui sont dues. L'<em>Équiv. récup.</em> (majoration légale) est affichée uniquement à titre informatif pour la direction.</p>
     </div>
     ${cards}`;
   document.getElementById('hsup-recalc').onclick = async () => { try { await api('PUT', '/staff/hsup-base', { base: document.getElementById('hsup-base').value }); await loadHours(); hrTab('hsup'); } catch (e) { toast(e.message, 'err'); } };
@@ -4340,7 +4349,7 @@ function hoursHsup(body) {
     catch (e) { toast(e.message, 'err'); }
   });
   body.querySelectorAll('[data-transmit]').forEach((b) => b.onclick = async () => {
-    if (!confirm(`Transmettre ${hFmt(+b.dataset.eq)} de récupération au compteur du salarié ?`)) return;
+    if (!confirm(`Transmettre ${hFmt(+b.dataset.eq)} d'heures supplémentaires au compteur du salarié ?`)) return;
     try { const r = await api('POST', '/staff/hsup/transmit', { userId: b.dataset.transmit, month: b.dataset.month, equivHours: b.dataset.eq }); toast(`Transmis. Nouveau solde récup. : ${hFmt(r.newBalance)}.`, 'ok'); await loadHours(); hoursHsup(body); }
     catch (e) { toast(e.message, 'err'); }
   });
