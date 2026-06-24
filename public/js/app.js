@@ -561,6 +561,8 @@ function renderView() {
    DASHBOARD — semaine en cours / à venir + soldes
    ========================================================================= */
 let _calEvents = []; // évènements du calendrier (pour l'édition du remplaçant au planning)
+let _previewUserId = null; // aperçu « en tant que » : id du salarié prévisualisé (admin)
+let _previewMode = false;  // vrai pendant le rendu d'un aperçu (lecture seule)
 async function renderDashboard(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Bonjour ${esc(State.user.firstName)} 👋</h1>
     <p>Voici un aperçu de votre situation et de l'équipe.</p></div></div>
@@ -573,19 +575,34 @@ async function renderDashboard(main) {
     _calEvents = events;
     const { user } = await api('GET', '/me');
     State.user = user;
-    const b = user.balances;
+    // Aperçu « en tant que » : un admin peut afficher (en lecture seule) l'espace
+    // d'un salarié. viewUser = le salarié prévisualisé, sinon soi-même.
+    let viewUser = user, previewList = [];
+    _previewMode = false;
+    if (user.role === 'admin') {
+      try { previewList = (await api('GET', '/admin/users')).users.filter((u) => u.status === 'active'); } catch (e) {}
+      if (_previewUserId) { const pu = previewList.find((u) => u.id === _previewUserId); if (pu) { viewUser = pu; _previewMode = true; } else { _previewUserId = null; } }
+    }
+    const b = viewUser.balances;
 
     const curStart = startOfWeekMonday(today);
     const prevStart = addDays(curStart, -7);   // semaine précédente
     const next1 = addDays(curStart, 7);        // +1
     const next2 = addDays(curStart, 14);       // +2
 
-    const isAdmin = State.user.role === 'admin';
-    const staff = isStaff();
+    const realAdmin = user.role === 'admin';
+    const isAdmin = viewUser.role === 'admin';
+    const staff = viewUser.role === 'admin' || viewUser.role === 'responsable';
     // Le groupe Président n'est pas éligible aux compteurs CP / CP N-1 / RCC /
     // HSUP ni au suivi des retards : on les masque de son espace.
-    const isPresident = (State.user.groupId === 'grp_president');
+    const isPresident = (viewUser.groupId === 'grp_president');
     const { team } = await api('GET', '/team').catch(() => ({ team: [] }));
+    // Sélecteur d'aperçu (admin) + bandeau lecture seule.
+    const previewBar = realAdmin ? `<div class="card" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;${_previewMode ? 'border-left:5px solid #f59e0b' : ''}">
+      <strong>👁️ Afficher un aperçu en tant que</strong>
+      <select id="dash-preview" style="width:auto"><option value="">— Mon affichage —</option>${previewList.map((u) => `<option value="${u.id}" ${u.id === _previewUserId ? 'selected' : ''}>${esc(u.lastName)} ${esc(u.firstName)}</option>`).join('')}</select>
+      ${_previewMode ? `<span class="pill warn">Lecture seule — vous voyez l'espace de ${esc(viewUser.firstName)} ${esc(viewUser.lastName)}</span> <button class="btn ghost sm" id="dash-preview-exit">Revenir à mon affichage</button>` : ''}
+    </div>` : '';
 
     // Priorité de pose des congés (administrateur uniquement)
     let priorityPanel = '';
@@ -606,7 +623,7 @@ async function renderDashboard(main) {
     }
 
     // Mes retards (compteurs glissants) + classement (encadrement)
-    const myRetards = events.filter((e) => e.userId === State.user.id && e.category === 'RET' && e.status === 'approved');
+    const myRetards = events.filter((e) => e.userId === viewUser.id && e.category === 'RET' && e.status === 'approved');
     const retardCards = isPresident ? '' : `<div class="grid cols-4">
       ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
       ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
@@ -623,7 +640,7 @@ async function renderDashboard(main) {
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
     }
-    if (State.user.role === 'admin') {
+    if (isAdmin) {
       try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
     }
 
@@ -636,7 +653,7 @@ async function renderDashboard(main) {
     try { const { messages } = await api('GET', '/messages'); messagesPanel = messagesPanelHTML(messages); } catch (e) {}
 
     // Cumul des congés / récup / RCC déjà pris (indicatif).
-    const mineApproved = events.filter((e) => e.userId === State.user.id && e.status === 'approved');
+    const mineApproved = events.filter((e) => e.userId === viewUser.id && e.status === 'approved');
     const takenCP = Math.round(mineApproved.filter((e) => e.category === 'CP').reduce((s, e) => s + (e.days || 0), 0) * 100) / 100;
     const takenRCP = Math.round(mineApproved.filter((e) => e.category === 'RCP').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
     const takenRCC = Math.round(mineApproved.filter((e) => e.category === 'RCC').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
@@ -647,11 +664,12 @@ async function renderDashboard(main) {
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
     const colleaguesPanel = colleaguesUpcomingHTML(team, events);
 
-    const anc = State.user.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 Votre ancienneté : ${ancienneteText(State.user.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(State.user.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(State.user.hireDate)}</p></div>` : '';
+    const anc = viewUser.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 ${_previewMode ? 'Ancienneté' : 'Votre ancienneté'} : ${ancienneteText(viewUser.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(viewUser.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(viewUser.hireDate)}</p></div>` : '';
 
     const dashBody = document.getElementById('dash-body');
     dashBody.className = '';
     dashBody.innerHTML = `
+      ${previewBar}
       ${anc}
       ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
@@ -677,7 +695,13 @@ async function renderDashboard(main) {
       ${dashWeekCard('Semaine en cours', curStart, events, true)}
       ${dashWeekCard('Semaine à venir (+1)', next1, events)}
       ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
-    bindDashboardActions(dashBody);
+    // Sélecteur d'aperçu (toujours actif pour l'admin).
+    const psel = dashBody.querySelector('#dash-preview');
+    if (psel) psel.onchange = () => { _previewUserId = psel.value || null; renderDashboard(document.getElementById('main')); };
+    const pexit = dashBody.querySelector('#dash-preview-exit');
+    if (pexit) pexit.onclick = () => { _previewUserId = null; renderDashboard(document.getElementById('main')); };
+    // En aperçu (lecture seule), on ne câble aucune action modifiante.
+    if (!_previewMode) bindDashboardActions(dashBody);
   } catch (e) {
     document.getElementById('dash-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
@@ -967,7 +991,7 @@ function colleaguesUpcomingHTML(team, events) {
 
 // Carte "qui est/était absent" pour une semaine donnée (lundi -> samedi).
 function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
-  const isAdmin = State.user && State.user.role === 'admin';
+  const isAdmin = State.user && State.user.role === 'admin' && !_previewMode;
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
   const weekEnd = addDays(weekStart, 5);
   const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
