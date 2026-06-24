@@ -580,6 +580,9 @@ async function renderDashboard(main) {
 
     const isAdmin = State.user.role === 'admin';
     const staff = isStaff();
+    // Le groupe Président n'est pas éligible aux compteurs CP / CP N-1 / RCC /
+    // HSUP ni au suivi des retards : on les masque de son espace.
+    const isPresident = (State.user.groupId === 'grp_president');
     const { team } = await api('GET', '/team').catch(() => ({ team: [] }));
 
     // Priorité de pose des congés (administrateur uniquement)
@@ -602,14 +605,14 @@ async function renderDashboard(main) {
 
     // Mes retards (compteurs glissants) + classement (encadrement)
     const myRetards = events.filter((e) => e.userId === State.user.id && e.category === 'RET' && e.status === 'approved');
-    const retardCards = `<div class="grid cols-4">
+    const retardCards = isPresident ? '' : `<div class="grid cols-4">
       ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
       ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
       ${statCard('Retards (semestre)', retardCountSince(myRetards, 182), 'retard(s)')}
       ${statCard('Retards (année)', retardCountSince(myRetards, 365), 'retard(s)', true)}
     </div>`;
     const classement = staff ? retardRankingHTML(events, team) : '';
-    const philo = philoMessageHTML(retardCountSince(myRetards, 365));
+    const philo = isPresident ? '' : philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Panneaux véhicules + discipline (encadrement).
     let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '';
@@ -648,12 +651,12 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${anc}
-      <div class="grid cols-4">
+      ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
         ${statCard('Congés N-1 restants', b.congesN1, 'jours')}
         ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h`)}
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
-      </div>
+      </div>`}
       ${philo}
       ${messagesPanel}
       ${stockAlertPanel}
@@ -1541,14 +1544,17 @@ async function renderMyData(main) {
     const { requests } = await api('GET', '/requests/mine');
     const g = groupById(user.groupId);
     const approved = requests.filter((r) => r.status === 'approved');
+    // Le Président n'est pas éligible aux compteurs CP / CP N-1 / RCC / HSUP ni
+    // au suivi des retards.
+    const isPresident = (user.groupId === 'grp_president');
     const md = document.getElementById('md'); md.className = '';
     md.innerHTML = `
-      <div class="grid cols-4">
+      ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N', user.balances.congesN, 'jours')}
         ${statCard('Congés N-1', user.balances.congesN1, 'jours')}
         ${statCard('RCC', user.balances.rcc, 'h', false, hToDays(user.balances.rcc))}
         ${statCard('Récup. / Heures sup.', user.balances.heuresSupp, 'h', true, hToDays(user.balances.heuresSupp))}
-      </div>
+      </div>`}
       <div class="card">
         <h3>Profil</h3>
         <div class="table-wrap"><table>
@@ -1569,10 +1575,10 @@ async function renderMyData(main) {
       </div>
       <div class="card">
         <h3>Suivi : maladie, accident, absences</h3>
-        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures ; retards en nombre.</p>
+        <p class="help" style="margin-top:-.6rem">Comptabilisé en jours et en heures${isPresident ? '' : ' ; retards en nombre'}.</p>
         <div class="grid cols-4">
           ${suiviHighlight(approved, ['AM','AT','ANRN'])}
-          <div class="stat alt"><div class="value" style="font-size:1.3rem">${approved.filter((r)=>r.category==='RET').length} <span class="unit">retard(s)</span></div><div class="label">Retards (total validés)</div></div>
+          ${isPresident ? '' : `<div class="stat alt"><div class="value" style="font-size:1.3rem">${approved.filter((r)=>r.category==='RET').length} <span class="unit">retard(s)</span></div><div class="label">Retards (total validés)</div></div>`}
         </div>
       </div>
       <div class="card">
@@ -1621,15 +1627,16 @@ async function renderRequests(main) {
     const { events } = await api('GET', '/calendar');
     const { requests } = await api('GET', '/requests/mine');
     const b = user.balances;
+    const isPresident = (user.groupId === 'grp_president');
     const recent = requests.filter((r) => new Date(r.createdAt) >= new Date(Date.now() - 92 * 86400000));
     const list = document.getElementById('req-list'); list.className = '';
     list.innerHTML = `
-      <div class="grid cols-4">
+      ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N', b.congesN, 'jours')}
         ${statCard('Congés N-1', b.congesN1, 'jours')}
         ${statCard('RCC', b.rcc, 'h', false, hToDays(b.rcc))}
         ${statCard('Récup. / Heures sup.', b.heuresSupp, 'h', true, hToDays(b.heuresSupp))}
-      </div>
+      </div>`}
       <div class="card">
         <h3>${events.filter((ev) => ev.category!=='RET' && ev.groupId===user.groupId && ev.endDate>=iso(startOfWeekMonday(new Date())) && ev.startDate<=iso(addDays(startOfWeekMonday(new Date()),83))).length} absence(s) à prévoir dans les 12 prochaines semaines — Disponibilité de l'année</h3>
         <p class="help" style="margin-top:-.6rem">Vert = libre · rouge = absence prévue dans votre groupe (avec le nombre) · bleu = vous · 🔒 = fermé. Les retards n'affectent pas la disponibilité.</p>
