@@ -39,7 +39,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '3mb' }));
+// Limite confortable : permet d'importer jusqu'à 365 jours d'activité par
+// chauffeur (suivi des HSUP sur 12 mois glissants) sans rejet.
+app.use(express.json({ limit: '8mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Anti-bruteforce simple sur l'authentification (par IP, fenêtre glissante).
@@ -1048,9 +1050,10 @@ app.put('/api/admin/requests/:id', authRequired, adminRequired, async (req, res)
   const db = getData();
   const r = db.requests.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Demande introuvable' });
-  const { startDate, endDate, days, hours } = req.body || {};
+  const { startDate, endDate, days, hours, category, pool } = req.body || {};
   if (startDate && !validDate(startDate)) return res.status(400).json({ error: 'Date de début invalide' });
   if (endDate && !validDate(endDate)) return res.status(400).json({ error: 'Date de fin invalide' });
+  if (category != null && category !== '' && !['CP', 'RCC', 'RCP'].includes(category)) return res.status(400).json({ error: 'Type de congé invalide' });
   const user = db.users.find((u) => u.id === r.userId);
   const wasApproved = r.status === 'approved';
   // Recrédite l'ancien décompte si la demande était validée.
@@ -1059,6 +1062,7 @@ app.put('/api/admin/requests/:id', authRequired, adminRequired, async (req, res)
   if (startDate) r.startDate = startDate;
   if (endDate) r.endDate = endDate;
   if (r.endDate < r.startDate) r.endDate = r.startDate;
+  if (category != null && category !== '') { r.category = category; r.pool = category === 'CP' ? (pool === 'N1' ? 'N1' : null) : null; }
   if (days != null && days !== '') r.days = Math.max(0, Math.round((Number(days) || 0) * 100) / 100);
   if (hours != null && hours !== '') r.hours = Math.max(0, Math.round((Number(hours) || 0) * 100) / 100);
   // Applique le nouveau décompte.

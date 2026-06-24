@@ -5191,26 +5191,78 @@ async function adminReqs(body) {
 // Modifier une saisie (évènement) sans la supprimer : ajuster la période et le
 // nombre de jours/heures. Le solde est ré-ajusté automatiquement (recrédit de
 // l'ancien décompte puis application du nouveau).
-function editEventModal(req, body) {
+async function editEventModal(req, body) {
   if (!req) return;
-  const isHours = req.category === 'RCP' || req.category === 'RCC';
+  // Récupère les soldes du salarié + l'équipe (pour le remplaçant).
+  let users = [], team = [];
+  try { users = (await api('GET', '/admin/users')).users; team = (await api('GET', '/team')).team; }
+  catch (e) { toast(e.message, 'err'); return; }
+  const u = users.find((x) => x.id === req.userId) || {};
+  const b = (u.balances) || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
+  // Type de congé courant (parmi CP N / CP N-1 / RCC / Récup).
+  const TYPES = [
+    { v: 'CP|N', lbl: 'CP (N)' }, { v: 'CP|N1', lbl: 'CP (N-1)' },
+    { v: 'RCC|', lbl: 'RCC' }, { v: 'RCP|', lbl: 'Récupération (heures sup.)' },
+  ];
+  const curType = req.category === 'CP' ? (req.pool === 'N1' ? 'CP|N1' : 'CP|N') : `${req.category}|`;
+  const inList = TYPES.some((t) => t.v === curType);
+  const typeOpts = (inList ? '' : `<option value="" selected>Conserver (${esc(catLabel(req.category))})</option>`)
+    + TYPES.map((t) => `<option value="${t.v}" ${t.v === curType ? 'selected' : ''}>${t.lbl}</option>`).join('');
   modal({
     title: `Modifier la saisie — ${req.userName}`,
     bodyHTML: `
-      <p class="help">${esc(reqLabel(req))} · statut : ${req.status}. Ajustez la période et le décompte ; le solde du salarié sera recalculé en conséquence.</p>
+      <p class="help">${esc(reqLabel(req))} · statut : ${req.status}. Ajustez la période, le type et le décompte ; le solde est recalculé automatiquement.</p>
       <div class="row">
         <div><label>Du</label><input type="date" id="ee-start" value="${req.startDate}"></div>
         <div><label>Au</label><input type="date" id="ee-end" value="${req.endDate}"></div>
       </div>
       <div class="row">
+        <div><label>Type de congé</label><select id="ee-type">${typeOpts}</select></div>
+        <div><label>Remplaçant</label><select id="ee-repl"><option value="">— Personne —</option>${teamOptgroups(team.filter((m) => m.id !== req.userId), req.replacedById)}</select></div>
+      </div>
+      <div class="row">
         <div><label>Nombre de jours</label><input type="number" step="0.5" min="0" id="ee-days" value="${req.days || 0}"></div>
-        ${isHours ? `<div><label>Nombre d'heures</label><input type="number" step="0.5" min="0" id="ee-hours" value="${req.hours || 0}"></div>` : ''}
+        <div id="ee-hours-wrap" style="${(req.category === 'RCP' || req.category === 'RCC') ? '' : 'display:none'}"><label>Nombre d'heures</label><input type="number" step="0.5" min="0" id="ee-hours" value="${req.hours || 0}"></div>
+      </div>
+      <div class="card" style="margin-top:.6rem;background:var(--bg-soft,#fafafe)">
+        <strong>Compteurs de ${esc(req.userName)}</strong> <span class="help">— correction au réel (valeur absolue)</span>
+        <div class="row" style="margin-top:.4rem">
+          <div><label>CP N (j)</label><input type="number" step="0.5" id="ee-b-congesN" value="${b.congesN}"></div>
+          <div><label>CP N-1 (j)</label><input type="number" step="0.5" id="ee-b-congesN1" value="${b.congesN1}"></div>
+        </div>
+        <div class="row">
+          <div><label>RCC (h)</label><input type="number" step="0.5" id="ee-b-rcc" value="${b.rcc}"></div>
+          <div><label>Récup / H. sup. (h)</label><input type="number" step="0.5" id="ee-b-heuresSupp" value="${b.heuresSupp}"></div>
+        </div>
+        <div style="margin-top:.4rem"><button class="btn sm" id="ee-bal-save">💾 Enregistrer les compteurs</button></div>
+        <p class="help" style="margin:.3rem 0 0">Changer le type de congé réajuste déjà le solde. Ces champs permettent une correction manuelle directe.</p>
       </div>`,
-    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ee-save">Enregistrer</button>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="ee-save">Enregistrer la saisie</button>`,
     onMount: (ov) => {
+      const typeSel = ov.querySelector('#ee-type');
+      const syncHours = () => { const v = typeSel.value; ov.querySelector('#ee-hours-wrap').style.display = (v === 'RCC|' || v === 'RCP|') ? '' : 'none'; };
+      typeSel.onchange = syncHours;
+      // Correction manuelle des compteurs (indépendante).
+      ov.querySelector('#ee-bal-save').onclick = async () => {
+        const bal = {
+          congesN: ov.querySelector('#ee-b-congesN').value, congesN1: ov.querySelector('#ee-b-congesN1').value,
+          rcc: ov.querySelector('#ee-b-rcc').value, heuresSupp: ov.querySelector('#ee-b-heuresSupp').value,
+        };
+        try { await api('PUT', `/admin/users/${req.userId}`, bal); toast('Compteurs mis à jour.', 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+      };
       ov.querySelector('#ee-save').onclick = async () => {
+        // 1) Remplaçant (peut échouer pour conflit → on n'altère rien d'autre).
+        const repl = ov.querySelector('#ee-repl').value || null;
+        if ((repl || null) !== (req.replacedById || null)) {
+          try { await api('PUT', `/admin/requests/${req.id}/replacement`, { replacedById: repl }); }
+          catch (e) { if (/deux endroits|disponible/i.test(e.message)) { alert('⛔ ' + e.message); } else { toast(e.message, 'err'); } return; }
+        }
+        // 2) Période + type + décompte (le serveur réajuste le solde).
         const payload = { startDate: ov.querySelector('#ee-start').value, endDate: ov.querySelector('#ee-end').value, days: ov.querySelector('#ee-days').value };
-        if (isHours) payload.hours = ov.querySelector('#ee-hours').value;
+        const tv = typeSel.value;
+        if (tv) { const [cat, pool] = tv.split('|'); payload.category = cat; payload.pool = pool || null; }
+        if (typeSel.value === 'RCC|' || typeSel.value === 'RCP|' || req.category === 'RCP' || req.category === 'RCC') payload.hours = ov.querySelector('#ee-hours').value;
         try { await api('PUT', `/admin/requests/${req.id}`, payload); closeModal(); toast('Saisie mise à jour, solde réajusté.', 'ok'); refreshAdminBadge(); adminReqs(body); }
         catch (e) { toast(e.message, 'err'); }
       };
