@@ -3592,6 +3592,38 @@ function ocrTextToLines(text) {
   return lines;
 }
 
+// Libellés de lignes connus par transporteur (valeurs par défaut, complétées par
+// les lignes enregistrées dans le profil de facturation). Sert à « nettoyer »
+// automatiquement un libellé écorché par l'OCR.
+const CARRIER_LABELS = {
+  gls: ['Nb de colis / Points livrés, enlevés, collectés', 'Nb de colis / Mois livrés, enlevés, collectés', 'Convention image', 'Part Gasoil – Indice de base', 'Part de carburant', 'Bonus', 'Malus'],
+  ciblex: ['Forfait nuit', 'Forfait jour', 'Livraisons', 'Points Relais colis', 'Reprises', 'Enlèvements'],
+  fedex: ['Livraison colis', 'Surcharge gasoil', 'Enlèvements', 'Suppléments'],
+};
+// Normalisation pour comparaison floue (minuscules, sans accents ni ponctuation).
+function _norm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+function _lev(a, b) {
+  const m = a.length, n = b.length; if (!m) return n; if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j), cur = new Array(n + 1);
+  for (let i = 1; i <= m; i++) { cur[0] = i; for (let j = 1; j <= n; j++) { const c = a[i - 1] === b[j - 1] ? 0 : 1; cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + c); } [prev, cur] = [cur, prev]; }
+  return prev[n];
+}
+// Similarité 0..1 : max entre ratio de Levenshtein et Jaccard de mots.
+function _sim(a, b) {
+  const na = _norm(a), nb = _norm(b); if (!na || !nb) return 0;
+  const full = 1 - _lev(na, nb) / Math.max(na.length, nb.length);
+  const ta = new Set(na.split(' ')), tb = new Set(nb.split(' '));
+  const inter = [...ta].filter((x) => tb.has(x)).length;
+  const jac = inter / new Set([...ta, ...tb]).size;
+  return Math.max(full, jac);
+}
+// Remplace un libellé OCR par le libellé connu le plus proche (si assez proche).
+function snapDesignation(raw, knownLabels) {
+  let best = null, score = 0;
+  for (const k of knownLabels) { const s = _sim(raw, k); if (s > score) { score = s; best = k; } }
+  return score >= 0.5 && best ? best : raw;
+}
+
 // --- Gestion de la facturation (factures conformes + PDF) --------------------
 let _billTab = 'generic';
 async function renderBilling(main) {
@@ -3683,15 +3715,19 @@ async function billTab(main) {
   if (isClient) {
     const num = (s) => parseFloat(String(s).replace(/\s/g, '').replace(',', '.')) || 0;
     const fillLines = (arr) => { linesBox.innerHTML = ''; arr.forEach((l) => addLine(l.designation, l.quantite != null ? l.quantite : 1, l.prixUnitaire || 0)); if (!arr.length) addLine(); };
+    // Libellés connus = ceux enregistrés dans le profil + valeurs par défaut du
+    // transporteur. On nettoie les libellés OCR en les rapprochant de ceux-ci.
+    const knownLabels = [...new Set([...(prof.lignes || []).map((l) => l.designation).filter(Boolean), ...(CARRIER_LABELS[_billTab] || [])])];
+    const snapLines = (arr) => arr.map((l) => ({ ...l, designation: snapDesignation(l.designation, knownLabels) }));
     body.querySelector('#pf-import').onclick = () => {
       const rows = body.querySelector('#pf-paste').value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const c = l.split(';'); return { designation: (c[0] || '').trim(), quantite: num(c[1]), prixUnitaire: num(c[2]) }; }).filter((l) => l.designation);
       fillLines(rows); toast(`${rows.length} ligne(s) chargée(s).`, 'ok');
     };
-    body.querySelector('#pf-autoextract').onclick = () => { const arr = ocrTextToLines(body.querySelector('#pf-paste').value); if (!arr.length) { toast('Aucune ligne montant détectée — corrigez le texte ou saisissez manuellement.', 'warn'); return; } fillLines(arr); toast(`${arr.length} ligne(s) extraite(s) — à vérifier.`, 'ok'); };
+    body.querySelector('#pf-autoextract').onclick = () => { const arr = snapLines(ocrTextToLines(body.querySelector('#pf-paste').value)); if (!arr.length) { toast('Aucune ligne montant détectée — corrigez le texte ou saisissez manuellement.', 'warn'); return; } fillLines(arr); toast(`${arr.length} ligne(s) extraite(s) — à vérifier.`, 'ok'); };
     body.querySelector('#pf-ocr').onclick = async () => {
       const file = body.querySelector('#pf-file').files[0]; if (!file) { toast('Choisissez un fichier (PDF scanné ou image).', 'err'); return; }
       const status = body.querySelector('#pf-ocrstatus');
-      try { const txt = await ocrFileToText(file, status); body.querySelector('#pf-paste').value = txt; const arr = ocrTextToLines(txt); if (arr.length) { fillLines(arr); status.textContent = `OCR terminé — ${arr.length} ligne(s) pré-remplie(s), à vérifier.`; } else { status.textContent = 'OCR terminé — vérifiez le texte puis « Extraire les lignes ».'; } }
+      try { const txt = await ocrFileToText(file, status); body.querySelector('#pf-paste').value = txt; const arr = snapLines(ocrTextToLines(txt)); if (arr.length) { fillLines(arr); status.textContent = `OCR terminé — ${arr.length} ligne(s) pré-remplie(s), à vérifier.`; } else { status.textContent = 'OCR terminé — vérifiez le texte puis « Extraire les lignes ».'; } }
       catch (e) { status.textContent = ''; toast('OCR indisponible : ' + e.message + '. Vous pouvez coller le texte manuellement.', 'err'); }
     };
     body.querySelector('#pf-save').onclick = async () => {
