@@ -3467,6 +3467,64 @@ async function renderDocMgmt(main) {
   };
 }
 
+// --- OCR (lecture de préfacturation scannée) ---------------------------------
+// Charge un script externe une seule fois (Tesseract / pdf.js, depuis jsDelivr).
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if ([...document.scripts].some((s) => s.src === src)) return resolve();
+    const s = document.createElement('script'); s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Échec de chargement : ' + src));
+    document.head.appendChild(s);
+  });
+}
+// OCR d'un fichier (PDF scanné ou image) -> texte brut. status = élément de suivi.
+async function ocrFileToText(file, status) {
+  const setS = (t) => { if (status) status.textContent = t; };
+  setS('Chargement du moteur OCR…');
+  await loadScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
+  const canvases = [];
+  if (/pdf$/i.test(file.name) || file.type === 'application/pdf') {
+    setS('Lecture du PDF…');
+    await loadScriptOnce('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');
+    const pdfjsLib = window.pdfjsLib;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const vp = page.getViewport({ scale: 2.2 }); // haute résolution pour l'OCR
+      const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      canvases.push(cv);
+    }
+  } else {
+    const img = new Image(); img.src = URL.createObjectURL(file); await img.decode();
+    const cv = document.createElement('canvas'); cv.width = img.naturalWidth; cv.height = img.naturalHeight; cv.getContext('2d').drawImage(img, 0, 0); canvases.push(cv);
+  }
+  let out = '';
+  for (let i = 0; i < canvases.length; i++) {
+    setS(`Reconnaissance du texte (page ${i + 1}/${canvases.length})…`);
+    const { data } = await window.Tesseract.recognize(canvases[i], 'fra', { logger: (m) => { if (m.status === 'recognizing text') setS(`OCR page ${i + 1}/${canvases.length} — ${Math.round((m.progress || 0) * 100)} %`); } });
+    out += (data.text || '') + '\n';
+  }
+  setS('OCR terminé.');
+  return out;
+}
+// Extrait des lignes "désignation … montant" à partir d'un texte OCR (heuristique).
+function ocrTextToLines(text) {
+  const lines = [];
+  String(text || '').split(/\r?\n/).forEach((l) => {
+    const t = l.trim(); if (t.length < 3) return;
+    const m = t.match(/^(.*?[A-Za-zÀ-ÿ].*?)\s+(-?\d[\d\s.]*[.,]\d{2})\s*€?$/);
+    if (!m) return;
+    const des = m[1].replace(/\.{2,}/g, ' ').trim();
+    // On écarte les totaux/sous-totaux/TVA (ce ne sont pas des lignes de prestation).
+    if (/\b(total|sous[- ]?total|t\.?v\.?a\.?|net\s*(à|a)\s*payer|montant\s*(d[ûu]|ttc|ht))\b/i.test(des)) return;
+    const val = parseFloat(m[2].replace(/\s/g, '').replace(',', '.'));
+    if (des && Number.isFinite(val)) lines.push({ designation: des.slice(0, 120), quantite: 1, prixUnitaire: val });
+  });
+  return lines;
+}
+
 // --- Gestion de la facturation (factures conformes + PDF) --------------------
 let _billTab = 'generic';
 async function renderBilling(main) {
@@ -3519,10 +3577,19 @@ async function billTab(main) {
       <h4 style="margin:.7rem 0 .3rem">Lignes de prestation</h4>
       <div id="iv-lines"></div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn ghost sm" id="pf-save">💾 Enregistrer le profil</button><button class="btn accent" id="iv-create">Générer la facture ${esc(prof.name)}</button></div>
-      <details style="margin-top:.7rem"><summary class="help">Importer une préfacturation (coller : désignation;quantité;prix unitaire — une ligne par prestation)</summary>
-        <textarea id="pf-paste" style="min-height:80px;font-family:monospace;font-size:.8rem" placeholder="Livraison points;1850;0,82&#10;Surcharge gasoil;1;120,00"></textarea>
-        <button class="btn ghost sm" id="pf-import" style="margin-top:.4rem">Charger les lignes</button>
-        <p class="help">Une fois que vous m'aurez transmis vos 3 factures réelles (FedEx, GLS, Ciblex), j'adapterai automatiquement la lecture du fichier de préfacturation et les mentions à leur format exact.</p>
+      <details open style="margin-top:.7rem"><summary class="help">Importer une préfacturation (PDF scanné / image via OCR, ou collage texte)</summary>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
+          <input id="pf-file" type="file" accept=".pdf,image/*">
+          <button class="btn sm" id="pf-ocr">🔍 Lire le PDF/image (OCR)</button>
+          <span id="pf-ocrstatus" class="help"></span>
+        </div>
+        <label class="help">Texte reconnu / à coller (format des lignes : <strong>désignation;quantité;prix unitaire</strong>) :</label>
+        <textarea id="pf-paste" style="min-height:120px;font-family:monospace;font-size:.78rem" placeholder="L'OCR remplit cette zone. Ex. : Livraison points;1850;0,82"></textarea>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.4rem">
+          <button class="btn ghost sm" id="pf-autoextract">Extraire les lignes automatiquement</button>
+          <button class="btn ghost sm" id="pf-import">Charger (désignation;qté;PU)</button>
+        </div>
+        <p class="help">L'OCR lit le scan <strong>localement</strong> (aucune donnée envoyée à un tiers). La reconnaissance peut être imparfaite : vérifiez les lignes avant de générer. Envoyez-moi un exemple de texte reconnu pour que j'affine le mapping FedEx exact.</p>
       </details>
     </div>`;
   }
@@ -3536,12 +3603,17 @@ async function billTab(main) {
   const collectLines = () => [...linesBox.querySelectorAll('.impact-row')].map((r) => ({ designation: r.querySelector('.il-d').value, quantite: +r.querySelector('.il-q').value, prixUnitaire: +r.querySelector('.il-pu').value })).filter((l) => l.designation);
   if (isClient) {
     const num = (s) => parseFloat(String(s).replace(/\s/g, '').replace(',', '.')) || 0;
+    const fillLines = (arr) => { linesBox.innerHTML = ''; arr.forEach((l) => addLine(l.designation, l.quantite != null ? l.quantite : 1, l.prixUnitaire || 0)); if (!arr.length) addLine(); };
     body.querySelector('#pf-import').onclick = () => {
-      const rows = body.querySelector('#pf-paste').value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      linesBox.innerHTML = '';
-      rows.forEach((l) => { const c = l.split(';'); addLine((c[0] || '').trim(), num(c[1]), num(c[2])); });
-      if (!rows.length) addLine();
-      toast(`${rows.length} ligne(s) chargée(s).`, 'ok');
+      const rows = body.querySelector('#pf-paste').value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const c = l.split(';'); return { designation: (c[0] || '').trim(), quantite: num(c[1]), prixUnitaire: num(c[2]) }; }).filter((l) => l.designation);
+      fillLines(rows); toast(`${rows.length} ligne(s) chargée(s).`, 'ok');
+    };
+    body.querySelector('#pf-autoextract').onclick = () => { const arr = ocrTextToLines(body.querySelector('#pf-paste').value); if (!arr.length) { toast('Aucune ligne montant détectée — corrigez le texte ou saisissez manuellement.', 'warn'); return; } fillLines(arr); toast(`${arr.length} ligne(s) extraite(s) — à vérifier.`, 'ok'); };
+    body.querySelector('#pf-ocr').onclick = async () => {
+      const file = body.querySelector('#pf-file').files[0]; if (!file) { toast('Choisissez un fichier (PDF scanné ou image).', 'err'); return; }
+      const status = body.querySelector('#pf-ocrstatus');
+      try { const txt = await ocrFileToText(file, status); body.querySelector('#pf-paste').value = txt; const arr = ocrTextToLines(txt); if (arr.length) { fillLines(arr); status.textContent = `OCR terminé — ${arr.length} ligne(s) pré-remplie(s), à vérifier.`; } else { status.textContent = 'OCR terminé — vérifiez le texte puis « Extraire les lignes ».'; } }
+      catch (e) { status.textContent = ''; toast('OCR indisponible : ' + e.message + '. Vous pouvez coller le texte manuellement.', 'err'); }
     };
     body.querySelector('#pf-save').onclick = async () => {
       try { await api('PUT', '/admin/erp/billing-profiles/' + _billTab, { clientAddress: val('#pf-addr'), mentions: body.querySelector('#pf-mentions').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean), lignes: collectLines().map((l) => ({ designation: l.designation, prixUnitaire: l.prixUnitaire, unit: '' })) }); toast('Profil enregistré.', 'ok'); }
