@@ -3558,18 +3558,36 @@ async function ocrFileToText(file, status) {
   setS('OCR terminé.');
   return out;
 }
-// Extrait des lignes "désignation … montant" à partir d'un texte OCR (heuristique).
+// Extrait des lignes de prestation depuis un texte OCR (heuristique multi-format).
+// Gère les tableaux transporteurs « Désignation | Nbre | Prix Unitaire | Total HT »
+// (GLS, Ciblex…) ET les montants entiers (ex. 464, 80) ou décimaux (1003,65).
 function ocrTextToLines(text) {
   const lines = [];
-  String(text || '').split(/\r?\n/).forEach((l) => {
-    const t = l.trim(); if (t.length < 3) return;
-    const m = t.match(/^(.*?[A-Za-zÀ-ÿ].*?)\s+(-?\d[\d\s.]*[.,]\d{2})\s*€?$/);
-    if (!m) return;
-    const des = m[1].replace(/\.{2,}/g, ' ').trim();
-    // On écarte les totaux/sous-totaux/TVA (ce ne sont pas des lignes de prestation).
-    if (/\b(total|sous[- ]?total|t\.?v\.?a\.?|net\s*(à|a)\s*payer|montant\s*(d[ûu]|ttc|ht))\b/i.test(des)) return;
-    const val = parseFloat(m[2].replace(/\s/g, '').replace(',', '.'));
-    if (des && Number.isFinite(val)) lines.push({ designation: des.slice(0, 120), quantite: 1, prixUnitaire: val });
+  // Un nombre OCR isolé -> flottant (virgule OU point décimal ; les milliers
+  // sont rarement séparés par l'OCR, on traite donc l'espace comme séparateur).
+  const toNum = (s) => parseFloat(String(s).replace(',', '.'));
+  // Métadonnées / en-têtes / totaux : ce ne sont pas des lignes de prestation.
+  const SKIP = /\b(total|sous[- ]?total|t\.?v\.?a|net\s*(?:à|a)\s*payer|montant|prix\s*unitaire|nbre\s*de\s*jours|sous[- ]?traitant|d[ée]signation|num[ée]ro|agence|indice\s*de\s*base|^mois)\b/i;
+  const NUM = /-?\d+(?:[.,]\d+)?/g;
+  // Retire les colonnes numériques de fin de ligne pour isoler le libellé.
+  const TAIL = /[\s|.:;/()-]*(?:-?\d+(?:[.,]\d+)?[\s|.:;/()-]*)+$/;
+  String(text || '').split(/\r?\n/).forEach((raw) => {
+    const t = raw.replace(/[|_]+/g, ' ').replace(/\.{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    if (t.length < 4 || !/[A-Za-zÀ-ÿ]/.test(t)) return;
+    const nums = (t.match(NUM) || []).map(toNum).filter((n) => Number.isFinite(n));
+    if (!nums.length) return;
+    const total = nums[nums.length - 1];
+    if (!total || Math.abs(total) < 0.01) return;
+    let des = t.replace(TAIL, '').trim();
+    if (!des) des = t.replace(NUM, ' ').replace(/\s{2,}/g, ' ').trim();
+    if (!des || des.length < 2 || SKIP.test(des)) return;
+    let qty = 1, pu = total;
+    // « … Nbre PU Total » : si Nbre×PU ≈ Total, on récupère quantité et prix unitaire.
+    if (nums.length >= 3) {
+      const q = nums[nums.length - 3], p = nums[nums.length - 2];
+      if (q > 0 && p > 0 && Math.abs(q * p - total) <= Math.max(1, Math.abs(total) * 0.02)) { qty = q; pu = p; }
+    }
+    lines.push({ designation: des.slice(0, 120), quantite: qty, prixUnitaire: pu });
   });
   return lines;
 }
