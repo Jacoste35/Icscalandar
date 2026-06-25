@@ -4689,8 +4689,8 @@ function hoursResume(body) {
   const byUser = {};
   entries.forEach((e) => {
     if ((e.date || '').slice(0, 7) !== refMonth) return;
-    const u = byUser[e.userId] = byUser[e.userId] || { name: e.userName, week: { amp: 0, work: 0, days: 0, max: 0, over: 0 }, month: { amp: 0, work: 0, days: 0, max: 0, over: 0 } };
-    const add = (acc) => { acc.amp += e.amplitude; acc.work += e.worked; acc.days += 1; acc.max = Math.max(acc.max, e.amplitude); if (e.amplitude > ampMax) acc.over += 1; };
+    const u = byUser[e.userId] = byUser[e.userId] || { name: e.userName, week: { amp: 0, work: 0, pause: 0, days: 0, max: 0, over: 0 }, month: { amp: 0, work: 0, pause: 0, days: 0, max: 0, over: 0 } };
+    const add = (acc) => { acc.amp += e.amplitude; acc.work += e.worked; acc.pause += Math.max(0, e.amplitude - e.worked); acc.days += 1; acc.max = Math.max(acc.max, e.amplitude); if (e.amplitude > ampMax) acc.over += 1; };
     add(u.month);
     if (iso(isoWeekStart(parseISO(e.date))) === wkStart) add(u.week);
   });
@@ -4700,6 +4700,10 @@ function hoursResume(body) {
   // Totaux flotte.
   const tWeekAmp = rows.reduce((s, u) => s + u.week.amp, 0), tMonthAmp = rows.reduce((s, u) => s + u.month.amp, 0);
   const tOver = rows.reduce((s, u) => s + u.month.over, 0);
+  const tMonthPause = rows.reduce((s, u) => s + u.month.pause, 0);
+  // Pastille « temps de pause » = présence hors travail (amplitude − travaillé),
+  // avec sa part de l'amplitude (repère pour améliorer l'amplitude).
+  const pausePill = (acc) => { if (!acc.days || acc.amp <= 0) return '—'; const pct = acc.pause / acc.amp * 100; return `<span class="pill ${pct >= 30 ? 'danger' : pct >= 20 ? 'warn' : 'ok'}">${hFmt(acc.pause)} · ${pct.toFixed(0)} %</span>`; };
   body.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.6rem">
       <h3 style="margin:0">Amplitudes — ${esc(refMonth)}</h3>${monthSel}
@@ -4707,17 +4711,17 @@ function hoursResume(body) {
     <div class="grid cols-4">
       <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tWeekAmp)}</div><div class="label">Amplitude totale (dernière semaine)</div></div>
       <div class="stat"><div class="value" style="font-size:1.4rem">${hFmt(tMonthAmp)}</div><div class="label">Amplitude totale (mois)</div></div>
-      <div class="stat"><div class="value" style="font-size:1.4rem">${rows.length}</div><div class="label">Chauffeurs suivis</div></div>
+      <div class="stat ${tMonthAmp > 0 && tMonthPause / tMonthAmp >= 0.2 ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${hFmt(tMonthPause)}</div><div class="label">Pause totale (mois)${tMonthAmp > 0 ? ` · ${(tMonthPause / tMonthAmp * 100).toFixed(0)} %` : ''}</div></div>
       <div class="stat ${tOver ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${tOver}</div><div class="label">Dépassements (> ${ampMax}h)</div></div>
     </div>
     <div class="card"><h3>Amplitudes par chauffeur — dernière semaine du mois</h3>
-      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Moy./jour</th><th>Max</th></tr></thead>
-      <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.week.days}</td><td>${hFmt(u.week.amp)}</td><td>${hFmt(u.week.work)}</td><td>${u.week.days ? hFmt(u.week.amp / u.week.days) : '—'}</td><td>${u.week.days ? `<span class="pill ${u.week.max > ampMax ? 'danger' : u.week.max > ampMax - 1 ? 'warn' : 'ok'}">${hFmt(u.week.max)}</span>` : '—'}</td></tr>`).join('')}</tbody></table></div>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Pause</th><th>Moy./jour</th><th>Max</th></tr></thead>
+      <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.week.days}</td><td>${hFmt(u.week.amp)}</td><td>${hFmt(u.week.work)}</td><td>${pausePill(u.week)}</td><td>${u.week.days ? hFmt(u.week.amp / u.week.days) : '—'}</td><td>${u.week.days ? `<span class="pill ${u.week.max > ampMax ? 'danger' : u.week.max > ampMax - 1 ? 'warn' : 'ok'}">${hFmt(u.week.max)}</span>` : '—'}</td></tr>`).join('')}</tbody></table></div>
     </div>
     <div class="card"><h3>Amplitudes par chauffeur — mois ${esc(refMonth)}</h3>
-      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Moy./jour</th><th>Max</th><th>Dépass.</th></tr></thead>
-      <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.month.days}</td><td>${hFmt(u.month.amp)}</td><td>${hFmt(u.month.work)}</td><td>${hFmt(u.month.amp / u.month.days)}</td><td>${hFmt(u.month.max)}</td><td>${u.month.over ? `<span class="pill danger">${u.month.over}</span>` : '0'}</td></tr>`).join('')}</tbody></table></div>
-      <p class="help">Amplitude = durée entre la prise et la fin de service (pauses comprises). Seuil d'alerte : ${ampMax}h.</p>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Chauffeur</th><th>Jours</th><th>Amplitude</th><th>Travaillé</th><th>Pause</th><th>Moy./jour</th><th>Max</th><th>Dépass.</th></tr></thead>
+      <tbody>${rows.map((u) => `<tr><td><strong>${esc(u.name)}</strong></td><td>${u.month.days}</td><td>${hFmt(u.month.amp)}</td><td>${hFmt(u.month.work)}</td><td>${pausePill(u.month)}</td><td>${hFmt(u.month.amp / u.month.days)}</td><td>${hFmt(u.month.max)}</td><td>${u.month.over ? `<span class="pill danger">${u.month.over}</span>` : '0'}</td></tr>`).join('')}</tbody></table></div>
+      <p class="help">Amplitude = durée entre la prise et la fin de service (pauses comprises). Pause = présence hors travail (amplitude − travaillé) ; une part élevée (≥ 20 %) signale une amplitude à optimiser. Seuil d'alerte amplitude : ${ampMax}h.</p>
     </div>`;
   bindResumeMonth(body);
 }
