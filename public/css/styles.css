@@ -767,7 +767,6 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
   .sidebar { padding-top: env(safe-area-inset-top); }
   .auth-wrap, .cgu-wrap { padding-top: env(safe-area-inset-top); }
 }
-
 /* ---- Vue Agenda du planning (lisible, idéale mobile) -------------------- */
 .agenda { display: flex; flex-direction: column; gap: .5rem; }
 .agenda-day { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: capitalize; margin-top: .5rem; padding-bottom: .1rem; border-bottom: 1px solid var(--border); }
