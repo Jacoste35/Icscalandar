@@ -471,6 +471,17 @@ function mount(app, deps) {
     res.json({ profile: p });
   }));
 
+  // Réinitialise un profil transporteur sur le modèle de référence (factures réelles).
+  r.post('/billing-profiles/:key/reset', guard, withData(async (req, res, data) => {
+    const defs = require('../lib/erp/billing').DEFAULT_PROFILES;
+    const def = defs[req.params.key];
+    if (!def) return res.status(404).json({ error: 'Profil inconnu' });
+    data.settings.billingProfiles[req.params.key] = JSON.parse(JSON.stringify(def));
+    audit.logAction(data, { ...actor(req), action: 'billing.profile.reset', entity: req.params.key });
+    await save();
+    res.json({ profile: data.settings.billingProfiles[req.params.key] });
+  }));
+
   app.use('/api/admin/erp', r);
   console.log('ERP : routeur monté sur /api/admin/erp');
 }

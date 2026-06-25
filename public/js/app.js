@@ -1143,11 +1143,13 @@ async function renderCalendar(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mon Planning</h1>
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      ${staff?`<button class="btn ghost" id="cal-sync">📱 Synchroniser mon téléphone</button>`:''}
       ${admin?`<button class="btn ghost" id="cal-close">🔒 Fermer des jours</button>`:''}
       ${staff?`<button class="btn ghost" id="cal-lock">🔐 Verrouiller mon planning</button>`:''}
       ${staff?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}
     </div></div>
     <div class="card" id="cal-card"><div class="empty">Chargement…</div></div>`;
+  if (staff) document.getElementById('cal-sync').onclick = () => calendarSyncModal();
   if (staff) document.getElementById('cal-add').onclick = () => adminAssignModal();
   if (staff) document.getElementById('cal-lock').onclick = () => myUnavailModal();
   if (admin) document.getElementById('cal-close').onclick = () => closedPeriodsModal(main);
@@ -1159,6 +1161,37 @@ async function renderCalendar(main) {
   } catch (e) {
     document.getElementById('cal-card').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
+}
+
+// Modal de synchronisation du calendrier avec le téléphone (abonnement iCal).
+async function calendarSyncModal() {
+  modal({ title: '📱 Synchroniser le planning avec mon téléphone', bodyHTML: '<div class="empty">Préparation du lien…</div>' });
+  let info;
+  try { info = await api('POST', '/me/calendar-token'); }
+  catch (e) { const b = document.querySelector('#modal-overlay .body'); if (b) b.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const base = location.origin;
+  const httpsUrl = base + info.path;
+  const webcalUrl = httpsUrl.replace(/^https?:\/\//, 'webcal://');
+  const b = document.querySelector('#modal-overlay .body');
+  if (!b) return;
+  b.innerHTML = `
+    <p>Abonnez-vous une seule fois à ce lien depuis l'application <strong>Calendrier</strong> de votre téléphone : les congés et absences <strong>validés</strong> y apparaîtront, et <strong>les nouveaux s'ajouteront automatiquement</strong> (rafraîchissement régulier, sans rien réinstaller).</p>
+    <label>Lien d'abonnement</label>
+    <input id="cal-url" readonly value="${esc(webcalUrl)}" style="font-family:monospace;font-size:.8rem">
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+      <a class="btn accent sm" href="${esc(webcalUrl)}">📲 Ajouter au calendrier</a>
+      <button class="btn ghost sm" id="cal-copy">Copier le lien</button>
+      <button class="btn ghost sm" id="cal-regen" title="Invalide l'ancien lien et en crée un nouveau">↺ Régénérer</button>
+    </div>
+    <details style="margin-top:.8rem"><summary class="help">Comment faire selon le téléphone</summary>
+      <p class="help"><strong>iPhone</strong> : touchez « Ajouter au calendrier » ; sinon Réglages → Calendrier → Comptes → Ajouter un compte → Autre → Ajouter un abonnement à un calendrier, puis collez le lien.<br>
+      <strong>Android / Google Agenda</strong> : sur ordinateur, Google Agenda → « Autres agendas » → « À partir d'une URL », collez le lien (en <code>https://</code>). Il se synchronise ensuite sur le téléphone.</p>
+      <label>Lien HTTPS (pour Google Agenda)</label>
+      <input readonly value="${esc(httpsUrl)}" style="font-family:monospace;font-size:.8rem">
+    </details>
+    <p class="help" style="margin-top:.6rem">Ce lien est <strong>personnel et privé</strong> : ne le partagez pas. En cas de fuite, cliquez « Régénérer ».</p>`;
+  b.querySelector('#cal-copy').onclick = () => { const i = b.querySelector('#cal-url'); i.select(); navigator.clipboard ? navigator.clipboard.writeText(i.value).then(() => toast('Lien copié.', 'ok')) : document.execCommand('copy'); };
+  b.querySelector('#cal-regen').onclick = async () => { if (!confirm('Régénérer le lien ? L\'ancien lien cessera de fonctionner et devra être re-ajouté sur les téléphones.')) return; try { await api('POST', '/me/calendar-token', { regenerate: true }); toast('Nouveau lien généré.', 'ok'); calendarSyncModal(); } catch (e) { toast(e.message, 'err'); } };
 }
 
 // Modal admin/responsable : attribuer ou proposer une absence pour un salarié.
@@ -3675,7 +3708,7 @@ async function billTab(main) {
       <textarea id="pf-mentions" style="min-height:60px;font-size:.85rem">${esc((prof.mentions || []).join('\n'))}</textarea>
       <h4 style="margin:.7rem 0 .3rem">Lignes de prestation</h4>
       <div id="iv-lines"></div>
-      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn ghost sm" id="pf-save">💾 Enregistrer le profil</button><button class="btn accent" id="iv-create">Générer la facture ${esc(prof.name)}</button></div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn ghost sm" id="pf-save">💾 Enregistrer le profil</button><button class="btn ghost sm" id="pf-reset" title="Recharger le catalogue de lignes, tarifs et mentions du modèle de référence">♻️ Réinitialiser sur le modèle</button><button class="btn accent" id="iv-create">Générer la facture ${esc(prof.name)}</button></div>
       <details open style="margin-top:.7rem"><summary class="help">Importer une préfacturation (PDF scanné / image via OCR, ou collage texte)</summary>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
           <input id="pf-file" type="file" accept=".pdf,image/*">
@@ -3732,6 +3765,11 @@ async function billTab(main) {
     };
     body.querySelector('#pf-save').onclick = async () => {
       try { await api('PUT', '/admin/erp/billing-profiles/' + _billTab, { clientAddress: val('#pf-addr'), mentions: body.querySelector('#pf-mentions').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean), lignes: collectLines().map((l) => ({ designation: l.designation, prixUnitaire: l.prixUnitaire, unit: '' })) }); toast('Profil enregistré.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    body.querySelector('#pf-reset').onclick = async () => {
+      if (!confirm('Réinitialiser ce profil (coordonnées, mentions, catalogue de lignes et tarifs) sur le modèle de référence ? Vos modifications de ce profil seront remplacées.')) return;
+      try { await api('POST', '/admin/erp/billing-profiles/' + _billTab + '/reset'); toast('Profil réinitialisé sur le modèle.', 'ok'); billTab(main); }
       catch (e) { toast(e.message, 'err'); }
     };
   }
