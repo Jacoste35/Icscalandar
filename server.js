@@ -2266,8 +2266,30 @@ function financeTree(entries) {
   }));
 }
 
+// TVA estimée par catégorie bancaire (les montants importés sont TTC -> on
+// reconstitue un HT). 0 % pour les postes hors champ TVA (salaires, assurances…).
+const FIN_VAT_BY_CAT = { 'Chiffre d\'affaires': 20, 'Prestations': 20, 'Carburant': 20, 'Péages': 20, 'Entretien': 20, 'Pneumatiques': 20, 'Véhicules (leasing)': 20, 'Téléphonie': 20, 'Administratif': 20, 'Divers': 20, 'Salaires': 0, 'Charges sociales': 0, 'Assurances': 0, 'Loyer': 0, 'Frais bancaires': 0 };
+const FIN_FIXED_CATS = new Set(['Salaires', 'Charges sociales', 'Assurances', 'Véhicules (leasing)', 'Téléphonie', 'Loyer', 'Frais bancaires', 'Administratif']);
+function detectFinClient(label) { const L = String(label || '').toLowerCase(); for (const c of FINANCE_CLIENTS) if (L.includes(c.toLowerCase())) return c; return null; }
+// Convertit les transactions bancaires importées en écritures financières
+// (crédit = recette, débit = charge) pour alimenter la vision d'ensemble.
+function bankTxAsEntries(db) {
+  return (db.bankTx || []).map((t) => {
+    const ym = (t.opDate || '').slice(0, 7); if (!ym) return null;
+    const ttc = Math.abs(num(t.amount));
+    const kind = num(t.amount) >= 0 ? 'recette' : 'charge';
+    const category = (t.category && String(t.category).trim()) || (kind === 'recette' ? 'Chiffre d\'affaires' : 'Divers');
+    const rate = FIN_VAT_BY_CAT[category] != null ? FIN_VAT_BY_CAT[category] : 20;
+    const ht = Math.round((ttc / (1 + rate / 100)) * 100) / 100;
+    const fixed = kind === 'charge' && FIN_FIXED_CATS.has(category);
+    const mainAccount = kind === 'recette' ? 'Recettes' : (fixed ? 'Charges fixes' : 'Charges variables');
+    return { ym, kind, amount: ht, vatRate: rate, fixed, category, client: detectFinClient(t.label), mainAccount, _bank: true };
+  }).filter(Boolean);
+}
 function financeSummary(db) {
-  const entries = db.finance.entries || [];
+  // Vision d'ensemble : on fusionne les écritures manuelles AVEC les transactions
+  // bancaires importées (reconstituées en HT depuis le TTC, TVA estimée).
+  const entries = [...(db.finance.entries || []), ...bankTxAsEntries(db)];
   const byMonth = {}; // ym -> { revenue, chargesFixed, chargesVar, vatCollected, vatDeductible }
   const byClient = {}; // client -> { revenue, charges }
   for (const e of entries) {
