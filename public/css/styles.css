@@ -2,19 +2,29 @@
   /* Palette reprise du logo : bleu marine + rouge */
   --brand: #14427e;
   --brand-2: #1f5ea8;
+  --brand-3: #2f74c0;
   --accent: #d4302d;
+  --accent-2: #e8504d;
   --red: #d4302d;
-  --bg: #f1f5f9;
+  --bg: #eef2f7;
   --surface: #ffffff;
+  --surface-2: #f8fafc;
   --text: #0f172a;
-  --muted: #64748b;
-  --border: #e2e8f0;
+  --muted: #647386;
+  --border: #e4e9f0;
   --ok: #16a34a;
   --warn: #d97706;
   --danger: #dc2626;
-  --radius: 12px;
-  --shadow: 0 1px 3px rgba(15, 23, 42, .08), 0 8px 24px rgba(15, 23, 42, .06);
-  --sidebar-w: 248px;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 6px 18px rgba(15, 23, 42, .05);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, .08), 0 18px 40px rgba(15, 23, 42, .10);
+  --grad-brand: linear-gradient(135deg, #1b4f93, #14427e);
+  --grad-accent: linear-gradient(135deg, #e8504d, #d4302d);
+  --grad-sidebar: linear-gradient(180deg, #163f72, #122f53 60%, #0f2748);
+  --ring: 0 0 0 3px rgba(31, 94, 168, .22);
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --sidebar-w: 252px;
 }
 
 * { box-sizing: border-box; }
@@ -574,3 +584,114 @@ td.neg { color: var(--danger); font-weight: 700; }
   z-index: 2;
 }
 .zoom-hover:hover .veh-table tbody tr:hover { background: rgba(220, 38, 38, .08); }
+
+/* =========================================================================
+   REFRESH UI/UX 2026 — surcouche moderne (additive, responsive préservé).
+   Règles ajoutées en fin de fichier : priorité au plus récent à spécificité
+   égale, donc enrichissement sans casser l'existant.
+   ========================================================================= */
+
+body {
+  background:
+    radial-gradient(1200px 600px at 100% -5%, rgba(31, 94, 168, .06), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(212, 48, 45, .05), transparent 55%),
+    var(--bg);
+  font-family: 'Inter', 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Transitions douces et globales (interactions) */
+.btn, .sidebar nav button, .card, .stat, .view-switch button, input, select, textarea,
+.pill, .tag, .nav-btn, .veh-card-head, table tbody tr, .auth-tabs button, .toggle {
+  transition: background-color .18s var(--ease), color .18s var(--ease),
+    border-color .18s var(--ease), box-shadow .22s var(--ease), transform .15s var(--ease);
+}
+
+/* ---- Boutons : dégradé, profondeur, hover/active ---- */
+.btn {
+  background: var(--grad-brand); color: #fff; border: 0; border-radius: var(--radius-sm);
+  box-shadow: 0 1px 2px rgba(15,23,42,.12), 0 2px 6px rgba(20,66,126,.18);
+  font-weight: 600; letter-spacing: .1px;
+}
+.btn:hover { background: var(--grad-brand); filter: brightness(1.07); box-shadow: 0 4px 12px rgba(20,66,126,.28); transform: translateY(-1px); }
+.btn.accent:hover { background: var(--grad-accent); }
+.btn.ok:hover { background: linear-gradient(135deg, #1bb255, #16a34a); }
+.btn.danger:hover { background: linear-gradient(135deg, #ef4444, #dc2626); }
+.btn:active { transform: translateY(0); filter: brightness(.97); box-shadow: 0 1px 2px rgba(15,23,42,.18); }
+.btn.accent { background: var(--grad-accent); box-shadow: 0 2px 8px rgba(212,48,45,.25); }
+.btn.ok { background: linear-gradient(135deg, #1bb255, #16a34a); box-shadow: 0 2px 8px rgba(22,163,74,.25); }
+.btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626); box-shadow: 0 2px 8px rgba(220,38,38,.25); }
+.btn.ghost { background: var(--surface); color: var(--brand); border: 1px solid var(--border); box-shadow: none; }
+.btn.ghost:hover { background: var(--surface-2); border-color: var(--brand-3); color: var(--brand); filter: none; box-shadow: 0 2px 8px rgba(15,23,42,.06); }
+.btn:focus-visible, .nav-btn:focus-visible, .view-switch button:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* ---- Champs de saisie ---- */
+input, select, textarea {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+  padding: .6rem .7rem;
+}
+input:hover, select:hover, textarea:hover { border-color: #cbd5e1; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--brand-2); box-shadow: var(--ring); }
+
+/* ---- Cartes : profondeur + survol ---- */
+.card {
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box;
+}
+.card:hover { box-shadow: var(--shadow-md); }
+.stat { border-radius: var(--radius); position: relative; overflow: hidden; }
+.stat::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--grad-brand); opacity: .9; }
+.stat.alt::before { background: var(--grad-accent); }
+.stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+
+/* ---- Barre latérale : dégradé + indicateur actif ---- */
+.sidebar { background: var(--grad-sidebar); }
+.sidebar nav button { position: relative; }
+.sidebar nav button.active {
+  background: rgba(255,255,255,.12); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+}
+.sidebar nav button.active::before {
+  content: ""; position: absolute; left: -.2rem; top: 18%; bottom: 18%; width: 3px;
+  border-radius: 3px; background: var(--accent);
+}
+.sidebar nav button:hover { transform: translateX(2px); }
+
+/* ---- Segmented control (view-switch) ---- */
+.view-switch { border-radius: 999px; padding: 3px; background: var(--surface-2); border-color: var(--border); box-shadow: inset 0 1px 2px rgba(15,23,42,.04); }
+.view-switch button { border-radius: 999px; }
+.view-switch button.active { background: var(--grad-brand); color: #fff; box-shadow: 0 2px 6px rgba(20,66,126,.25); }
+
+/* ---- Tableaux : survol de ligne + en-tête doux ---- */
+.table-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-x: auto; overflow-y: hidden; }
+.table-wrap table { margin: 0; }
+table tbody tr:hover td { background: var(--surface-2); }
+.veh-table tbody tr:hover td { background: var(--surface-2); }
+
+/* ---- Pills & tags : léger relief ---- */
+.pill, .tag { box-shadow: inset 0 0 0 1px rgba(15,23,42,.04); }
+
+/* ---- Alertes : barre d'accent à gauche ---- */
+.alert { border-radius: var(--radius-sm); border-left-width: 4px; }
+.alert.info { border-left-color: #3b82f6; }
+.alert.warn { border-left-color: var(--warn); }
+
+/* ---- Page head : titre net ---- */
+.page-head h1 { letter-spacing: -.2px; }
+
+/* ---- Modale : flou d'arrière-plan + animation d'entrée ---- */
+.modal-overlay { background: rgba(15,23,42,.45); backdrop-filter: blur(4px); animation: erp-fade .18s var(--ease); }
+.modal { border-radius: var(--radius); box-shadow: var(--shadow-md); animation: erp-pop .2s var(--ease); }
+@keyframes erp-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes erp-pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* ---- Barres de défilement fines ---- */
+* { scrollbar-width: thin; scrollbar-color: #c2ccd9 transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: #c2ccd9; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: #a7b4c6; background-clip: padding-box; }
+
+/* ---- Accessibilité : respect du « mouvement réduit » ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  .btn:hover, .stat:hover, .sidebar nav button:hover { transform: none; }
+}
