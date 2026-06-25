@@ -3675,7 +3675,7 @@ async function billTab(main) {
       <textarea id="pf-mentions" style="min-height:60px;font-size:.85rem">${esc((prof.mentions || []).join('\n'))}</textarea>
       <h4 style="margin:.7rem 0 .3rem">Lignes de prestation</h4>
       <div id="iv-lines"></div>
-      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn ghost sm" id="pf-save">💾 Enregistrer le profil</button><button class="btn accent" id="iv-create">Générer la facture ${esc(prof.name)}</button></div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem"><button class="btn ghost sm" id="iv-add">+ Ligne</button><button class="btn ghost sm" id="pf-save">💾 Enregistrer le profil</button><button class="btn ghost sm" id="pf-reset" title="Recharger le catalogue de lignes, tarifs et mentions du modèle de référence">♻️ Réinitialiser sur le modèle</button><button class="btn accent" id="iv-create">Générer la facture ${esc(prof.name)}</button></div>
       <details open style="margin-top:.7rem"><summary class="help">Importer une préfacturation (PDF scanné / image via OCR, ou collage texte)</summary>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:.5rem 0">
           <input id="pf-file" type="file" accept=".pdf,image/*">
@@ -3732,6 +3732,11 @@ async function billTab(main) {
     };
     body.querySelector('#pf-save').onclick = async () => {
       try { await api('PUT', '/admin/erp/billing-profiles/' + _billTab, { clientAddress: val('#pf-addr'), mentions: body.querySelector('#pf-mentions').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean), lignes: collectLines().map((l) => ({ designation: l.designation, prixUnitaire: l.prixUnitaire, unit: '' })) }); toast('Profil enregistré.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+    body.querySelector('#pf-reset').onclick = async () => {
+      if (!confirm('Réinitialiser ce profil (coordonnées, mentions, catalogue de lignes et tarifs) sur le modèle de référence ? Vos modifications de ce profil seront remplacées.')) return;
+      try { await api('POST', '/admin/erp/billing-profiles/' + _billTab + '/reset'); toast('Profil réinitialisé sur le modèle.', 'ok'); billTab(main); }
       catch (e) { toast(e.message, 'err'); }
     };
   }
