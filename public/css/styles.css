@@ -767,3 +767,27 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
   .sidebar { padding-top: env(safe-area-inset-top); }
   .auth-wrap, .cgu-wrap { padding-top: env(safe-area-inset-top); }
 }
+
+/* ---- Vue Agenda du planning (lisible, idéale mobile) -------------------- */
+.agenda { display: flex; flex-direction: column; gap: .5rem; }
+.agenda-day { font-size: .8rem; font-weight: 700; color: var(--muted); text-transform: capitalize; margin-top: .5rem; padding-bottom: .1rem; border-bottom: 1px solid var(--border); }
+.agenda-day:first-child { margin-top: 0; }
+.agenda-item { display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem; border: 1px solid var(--border); border-left: 4px solid var(--brand); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow); }
+.agenda-main { flex: 1; min-width: 0; }
+.agenda-top { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.agenda-item .help { margin-top: .15rem; }
+
+/* ---- Calendrier : confort sur mobile ----------------------------------- */
+.table-wrap { -webkit-overflow-scrolling: touch; }
+@media (max-width: 860px) {
+  .cal-toolbar { gap: .4rem; }
+  .cal-toolbar .title { width: 100%; order: -1; font-size: 1.05rem; font-weight: 700; }
+  .cal-toolbar .view-switch { overflow-x: auto; max-width: 100%; }
+}
+@media (max-width: 520px) {
+  /* Mois : on garde l'aperçu mais en plus compact et lisible. */
+  .month-grid .cell { min-height: 52px; padding: 2px; }
+  .month-grid .cell .ev { font-size: .58rem; }
+  .month-grid .dow { font-size: .62rem; }
+  .legend { font-size: .72rem; }
+}

@@ -1151,6 +1151,8 @@ function hToDays(h) { return `≈ ${(Math.round((Number(h) / HPERDAY) * 10) / 10
 async function renderCalendar(main) {
   const staff = isStaff();
   const admin = State.user.role === 'admin';
+  // Sur téléphone, on ouvre par défaut la vue Agenda (la plus lisible sans effort).
+  if (!State._calModeInit) { State._calModeInit = true; if (window.matchMedia && window.matchMedia('(max-width: 860px)').matches) State.cal.mode = 'agenda'; }
   main.innerHTML = `<div class="page-head"><div><h1>Mon Planning</h1>
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
@@ -1463,7 +1465,7 @@ function drawCalendar() {
   let title = '';
   if (mode === 'day') title = `${DOW[(cursor.getDay()+6)%7]} ${cursor.getDate()} ${MONTHS[cursor.getMonth()]} ${cursor.getFullYear()}`;
   else if (mode === 'week') { const ws = startOfWeekMonday(cursor); const we = addDays(ws,5); title = `Semaine du ${pad(ws.getDate())}/${pad(ws.getMonth()+1)} au ${pad(we.getDate())}/${pad(we.getMonth()+1)} ${we.getFullYear()}`; }
-  else if (mode === 'month') title = `${MONTHS[cursor.getMonth()]} ${cursor.getFullYear()}`;
+  else if (mode === 'month' || mode === 'agenda') title = `${MONTHS[cursor.getMonth()]} ${cursor.getFullYear()}`;
   else title = `Année ${cursor.getFullYear()}`;
 
   card.innerHTML = `
@@ -1478,7 +1480,7 @@ function drawCalendar() {
         <button data-color="group" class="${State.cal.colorBy==='group'?'active':''}">Par groupe</button>
       </div>
       <div class="view-switch">
-        ${['day','week','month','year'].map((m) => `<button data-mode="${m}" class="${mode===m?'active':''}">${({day:'Jour',week:'Semaine',month:'Mois',year:'Année'})[m]}</button>`).join('')}
+        ${['agenda','day','week','month','year'].map((m) => `<button data-mode="${m}" class="${mode===m?'active':''}">${({agenda:'Agenda',day:'Jour',week:'Semaine',month:'Mois',year:'Année'})[m]}</button>`).join('')}
       </div>
     </div>
     <div id="cal-grid"></div>
@@ -1491,7 +1493,8 @@ function drawCalendar() {
   card.querySelectorAll('[data-color]').forEach((b) => b.onclick = () => { State.cal.colorBy = b.dataset.color; drawCalendar(); });
 
   const grid = document.getElementById('cal-grid');
-  if (mode === 'day') grid.innerHTML = viewDay(cursor);
+  if (mode === 'agenda') grid.innerHTML = viewAgenda(cursor);
+  else if (mode === 'day') grid.innerHTML = viewDay(cursor);
   else if (mode === 'week') grid.innerHTML = viewWeek(cursor);
   else if (mode === 'month') grid.innerHTML = viewMonth(cursor);
   else grid.innerHTML = viewYear(cursor);
@@ -1517,7 +1520,7 @@ function moveCal(dir) {
   const c = State.cal.cursor;
   if (State.cal.mode === 'day') State.cal.cursor = addDays(c, dir);
   else if (State.cal.mode === 'week') State.cal.cursor = addDays(c, dir * 7);
-  else if (State.cal.mode === 'month') State.cal.cursor = new Date(c.getFullYear(), c.getMonth() + dir, 1);
+  else if (State.cal.mode === 'month' || State.cal.mode === 'agenda') State.cal.cursor = new Date(c.getFullYear(), c.getMonth() + dir, 1);
   else State.cal.cursor = new Date(c.getFullYear() + dir, c.getMonth(), 1);
   refreshCalForYear();
 }
@@ -1630,6 +1633,35 @@ function viewMonth(cursor) {
   }
   html += `</div>`;
   if (month + 1 > 12) {}
+  return html;
+}
+
+// Vue Agenda : liste chronologique et lisible des absences du mois (idéale mobile).
+function viewAgenda(cursor) {
+  const y = cursor.getFullYear(), m = cursor.getMonth();
+  const monthStart = iso(new Date(y, m, 1));
+  const monthEnd = iso(new Date(y, m + 1, 0));
+  const evs = (State._calEvents || [])
+    .filter((ev) => ev.startDate <= monthEnd && ev.endDate >= monthStart)
+    .sort((a, b) => (a.startDate.localeCompare(b.startDate)) || String(a.userName).localeCompare(String(b.userName)));
+  if (!evs.length) return `<div class="empty">✅ Aucune absence sur ${MONTHS[m]} ${y}.</div>`;
+  const isAdmin = State.user.role === 'admin';
+  const fmtRange = (ev) => ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
+  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min` : `${ev.days} j`;
+  // Regroupement par jour de début pour des sous-titres clairs.
+  let html = '<div class="agenda">', lastDay = '';
+  evs.forEach((ev) => {
+    if (ev.startDate !== lastDay) { lastDay = ev.startDate; html += `<div class="agenda-day">${esc(fmtDate(ev.startDate))}</div>`; }
+    const c = evColor(ev);
+    html += `<div class="agenda-item" style="border-left-color:${c}">
+      <div class="agenda-main">
+        <div class="agenda-top"><span class="tag ${ev.status === 'pending' ? 'is-pending' : ''}" style="background:${c};color:#fff">${esc(ev.code)}</span> <strong>${esc(ev.userName)}</strong> <span class="help">(${esc(ev.groupName)})</span></div>
+        <div class="help">${esc(ev.categoryLabel)} · ${esc(fmtRange(ev))} · ${dur(ev)}${ev.status === 'pending' ? ' · <em>en attente</em>' : ''}${ev.replacedByName ? ` · ↪ ${esc(ev.replacedByName)}` : ''}</div>
+      </div>
+      ${isAdmin ? `<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer / recréditer">✕</button>` : ''}
+    </div>`;
+  });
+  html += '</div>';
   return html;
 }
 
