@@ -703,3 +703,20 @@ table tbody tr:hover td { background: var(--surface-2); }
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
   .btn:hover, .stat:hover, .sidebar nav button:hover { transform: none; }
 }
+
+/* ---- Menu : groupes dépliables (sidebar) -------------------------------- */
+.nav-group { margin-bottom: .1rem; }
+.nav-group-head {
+  display: flex; align-items: center; gap: .7rem; width: 100%; text-align: left;
+  padding: .7rem .8rem; margin-bottom: .15rem; border: 0; background: transparent;
+  color: #cdd9e8; border-radius: 8px; font-size: .92rem; font-weight: 600;
+}
+.nav-group-head:hover { background: rgba(255,255,255,.08); color: #fff; }
+.nav-group-title { flex: 1; }
+.nav-caret { font-size: .7rem; opacity: .65; transition: transform .18s var(--ease); }
+.nav-group.open > .nav-group-head .nav-caret { transform: rotate(90deg); opacity: .9; }
+.nav-group-items { display: none; }
+.nav-group.open > .nav-group-items { display: block; }
+.nav-group-items button[data-view] { padding-left: 2.3rem; font-size: .89rem; font-weight: 500; }
+/* Repère discret quand un groupe replié contient la vue active */
+.nav-group:not(.open) > .nav-group-head { position: relative; }
