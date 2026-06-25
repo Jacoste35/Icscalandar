@@ -532,7 +532,13 @@ function renderApp() {
       </div>
     </aside>
     <main class="main" id="main"></main>
-  </div>`;
+  </div>
+  <nav class="bottom-nav" id="bottom-nav">
+    <button data-view="dashboard" class="${State.view === 'dashboard' ? 'active' : ''}"><span class="bn-ico">🏠</span>Accueil</button>
+    <button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
+    <button data-view="mydata" class="${State.view === 'mydata' ? 'active' : ''}"><span class="bn-ico">👤</span>Profil</button>
+    <button id="bn-menu"><span class="bn-ico">☰</span>Menu</button>
+  </nav>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   // Dépliage/repliage des groupes de menu (sans recharger la vue).
   $app.querySelectorAll('[data-navgroup]').forEach((b) => b.onclick = () => {
@@ -544,6 +550,11 @@ function renderApp() {
   document.getElementById('logout').onclick = () => logout();
   const toggle = document.getElementById('nav-toggle');
   if (toggle) toggle.onclick = () => document.querySelector('.sidebar').classList.toggle('nav-open');
+  // Barre basse (mobile) : le bouton « Menu » ouvre/ferme le tiroir latéral.
+  const bnMenu = document.getElementById('bn-menu');
+  if (bnMenu) bnMenu.onclick = () => { const sb = document.querySelector('.sidebar'); sb.classList.toggle('nav-open'); if (sb.classList.contains('nav-open')) sb.scrollIntoView({ block: 'start' }); };
+  // En navigation depuis la barre basse, on referme le tiroir s'il était ouvert.
+  $app.querySelectorAll('.bottom-nav [data-view]').forEach((b) => b.addEventListener('click', () => document.querySelector('.sidebar').classList.remove('nav-open')));
   renderView();
   if (u.role === 'admin') refreshAdminBadge();
 }

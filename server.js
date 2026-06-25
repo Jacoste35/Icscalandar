@@ -42,7 +42,13 @@ app.use((req, res, next) => {
 // Limite confortable : permet d'importer jusqu'à 365 jours d'activité par
 // chauffeur (suivi des HSUP sur 12 mois glissants) sans rejet.
 app.use(express.json({ limit: '8mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, p) => {
+    if (p.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    // Le service worker doit pouvoir se mettre à jour : pas de cache HTTP long.
+    if (p.endsWith('sw.js')) { res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Service-Worker-Allowed', '/'); }
+  },
+}));
 
 // Anti-bruteforce simple sur l'authentification (par IP, fenêtre glissante).
 const _authHits = new Map();
