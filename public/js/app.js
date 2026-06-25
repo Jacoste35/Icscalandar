@@ -3499,6 +3499,21 @@ function loadScriptOnce(src) {
     document.head.appendChild(s);
   });
 }
+// Binarisation Otsu : niveaux de gris + seuil automatique. Nettoie les scans
+// pâles/contrastés et améliore nettement la reconnaissance (sans effet néfaste
+// sur les images déjà en noir et blanc, type JBIG2).
+function binarizeCanvas(cv) {
+  try {
+    const ctx = cv.getContext('2d'); const im = ctx.getImageData(0, 0, cv.width, cv.height); const d = im.data;
+    const hist = new Array(256).fill(0); const n = cv.width * cv.height;
+    for (let i = 0; i < d.length; i += 4) { const g = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0; d[i] = d[i + 1] = d[i + 2] = g; hist[g]++; }
+    let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
+    let sumB = 0, wB = 0, max = -1, thr = 127;
+    for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = n - wB; if (!wF) break; sumB += t * hist[t]; const mB = sumB / wB, mF = (sum - sumB) / wF; const between = wB * wF * (mB - mF) * (mB - mF); if (between > max) { max = between; thr = t; } }
+    for (let i = 0; i < d.length; i += 4) { const v = d[i] > thr ? 255 : 0; d[i] = d[i + 1] = d[i + 2] = v; }
+    ctx.putImageData(im, 0, 0);
+  } catch (e) { /* canvas trop grand / cross-origin : on garde l'image telle quelle */ }
+}
 // OCR d'un fichier (PDF scanné ou image) -> texte brut. status = élément de suivi.
 async function ocrFileToText(file, status) {
   const setS = (t) => { if (status) status.textContent = t; };
@@ -3514,21 +3529,32 @@ async function ocrFileToText(file, status) {
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
-      const vp = page.getViewport({ scale: 2.2 }); // haute résolution pour l'OCR
+      // Rendu haute résolution (~2200 px sur le grand côté) : crucial pour l'OCR.
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(4, Math.max(2, 2200 / Math.max(base.width, base.height)));
+      const vp = page.getViewport({ scale });
       const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
-      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
       canvases.push(cv);
     }
   } else {
     const img = new Image(); img.src = URL.createObjectURL(file); await img.decode();
     const cv = document.createElement('canvas'); cv.width = img.naturalWidth; cv.height = img.naturalHeight; cv.getContext('2d').drawImage(img, 0, 0); canvases.push(cv);
   }
+  setS('Préparation des images…');
+  canvases.forEach(binarizeCanvas);
+  // Worker Tesseract paramétré (bloc de texte uniforme + espaces préservés).
+  const worker = await window.Tesseract.createWorker('fra', 1, { logger: (m) => { if (m.status === 'recognizing text') setS(`Reconnaissance — ${Math.round((m.progress || 0) * 100)} %`); } });
   let out = '';
-  for (let i = 0; i < canvases.length; i++) {
-    setS(`Reconnaissance du texte (page ${i + 1}/${canvases.length})…`);
-    const { data } = await window.Tesseract.recognize(canvases[i], 'fra', { logger: (m) => { if (m.status === 'recognizing text') setS(`OCR page ${i + 1}/${canvases.length} — ${Math.round((m.progress || 0) * 100)} %`); } });
-    out += (data.text || '') + '\n';
-  }
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    for (let i = 0; i < canvases.length; i++) {
+      setS(`Reconnaissance du texte (page ${i + 1}/${canvases.length})…`);
+      const { data } = await worker.recognize(canvases[i]);
+      out += (data.text || '') + '\n';
+    }
+  } finally { await worker.terminate(); }
   setS('OCR terminé.');
   return out;
 }
