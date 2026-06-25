@@ -790,3 +790,14 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
   .month-grid .dow { font-size: .62rem; }
   .legend { font-size: .72rem; }
 }
+/* ---- Mois compact (téléphone) : pastilles au lieu du détail texte -------- */
+.month-grid.compact { gap: 2px; }
+.month-grid.compact .cell { min-height: 46px; padding: 3px 0 2px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; cursor: pointer; gap: 0; }
+.month-grid.compact .cell .num { font-size: .82rem; font-weight: 600; }
+.month-grid.compact .cell.today .num { background: var(--brand); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+.month-grid.compact .cell.out { opacity: .4; }
+.month-grid.compact .day-flag { font-size: .58rem; line-height: 1; }
+.month-grid.compact .ev-dots { display: flex; gap: 2px; justify-content: center; align-items: center; flex-wrap: wrap; margin-top: 3px; min-height: 8px; }
+.month-grid.compact .ev-dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255,255,255,.5) inset; }
+.month-grid.compact .ev-more { font-size: .55rem; color: var(--muted); font-weight: 700; line-height: 1; }
+.month-grid.compact .dow { font-size: .68rem; }

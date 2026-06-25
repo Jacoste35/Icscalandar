@@ -1499,6 +1499,10 @@ function drawCalendar() {
   else if (mode === 'month') grid.innerHTML = viewMonth(cursor);
   else grid.innerHTML = viewYear(cursor);
 
+  // Mois compact (téléphone) : toucher un jour ouvre le détail de ce jour.
+  grid.querySelectorAll('[data-day]').forEach((cell) => cell.onclick = () => {
+    State.cal.cursor = parseISO(cell.dataset.day); State.cal.mode = 'day'; drawCalendar();
+  });
   // Suppression d'une absence par l'administrateur (vue jour).
   grid.querySelectorAll('[data-del-ev]').forEach((btn) => btn.onclick = async () => {
     if (!confirm('Supprimer cette absence du calendrier ?')) return;
@@ -1599,15 +1603,19 @@ function viewWeek(cursor) {
   return html;
 }
 
+// Écran étroit (téléphone) : on bascule sur un mois compact (pastilles).
+function isNarrowScreen() { return !!(window.matchMedia && window.matchMedia('(max-width: 700px)').matches); }
+
 function viewMonth(cursor) {
   const year = cursor.getFullYear(), month = cursor.getMonth();
   const first = new Date(year, month, 1);
   const startOffset = (first.getDay() + 6) % 7; // 0 = lundi
   const gridStart = addDays(first, -startOffset);
   const today = new Date();
+  const compact = isNarrowScreen();
 
-  let html = `<div class="month-grid">`;
-  ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'].forEach((d) => html += `<div class="dow">${d}</div>`);
+  let html = `<div class="month-grid${compact ? ' compact' : ''}">`;
+  (compact ? ['L','M','M','J','V','S','D'] : ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim']).forEach((d) => html += `<div class="dow">${d}</div>`);
   for (let i = 0; i < 42; i++) {
     const d = addDays(gridStart, i);
     const ds = iso(d);
@@ -1624,15 +1632,53 @@ function viewMonth(cursor) {
     if (vac && !hol) cls += ' school';
     if (closed) cls += ' closed';
     if (sameDay(d, today)) cls += ' today';
-    html += `<div class="${cls}" title="${closed ? 'Fermé : ' + esc(closed.label) : (vac ? esc(vac.label) : '')}">
-      <span class="num">${d.getDate()}</span>
-      ${closed && !out ? `<span class="hol-label" style="color:#b91c1c">🔒 ${esc(closed.label)}</span>` : (hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : (vac && !out ? `<span class="hol-label" style="color:#2563eb">${esc(vac.label)}</span>` : ''))}
-      ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(calTooltip(ev))}">${esc(ev.code)} · ${esc(ev.userName)} (${esc(ev.groupName)})${ev.replacedByName?` ↪ ${esc(ev.replacedByName.split(' ')[0])}`:''}</span>`).join('')}
-      ${evs.length > 6 ? `<span class="ev" style="background:#64748b">+${evs.length-6} autres</span>` : ''}
-    </div>`;
+    if (compact) {
+      // Téléphone : numéro + pastilles colorées ; on touche un jour pour le détail.
+      const title = closed ? 'Fermé : ' + esc(closed.label) : (hol ? esc(hol) : (vac ? esc(vac.label) : (evs.length ? evs.length + ' absence(s)' : '')));
+      html += `<div class="${cls}" data-day="${ds}" title="${title}">
+        <span class="num">${d.getDate()}</span>
+        ${(closed && !out) ? '<span class="day-flag">🔒</span>' : ''}
+        <span class="ev-dots">${evs.slice(0, 4).map((ev) => `<span class="ev-dot" style="background:${evColor(ev)}"></span>`).join('')}${evs.length > 4 ? `<span class="ev-more">+${evs.length - 4}</span>` : ''}</span>
+      </div>`;
+    } else {
+      html += `<div class="${cls}" title="${closed ? 'Fermé : ' + esc(closed.label) : (vac ? esc(vac.label) : '')}">
+        <span class="num">${d.getDate()}</span>
+        ${closed && !out ? `<span class="hol-label" style="color:#b91c1c">🔒 ${esc(closed.label)}</span>` : (hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : (vac && !out ? `<span class="hol-label" style="color:#2563eb">${esc(vac.label)}</span>` : ''))}
+        ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(calTooltip(ev))}">${esc(ev.code)} · ${esc(ev.userName)} (${esc(ev.groupName)})${ev.replacedByName?` ↪ ${esc(ev.replacedByName.split(' ')[0])}`:''}</span>`).join('')}
+        ${evs.length > 6 ? `<span class="ev" style="background:#64748b">+${evs.length-6} autres</span>` : ''}
+      </div>`;
+    }
   }
   html += `</div>`;
-  if (month + 1 > 12) {}
+  return html;
+}
+
+// Vue Agenda : liste chronologique et lisible des absences du mois (idéale mobile).
+function viewAgenda(cursor) {
+  const y = cursor.getFullYear(), m = cursor.getMonth();
+  const monthStart = iso(new Date(y, m, 1));
+  const monthEnd = iso(new Date(y, m + 1, 0));
+  const evs = (State._calEvents || [])
+    .filter((ev) => ev.startDate <= monthEnd && ev.endDate >= monthStart)
+    .sort((a, b) => (a.startDate.localeCompare(b.startDate)) || String(a.userName).localeCompare(String(b.userName)));
+  if (!evs.length) return `<div class="empty">✅ Aucune absence sur ${MONTHS[m]} ${y}.</div>`;
+  const isAdmin = State.user.role === 'admin';
+  const fmtRange = (ev) => ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
+  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min` : `${ev.days} j`;
+  // Regroupement par jour de début pour des sous-titres clairs.
+  let html = '<div class="agenda">', lastDay = '';
+  evs.forEach((ev) => {
+    if (ev.startDate !== lastDay) { lastDay = ev.startDate; html += `<div class="agenda-day">${esc(fmtDate(ev.startDate))}</div>`; }
+    const c = evColor(ev);
+    html += `<div class="agenda-item" style="border-left-color:${c}">
+      <div class="agenda-main">
+        <div class="agenda-top"><span class="tag ${ev.status === 'pending' ? 'is-pending' : ''}" style="background:${c};color:#fff">${esc(ev.code)}</span> <strong>${esc(ev.userName)}</strong> <span class="help">(${esc(ev.groupName)})</span></div>
+        <div class="help">${esc(ev.categoryLabel)} · ${esc(fmtRange(ev))} · ${dur(ev)}${ev.status === 'pending' ? ' · <em>en attente</em>' : ''}${ev.replacedByName ? ` · ↪ ${esc(ev.replacedByName)}` : ''}</div>
+      </div>
+      ${isAdmin ? `<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer / recréditer">✕</button>` : ''}
+    </div>`;
+  });
+  html += '</div>';
   return html;
 }
 
