@@ -4038,6 +4038,8 @@ function finResume(body) {
       ${kpi('Résultat', t.result, t.result >= 0 ? '' : 'alt')}
       ${kpi('TVA due (cumul)', t.vatDue)}
     </div>
+    <p class="help">Ces chiffres incluent vos <strong>écritures manuelles</strong> et les <strong>transactions bancaires importées</strong> (montants reconstitués en HT depuis le TTC, TVA estimée). Évitez de saisir manuellement une opération déjà présente dans un relevé importé pour ne pas la compter deux fois.</p>
+    ${m.length ? '' : '<div class="alert info">Aucune donnée pour le moment. Importez un relevé bancaire (onglet « Import bancaire ») ou saisissez une écriture pour voir les graphiques se remplir.</div>'}
     <div class="card"><h3>Résultat mensuel</h3>${barChart(m, 'result', 'ym')}</div>
     <div class="card"><h3>Résultat par trimestre</h3>${barChart(aggregatePeriods(m, 3), 'result', 'key')}</div>
     <div class="card"><h3>Résultat par semestre</h3>${barChart(aggregatePeriods(m, 6), 'result', 'key')}</div>
@@ -4077,13 +4079,11 @@ function bindFinChart(scope) {
 
 function finFlash(body) {
   const s = _fin.summary;
-  // Regroupe charges par poste (catégorie) sur l'ensemble.
-  const poste = {}; let caHT = 0;
-  _fin.entries.forEach((e) => {
-    if (e.kind === 'recette') caHT += e.amount;
-    else { const k = (e.fixed ? 'Fixe — ' : 'Variable — ') + e.category; poste[k] = (poste[k] || 0) + e.amount; }
-  });
-  const latest = s.months[s.months.length - 1];
+  // Charges par pôle depuis le plan de comptes (inclut les imports bancaires).
+  const lblMap = { 'Charges fixes': 'Fixe', 'Charges variables': 'Variable', 'Charges exceptionnelles': 'Except.' };
+  const poste = {};
+  (s.tree || []).forEach((m) => { if (m.name.startsWith('Charges')) m.subs.forEach((sub) => { poste[(lblMap[m.name] || m.name) + ' — ' + sub.name] = sub.total; }); });
+  const caHT = s.totals.revenue;
   body.innerHTML = `
     <div class="card"><h3>Flash comptable (cumul)</h3>
       <div class="grid cols-3">
