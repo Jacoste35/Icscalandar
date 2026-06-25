@@ -387,6 +387,7 @@ function navSections() {
   if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Absences' });
   if (admin) rh.push({ id: 'hours', icon: '⏱️', label: 'Temps de travail' });
   if (admin) rh.push({ id: 'justif', icon: '🧾', label: 'Notes de frais' });
+  if (admin) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des documents' });
   if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
   // Exploitation & Transport
   const exp = [];
@@ -401,8 +402,7 @@ function navSections() {
       { id: 'finance', icon: '💶', label: 'Contrôle financier' },
       { id: 'tender', icon: '📐', label: 'Devis, Appel d\'offres' },
     ] });
-    groups.push({ id: 'docs', icon: '📄', title: 'Documents & Contrats', items: [
-      { id: 'docmgmt', icon: '📄', label: 'Documents' },
+    groups.push({ id: 'docs', icon: '📑', title: 'Contrats', items: [
       { id: 'contracts', icon: '📑', label: 'Contrats clients' },
     ] });
     groups.push({ id: 'adm', icon: '⚙️', title: 'Administration', items: [
@@ -1143,13 +1143,13 @@ async function renderCalendar(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mon Planning</h1>
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-      ${staff?`<button class="btn ghost" id="cal-sync">📱 Synchroniser mon téléphone</button>`:''}
+      <button class="btn ghost" id="cal-sync">📱 Synchroniser mon téléphone</button>
       ${admin?`<button class="btn ghost" id="cal-close">🔒 Fermer des jours</button>`:''}
       ${staff?`<button class="btn ghost" id="cal-lock">🔐 Verrouiller mon planning</button>`:''}
       ${staff?`<button class="btn accent" id="cal-add">+ Attribuer une absence</button>`:''}
     </div></div>
     <div class="card" id="cal-card"><div class="empty">Chargement…</div></div>`;
-  if (staff) document.getElementById('cal-sync').onclick = () => calendarSyncModal();
+  document.getElementById('cal-sync').onclick = () => calendarSyncModal();
   if (staff) document.getElementById('cal-add').onclick = () => adminAssignModal();
   if (staff) document.getElementById('cal-lock').onclick = () => myUnavailModal();
   if (admin) document.getElementById('cal-close').onclick = () => closedPeriodsModal(main);
@@ -3461,7 +3461,7 @@ async function erpOpenHtml(method, path, body) {
 // --- Gestion documentaire (génération + PDF des courriers/contrats) ----------
 async function renderDocMgmt(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>Gestion documentaire</h1>
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des documents</h1>
     <p>Générez vos courriers et contrats (publipostage) et exportez-les en PDF.</p></div></div>
     <div id="dm-body" class="empty">Chargement…</div>`;
   let templates, meta;
