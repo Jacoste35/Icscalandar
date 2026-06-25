@@ -3889,6 +3889,8 @@ function renderImportPreview() {
   const meta = _finMeta;
   const catSel = (val, i) => `<select data-imrow="${i}">${['', ...meta.categories].map((c) => `<option ${c === val ? 'selected' : ''}>${esc(c || '— à vérifier —')}</option>`).join('')}</select>`;
   const importable = p.transactions.filter((t) => !t.dupe || t.force).length;
+  const dupesPending = p.transactions.filter((t) => t.dupe && !t.force).length;
+  const dupesKept = p.transactions.filter((t) => t.dupe && t.force).length;
   el.innerHTML = `<div class="card">
     <h3>Validation de l'import — ${p.bank}</h3>
     <div class="grid cols-4">
@@ -3898,6 +3900,11 @@ function renderImportPreview() {
       <div class="stat"><div class="value" style="font-size:1.4rem">${p.duplicates}</div><div class="label">Doublons</div></div>
     </div>
     <p class="help" style="margin:.5rem 0 0">Une ligne inutile peut être <strong>supprimée</strong> (✕). Un <strong>doublon</strong> réellement présent sur le relevé peut être <strong>conservé</strong> (puis justifié) pour être importé malgré tout.</p>
+    ${p.duplicates ? `<div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem">
+      ${dupesPending ? `<button class="btn ghost sm" id="im-keepall">Conserver tous les doublons (${dupesPending})</button>` : ''}
+      ${dupesKept ? `<button class="btn ghost sm" id="im-resetdupes">Réignorer les doublons (${dupesKept})</button>` : ''}
+      <span class="help" style="align-self:center">Conservez tout puis faites le tri (✕ sur les lignes à retirer).</span>
+    </div>` : ''}
     <div class="table-wrap" style="max-height:50vh;overflow:auto;margin-top:.6rem"><table class="veh-table"><thead><tr><th>Date</th><th>Libellé</th><th>Montant</th><th>Catégorie / Justification</th><th></th></tr></thead>
       <tbody>${p.transactions.map((t, i) => {
         const isDupe = t.dupe && !t.force;
@@ -3911,6 +3918,10 @@ function renderImportPreview() {
   el.querySelectorAll('[data-imrow]').forEach((s) => s.onchange = () => { const i = +s.dataset.imrow; p.transactions[i].category = s.value.startsWith('—') ? '' : s.value; });
   el.querySelectorAll('[data-imjust]').forEach((inp) => inp.onchange = () => { p.transactions[+inp.dataset.imjust].subCategory = inp.value; });
   el.querySelectorAll('[data-imkeep]').forEach((b) => b.onclick = () => { p.transactions[+b.dataset.imkeep].force = true; renderImportPreview(); });
+  const keepAll = document.getElementById('im-keepall');
+  if (keepAll) keepAll.onclick = () => { p.transactions.forEach((t) => { if (t.dupe) t.force = true; }); toast('Tous les doublons sont conservés — faites le tri puis confirmez.', 'ok'); renderImportPreview(); };
+  const resetDupes = document.getElementById('im-resetdupes');
+  if (resetDupes) resetDupes.onclick = () => { p.transactions.forEach((t) => { if (t.dupe) t.force = false; }); renderImportPreview(); };
   el.querySelectorAll('[data-imdel]').forEach((b) => b.onclick = () => { p.transactions.splice(+b.dataset.imdel, 1); renderImportPreview(); });
   document.getElementById('im-confirm').onclick = async () => {
     const mEl = document.getElementById('im-month'); const month = mEl ? mEl.value : '';
