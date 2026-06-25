@@ -3663,11 +3663,23 @@ async function billTab(main) {
   body.innerHTML = formHtml + `<div class="card"><h3>Factures émises</h3><div id="iv-list"></div></div>`;
   const val = (s) => { const el = body.querySelector(s); return el ? el.value : ''; };
   const linesBox = body.querySelector('#iv-lines');
-  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><input class="il-q" type="number" step="0.01" value="${q}" style="width:90px" title="Qté"><input class="il-pu" type="number" step="0.001" value="${pu}" style="width:120px" title="P.U. HT"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => row.remove(); linesBox.appendChild(row); };
+  let updateTotal = () => {};
+  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><input class="il-q" type="number" step="0.01" value="${q}" style="width:90px" title="Qté"><input class="il-pu" type="number" step="0.001" value="${pu}" style="width:120px" title="P.U. HT"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => { row.remove(); updateTotal(); }; linesBox.appendChild(row); updateTotal(); };
   if (isClient) { (prof.lignes && prof.lignes.length ? prof.lignes : [{ designation: 'Prestation de livraison', prixUnitaire: 0 }]).forEach((l) => addLine(l.designation, 0, l.prixUnitaire || 0)); }
   else { addLine('Prestation de livraison', 21, 560); }
   body.querySelector('#iv-add').onclick = () => addLine();
   const collectLines = () => [...linesBox.querySelectorAll('.impact-row')].map((r) => ({ designation: r.querySelector('.il-d').value, quantite: +r.querySelector('.il-q').value, prixUnitaire: +r.querySelector('.il-pu').value })).filter((l) => l.designation);
+  // Total vivant des lignes (pour vérifier la conformité « à l'identique » avec
+  // le « TOTAL HT » de la préfacturation avant de générer).
+  const totalEl = document.createElement('div'); totalEl.className = 'alert info'; totalEl.id = 'iv-total'; totalEl.style.marginTop = '.6rem';
+  linesBox.parentElement.insertBefore(totalEl, linesBox.nextSibling);
+  updateTotal = () => {
+    const ht = collectLines().reduce((s, l) => s + (l.quantite || 0) * (l.prixUnitaire || 0), 0);
+    const v = isClient ? vat : (+val('#iv-vat') || 0);
+    totalEl.innerHTML = `Total des lignes — <strong>HT ${eur(ht)}</strong> · TVA ${v} % · <strong>TTC ${eur(ht * (1 + v / 100))}</strong>. <span class="help">Vérifiez que le HT correspond au « TOTAL HT » de la préfacturation.</span>`;
+  };
+  body.addEventListener('input', updateTotal);
+  updateTotal();
   if (isClient) {
     const num = (s) => parseFloat(String(s).replace(/\s/g, '').replace(',', '.')) || 0;
     const fillLines = (arr) => { linesBox.innerHTML = ''; arr.forEach((l) => addLine(l.designation, l.quantite != null ? l.quantite : 1, l.prixUnitaire || 0)); if (!arr.length) addLine(); };
