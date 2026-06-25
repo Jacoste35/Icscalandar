@@ -3596,9 +3596,9 @@ function ocrTextToLines(text) {
 // les lignes enregistrées dans le profil de facturation). Sert à « nettoyer »
 // automatiquement un libellé écorché par l'OCR.
 const CARRIER_LABELS = {
-  gls: ['Nb de colis / Points livrés, enlevés, collectés', 'Nb de colis / Mois livrés, enlevés, collectés', 'Convention image', 'Part Gasoil – Indice de base', 'Part de carburant', 'Bonus', 'Malus'],
-  ciblex: ['Forfait nuit', 'Forfait jour', 'Livraisons', 'Points Relais colis', 'Reprises', 'Enlèvements'],
-  fedex: ['Livraison colis', 'Surcharge gasoil', 'Enlèvements', 'Suppléments'],
+  gls: ['Nombre de colis Points livrés, enlevés, collectés', 'Nombre de colis Mois livrés, enlevés, collectés', 'Convention Image', 'Bonus 1%', 'Surcharge Gazole Enlèvement', 'Surcharge Gazole Livraison'],
+  ciblex: ['Forfait nuit 14100/101/102', 'Forfait nuit 14103/14104', 'Forfait jour 14100/101/102', 'Forfait jour 14103', 'Forfait jour 14104', 'Forfait lundi', 'Prix au point jour 14100/101/102', 'Prix au point jour 14103', 'Prix au point jour 14104', 'Livraisons spare', 'Livraisons synchro', 'Enlèvements', 'Points Relais Colis', 'SASIC', 'Picking 1', 'Picking 2', 'Picking 3', 'Montant VTPC'],
+  fedex: ['Livraison N° T560', 'Livraison N° T561', 'Livraison N° T562', 'Livraison N° T563', 'Livraison N° T564', 'Livraison N° T565', 'Livraison N° T566', 'Ramassage R260 HEROUVILLE', 'Ramassage R262 Bayeux', 'Ramassage R263 Isigny Ste Mère', 'Ajustement / indexation carburant'],
 };
 // Normalisation pour comparaison floue (minuscules, sans accents ni ponctuation).
 function _norm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
@@ -3668,7 +3668,7 @@ async function billTab(main) {
     formHtml = `<div class="card"><h3>Facturation ${esc(prof.name)}</h3>
       <p class="help">Profil du donneur d'ordre : adresse, mentions et lignes de prestation (avec prix unitaire). Saisissez les quantités du mois (ou collez la préfacturation) puis générez la facture conforme.</p>
       <div class="grid2">
-        <div><label>Adresse ${esc(prof.name)}</label><input id="pf-addr" value="${esc(prof.clientAddress || '')}" placeholder="adresse du donneur d'ordre"></div>
+        <div><label>Adresse ${esc(prof.name)}</label><textarea id="pf-addr" style="min-height:58px;font-size:.9rem" placeholder="adresse du donneur d'ordre (une ligne par retour)">${esc(prof.clientAddress || '')}</textarea></div>
         <div><label>Période / prestation</label><input id="iv-period" placeholder="${iso(new Date()).slice(0, 7)}"></div>
       </div>
       <label style="margin-top:.4rem">Mentions spécifiques (une par ligne)</label>
@@ -3740,7 +3740,8 @@ async function billTab(main) {
     const client = isClient ? prof.name : val('#iv-client');
     const clientAddress = isClient ? val('#pf-addr') : val('#iv-addr');
     if (!client || !lines.length) { toast('Client et au moins une ligne requis.', 'err'); return; }
-    const payload = { client, clientAddress, period: val('#iv-period'), vatRate: isClient ? vat : +val('#iv-vat'), lines };
+    const mentions = isClient ? body.querySelector('#pf-mentions').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : undefined;
+    const payload = { client, clientAddress, period: val('#iv-period'), vatRate: isClient ? vat : +val('#iv-vat'), lines, mentions };
     const avoir = !isClient && body.querySelector('#iv-avoir') && body.querySelector('#iv-avoir').checked;
     try { await api('POST', avoir ? '/admin/erp/invoices/avoir' : '/admin/erp/invoices', payload); toast('Facture créée.', 'ok'); billTab(main); }
     catch (e) { toast(e.message, 'err'); }

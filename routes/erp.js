@@ -87,9 +87,9 @@ function mount(app, deps) {
     res.json({ invoices: data.erp.invoices.slice().reverse(), contracts: data.contracts || [] });
   }));
   r.post('/invoices', guard, withData(async (req, res, data) => {
-    const { client, clientAddress, period, lines, vatRate, dueDays } = req.body || {};
+    const { client, clientAddress, period, lines, vatRate, dueDays, mentions } = req.body || {};
     if (!client || !Array.isArray(lines) || !lines.length) return res.status(400).json({ error: 'client et lignes requis' });
-    const inv = invoicing.buildInvoice(data, { client, clientAddress, period, lines, vatRate, dueDays });
+    const inv = invoicing.buildInvoice(data, { client, clientAddress, period, lines, vatRate, dueDays, mentions });
     data.erp.invoices.push(inv);
     audit.logAction(data, { ...actor(req), action: 'invoice.create', entity: inv.number, detail: `${inv.totalTTC} € TTC` });
     await save();
