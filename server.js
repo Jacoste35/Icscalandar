@@ -566,6 +566,51 @@ app.get('/api/calendar', authRequired, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Synchronisation calendrier (flux iCalendar à s'abonner sur le téléphone)
+// ---------------------------------------------------------------------------
+function icsEscape(s) { return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
+function icsDay(ymdStr) { return String(ymdStr || '').replace(/-/g, ''); } // YYYY-MM-DD -> YYYYMMDD
+function icsDayPlus1(ymdStr) { const d = new Date(ymdStr + 'T00:00:00Z'); if (isNaN(d)) return icsDay(ymdStr); d.setUTCDate(d.getUTCDate() + 1); const p = (n) => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`; }
+function icsStamp() { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`; }
+
+// Génère/retourne le jeton d'abonnement personnel + l'URL du flux.
+app.post('/api/me/calendar-token', authRequired, async (req, res) => {
+  const db = getData();
+  const u = db.users.find((x) => x.id === req.user.id);
+  if (!u) return res.status(404).json({ error: 'Utilisateur introuvable' });
+  if (!u.calendarToken || (req.body && req.body.regenerate)) { u.calendarToken = require('crypto').randomBytes(18).toString('hex'); await save(); }
+  res.json({ token: u.calendarToken, path: `/calendar/${u.calendarToken}.ics` });
+});
+
+// Flux iCalendar public (protégé par le jeton dans l'URL). À s'abonner depuis
+// l'app Calendrier du téléphone : les nouveaux congés apparaissent au rafraîchi.
+app.get('/calendar/:token.ics', (req, res) => {
+  const token = String(req.params.token || '').replace(/\.ics$/i, '');
+  const db = getData();
+  const owner = token && db.users.find((u) => u.calendarToken && u.calendarToken === token);
+  if (!owner) { res.status(404).type('text/plain').send('Calendrier introuvable.'); return; }
+  const usersById = Object.fromEntries(db.users.map((u) => [u.id, u]));
+  const catByCode = Object.fromEntries(db.categories.map((c) => [c.code, c]));
+  const stamp = icsStamp();
+  const out = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Inter Colis Services//Planning//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Planning ICS', 'NAME:Planning ICS', 'X-WR-TIMEZONE:Europe/Paris', 'REFRESH-INTERVAL;VALUE=DURATION:PT4H', 'X-PUBLISHED-TTL:PT4H'];
+  for (const r of db.requests) {
+    if ((r.status !== 'approved' && r.status !== 'pending') || !r.startDate || !r.endDate) continue;
+    const u = usersById[r.userId];
+    const code = displayCode(r);
+    const cat = catByCode[code] || catByCode[r.category];
+    const name = u ? `${u.firstName} ${u.lastName}` : 'Inconnu';
+    const label = cat ? cat.label : code;
+    out.push('BEGIN:VEVENT', `UID:${r.id}@inter-colis-services`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${icsDay(r.startDate)}`, `DTEND;VALUE=DATE:${icsDayPlus1(r.endDate)}`, `SUMMARY:${icsEscape(name + ' — ' + label)}`, `STATUS:${r.status === 'approved' ? 'CONFIRMED' : 'TENTATIVE'}`, 'TRANSP:TRANSPARENT');
+    if (r.reason) out.push(`DESCRIPTION:${icsEscape(r.reason)}`);
+    out.push('END:VEVENT');
+  }
+  out.push('END:VCALENDAR');
+  res.set('Content-Type', 'text/calendar; charset=utf-8');
+  res.set('Content-Disposition', 'inline; filename="planning-ics.ics"');
+  res.send(out.join('\r\n'));
+});
+
+// ---------------------------------------------------------------------------
 // Demandes de congé
 // ---------------------------------------------------------------------------
 
