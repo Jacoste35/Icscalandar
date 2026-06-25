@@ -790,7 +790,6 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
   .month-grid .dow { font-size: .62rem; }
   .legend { font-size: .72rem; }
 }
-
 /* ---- Mois compact (téléphone) : pastilles au lieu du détail texte -------- */
 .month-grid.compact { gap: 2px; }
 .month-grid.compact .cell { min-height: 46px; padding: 3px 0 2px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; cursor: pointer; gap: 0; }

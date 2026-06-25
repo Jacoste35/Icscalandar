@@ -1682,6 +1682,35 @@ function viewAgenda(cursor) {
   return html;
 }
 
+// Vue Agenda : liste chronologique et lisible des absences du mois (idéale mobile).
+function viewAgenda(cursor) {
+  const y = cursor.getFullYear(), m = cursor.getMonth();
+  const monthStart = iso(new Date(y, m, 1));
+  const monthEnd = iso(new Date(y, m + 1, 0));
+  const evs = (State._calEvents || [])
+    .filter((ev) => ev.startDate <= monthEnd && ev.endDate >= monthStart)
+    .sort((a, b) => (a.startDate.localeCompare(b.startDate)) || String(a.userName).localeCompare(String(b.userName)));
+  if (!evs.length) return `<div class="empty">✅ Aucune absence sur ${MONTHS[m]} ${y}.</div>`;
+  const isAdmin = State.user.role === 'admin';
+  const fmtRange = (ev) => ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
+  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min` : `${ev.days} j`;
+  // Regroupement par jour de début pour des sous-titres clairs.
+  let html = '<div class="agenda">', lastDay = '';
+  evs.forEach((ev) => {
+    if (ev.startDate !== lastDay) { lastDay = ev.startDate; html += `<div class="agenda-day">${esc(fmtDate(ev.startDate))}</div>`; }
+    const c = evColor(ev);
+    html += `<div class="agenda-item" style="border-left-color:${c}">
+      <div class="agenda-main">
+        <div class="agenda-top"><span class="tag ${ev.status === 'pending' ? 'is-pending' : ''}" style="background:${c};color:#fff">${esc(ev.code)}</span> <strong>${esc(ev.userName)}</strong> <span class="help">(${esc(ev.groupName)})</span></div>
+        <div class="help">${esc(ev.categoryLabel)} · ${esc(fmtRange(ev))} · ${dur(ev)}${ev.status === 'pending' ? ' · <em>en attente</em>' : ''}${ev.replacedByName ? ` · ↪ ${esc(ev.replacedByName)}` : ''}</div>
+      </div>
+      ${isAdmin ? `<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer / recréditer">✕</button>` : ''}
+    </div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
 function viewYear(cursor) {
   const year = cursor.getFullYear();
   const today = new Date();
