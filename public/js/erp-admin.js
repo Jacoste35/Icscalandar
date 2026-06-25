@@ -62,8 +62,8 @@
       .erp-row input,.erp-row select,.erp-row textarea{background:#0f172a;border:1px solid #334155;color:#e2e8f0;border-radius:8px;padding:8px}
       .erp-row textarea{width:100%;min-height:90px}
       h3.erp{margin:18px 0 6px;font-size:15px;color:#f1f5f9}
-      .pill{font-size:11px;padding:2px 8px;border-radius:999px;background:#334155}
-      .pill.draft{background:#475569}.pill.sent{background:#b45309}.pill.paid{background:#15803d}
+      #erp-overlay .pill{font-size:11px;padding:2px 8px;border-radius:6px;background:#334155;color:#e2e8f0}
+      #erp-overlay .pill.draft{background:#475569}#erp-overlay .pill.sent{background:#b45309}#erp-overlay .pill.paid{background:#15803d}
     `;
     document.head.appendChild(s);
   }
