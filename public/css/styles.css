@@ -720,3 +720,50 @@ table tbody tr:hover td { background: var(--surface-2); }
 .nav-group-items button[data-view] { padding-left: 2.3rem; font-size: .89rem; font-weight: 500; }
 /* Repère discret quand un groupe replié contient la vue active */
 .nav-group:not(.open) > .nav-group-head { position: relative; }
+
+/* =========================================================================
+   MODE APPLICATION (PWA) + ergonomie tactile mobile.
+   Desktop inchangé : la barre de navigation basse et les marges « safe-area »
+   ne s'activent que sur petit écran / en mode application installée.
+   ========================================================================= */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: contain; }
+button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+
+/* Barre de navigation basse — style application native, mobile uniquement. */
+.bottom-nav { display: none; }
+@media (max-width: 860px) {
+  .bottom-nav {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    background: rgba(255,255,255,.96); backdrop-filter: saturate(180%) blur(12px);
+    border-top: 1px solid var(--border); box-shadow: 0 -2px 16px rgba(15,23,42,.08);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .bottom-nav button {
+    flex: 1; border: 0; background: transparent; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    padding: .45rem 0 .4rem; min-height: 54px; color: var(--muted); font-size: .66rem; font-weight: 600;
+    transition: color .15s var(--ease);
+  }
+  .bottom-nav button .bn-ico { font-size: 1.3rem; line-height: 1; }
+  .bottom-nav button.active { color: var(--brand-2); }
+  .bottom-nav button.active .bn-ico { transform: translateY(-1px); }
+  .bottom-nav .bn-badge { position: absolute; top: 6px; margin-left: 18px; background: var(--accent); color: #fff; border-radius: 999px; font-size: .6rem; font-weight: 700; padding: 0 .3rem; line-height: 1.4; }
+
+  /* Laisse la place à la barre basse et au notch. */
+  .main { padding-bottom: calc(66px + env(safe-area-inset-bottom)); }
+  /* La barre supérieure (logo + menu) passe sous l'encoche. */
+  .sidebar { padding-top: env(safe-area-inset-top); max-height: calc(64px + env(safe-area-inset-top)); }
+  .sidebar.nav-open { max-height: 100vh; }
+  .nav-toggle { top: calc(.6rem + env(safe-area-inset-top)); }
+  /* Cibles tactiles confortables. */
+  .sidebar nav button, .nav-group-head { min-height: 44px; }
+  /* Évite le zoom automatique iOS au focus d'un champ (police ≥ 16px). */
+  input, select, textarea { font-size: 16px; }
+}
+
+/* En mode application installée (plein écran), on respecte aussi l'encoche. */
+@media (display-mode: standalone) {
+  .sidebar { padding-top: env(safe-area-inset-top); }
+  .auth-wrap, .cgu-wrap { padding-top: env(safe-area-inset-top); }
+}
