@@ -659,15 +659,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 .sidebar nav button:hover { transform: translateX(2px); }
 
 /* ---- Onglets segmentés (view-switch) : RECTANGULAIRES, pas d'ovale ----
-   overflow visible + auto-wrap propre sur mobile (sinon les onglets sont
-   rognés en forme d'ovale et le contenu devient illisible). */
-.view-switch { border-radius: var(--radius-sm); padding: 3px; gap: 3px; background: var(--surface-2); border-color: var(--border); overflow: visible; box-shadow: inset 0 1px 2px rgba(15,23,42,.04); }
-.view-switch button { border-radius: 7px; }
+   rayon FAIBLE (10px) -> rectangle ; on garde overflow:hidden hérité, qui clippe
+   proprement les coins (plus d'ovale). Le scroll horizontal mobile (défini plus
+   haut) reste actif, on ne le contrarie pas. */
+.view-switch { border-radius: var(--radius-sm); background: var(--surface-2); border-color: var(--border); box-shadow: inset 0 1px 2px rgba(15,23,42,.04); }
+.view-switch button { border-radius: 8px; margin: 2px; }
 .view-switch button.active { background: var(--grad-brand); color: #fff; box-shadow: 0 2px 6px rgba(20,66,126,.25); }
-@media (max-width: 860px) {
-  .view-switch { width: 100%; }
-  .view-switch button { flex: 1 1 auto; min-width: max-content; }
-}
 
 /* ---- Étiquettes : rectangles légèrement arrondis (préférence) ---- */
 .pill, .tag, .group-chip { border-radius: 6px; }
