@@ -3732,12 +3732,13 @@ async function finImport(body) {
   body.innerHTML = `
     <div class="card">
       <h3>Importer un relevé bancaire</h3>
-      <p class="help">Collez le contenu d'un relevé (CSV exporté de votre banque, ou lignes copiées) ou chargez un fichier <strong>.csv / .txt</strong>. Le système reconnaît les colonnes Date / Libellé / Débit / Crédit (ou Montant), catégorise automatiquement et détecte les doublons.</p>
+      <p class="help">Collez le contenu d'un relevé (CSV exporté de votre banque, ou lignes copiées), chargez un fichier <strong>.csv / .txt</strong>, ou un <strong>PDF scanné / une photo</strong> (lecture par <strong>OCR</strong>). Le système reconnaît les colonnes Date / Libellé / Débit / Crédit (ou Montant), catégorise automatiquement et détecte les doublons.</p>
       <div class="grid2">
         <div><label>Banque</label><select id="im-bank"><option value="auto">Détection automatique</option>${meta.banks.map((b) => `<option>${esc(b)}</option>`).join('')}</select></div>
         <div><label>Mois du relevé</label><input id="im-month" type="month" value="${iso(new Date()).slice(0, 7)}"></div>
-        <div><label>Fichier (.csv / .txt)</label><input id="im-file" type="file" accept=".csv,.txt,text/csv,text/plain"></div>
+        <div><label>Fichier (.csv / .txt, ou PDF scanné / photo)</label><input id="im-file" type="file" accept=".csv,.txt,text/csv,text/plain,.pdf,image/*"></div>
       </div>
+      <p class="help" id="im-ocrstatus" style="margin:.3rem 0 0"></p>
       <p class="help" style="margin:.3rem 0 0">Indiquez le <strong>mois du relevé</strong> : il sert à nommer l'import et à alimenter les résumés et graphiques mensuels.</p>
       <label style="margin-top:.5rem">Ou collez le relevé ici</label>
       <textarea id="im-text" style="min-height:140px;font-family:monospace;font-size:.82rem" placeholder="Date;Libellé;Débit;Crédit&#10;02/03/2026;VIR SEPA FEDEX;;40193,99&#10;05/03/2026;PRVL AXA ASSURANCES;394,38;"></textarea>
@@ -3745,11 +3746,20 @@ async function finImport(body) {
     </div>
     <div id="im-preview"></div>
     <div class="card"><h3>Relevés importés</h3><div id="im-docs"></div></div>
-    <div class="alert info">📷 L'import de <strong>PDF scannés / photos (OCR)</strong> nécessite un moteur OCR serveur (Tesseract) — non activé ici. Pour un PDF natif, copiez-collez son texte. Le CSV reste le plus fiable.</div>`;
+    <div class="alert info">📷 Vous pouvez charger un <strong>CSV/TXT</strong> (le plus fiable), ou un <strong>PDF scanné / une photo</strong> du relevé : l'<strong>OCR lit le document localement</strong> dans votre navigateur (aucune donnée envoyée à un tiers) et remplit la zone ci-dessus. La reconnaissance pouvant être imparfaite, vérifiez les lignes avant d'analyser.</div>`;
   document.getElementById('im-file').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    // Les relevés bancaires FR sont souvent en Windows-1252 : on bascule si l'UTF-8
-    // produit des caractères de remplacement (�).
+    const status = document.getElementById('im-ocrstatus');
+    const isScan = /\.pdf$/i.test(f.name) || f.type === 'application/pdf' || /^image\//.test(f.type);
+    if (isScan) {
+      // PDF scanné / photo : OCR local (Tesseract + pdf.js) -> texte dans la zone.
+      try { const txt = await ocrFileToText(f, status); document.getElementById('im-text').value = txt; status.textContent = 'OCR terminé — vérifiez les lignes (Date / Libellé / Montant) puis « Analyser ».'; }
+      catch (err) { status.textContent = ''; toast('OCR indisponible : ' + err.message + '. Fournissez plutôt un CSV.', 'err'); }
+      return;
+    }
+    status.textContent = '';
+    // CSV/TXT : les relevés bancaires FR sont souvent en Windows-1252 : on bascule
+    // si l'UTF-8 produit des caractères de remplacement (�).
     try {
       const buf = await f.arrayBuffer();
       let txt = new TextDecoder('utf-8').decode(buf);
