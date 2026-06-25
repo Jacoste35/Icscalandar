@@ -366,46 +366,58 @@ function bindRegister() {
 /* =========================================================================
    APP SHELL
    ========================================================================= */
-// Menu organisé en catégories propres. "Droits & devoirs" est placé en bas.
+// Menu organisé en groupes dépliables. « Accueil » reste seul en haut.
 function navSections() {
   const admin = State.user.role === 'admin';
-  const sections = [
-    { title: '', items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
-    { title: 'Planning', items: [
-      { id: 'calendar', icon: '📅', label: 'Mon Planning' },
-      { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
-    ] },
-    { title: 'Mon espace', items: [
-      { id: 'mydata', icon: '👤', label: 'Mon Profil' },
-      { id: 'requests', icon: '📝', label: 'Mes événements' },
-      { id: 'team', icon: '👥', label: 'Mon équipe' },
-      { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
-      // Pour les responsables (non admin) : la gestion reste dans « Mon espace ».
-      ...(isStaff() && !admin ? [
-        { id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' },
-        { id: 'vehmgmt', icon: '🔧', label: 'Gestion des véhicules' },
-      ] : []),
-    ] },
-  ];
+  const staff = isStaff(); // admin OU responsable
+  const groups = [];
+  groups.push({ id: 'home', solo: true, items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] });
+  groups.push({ id: 'planning', icon: '📅', title: 'Planning & Organisation', items: [
+    { id: 'calendar', icon: '📅', label: 'Mon planning' },
+    { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
+    { id: 'requests', icon: '📝', label: 'Événements' },
+  ] });
+  groups.push({ id: 'space', icon: '👤', title: 'Mon espace', items: [
+    { id: 'mydata', icon: '👤', label: 'Mon profil' },
+    { id: 'team', icon: '👥', label: 'Mon équipe' },
+    { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
+  ] });
+  // Ressources Humaines
+  const rh = [];
+  if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Absences' });
+  if (admin) rh.push({ id: 'hours', icon: '⏱️', label: 'Temps de travail' });
+  if (admin) rh.push({ id: 'justif', icon: '🧾', label: 'Notes de frais' });
+  if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
+  // Exploitation & Transport
+  const exp = [];
+  if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
+  if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
+  if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
+  if (admin) exp.push({ id: 'stocks', icon: '📦', label: 'Gestion des Stocks' });
+  if (exp.length) groups.push({ id: 'exploit', icon: '🚚', title: 'Exploitation & Transport', items: exp });
   if (admin) {
-    sections.push({ title: 'Contrôle & gestion', items: [
-      { id: 'admin', icon: '⚙️', label: 'Administration' },
-      { id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' },
-      { id: 'hours', icon: '⏱️', label: 'Gestion des heures' },
-      { id: 'vehmgmt', icon: '🔧', label: 'Gestion des véhicules' },
-      { id: 'fleet', icon: '🚚', label: 'Gestion de la flotte' },
-      { id: 'stocks', icon: '📦', label: 'Gestion des stocks' },
+    groups.push({ id: 'fin', icon: '💰', title: 'Finance & Facturation', items: [
+      { id: 'billing', icon: '🧾', label: 'Facturation' },
       { id: 'finance', icon: '💶', label: 'Contrôle financier' },
-      { id: 'docmgmt', icon: '📄', label: 'Gestion documentaire' },
-      { id: 'billing', icon: '🧾', label: 'Gestion de la facturation' },
-      { id: 'justif', icon: '🧮', label: 'Gestion des justificatifs' },
-      { id: 'tender', icon: '📐', label: 'Estimation appel d\'offre' },
-      { id: 'contracts', icon: '📑', label: 'Contrats donneurs d\'ordre' },
+      { id: 'tender', icon: '📐', label: 'Devis, Appel d\'offres' },
+    ] });
+    groups.push({ id: 'docs', icon: '📄', title: 'Documents & Contrats', items: [
+      { id: 'docmgmt', icon: '📄', label: 'Documents' },
+      { id: 'contracts', icon: '📑', label: 'Contrats clients' },
+    ] });
+    groups.push({ id: 'adm', icon: '⚙️', title: 'Administration', items: [
+      { id: 'admin', icon: '⚙️', label: 'Administration' },
     ] });
   }
-  sections.push({ title: 'Informations', items: [{ id: 'info', icon: 'ℹ️', label: 'Droits & devoirs' }] });
-  return sections;
+  groups.push({ id: 'infos', icon: 'ℹ️', title: 'Informations', items: [{ id: 'info', icon: 'ℹ️', label: 'Droits & devoirs' }] });
+  return groups;
 }
+// Bouton d'élément de menu (vue).
+function navItemBtn(it) {
+  return `<button data-view="${it.id}" class="${State.view === it.id ? 'active' : ''}"><span class="ico">${it.icon}</span> ${it.label}${it.id === 'admin' ? '<span class="badge" id="admin-badge" style="display:none"></span>' : ''}</button>`;
+}
+// Groupes dépliés (persisté entre les rendus).
+let _navOpen = new Set();
 
 let adminBadgeCount = 0;
 
@@ -496,20 +508,22 @@ function renderApp() {
   if (!u.cguAccepted) { renderCGU(); return; }
   if (!reglementUpToDate(u)) { renderReglementGate(); return; }
   const sections = navSections();
+  // Ouvre automatiquement le groupe contenant la vue active.
+  const activeGroup = sections.find((s) => !s.solo && s.items.some((it) => it.id === State.view));
+  if (activeGroup) _navOpen.add(activeGroup.id);
   $app.innerHTML = `
   <div class="layout">
     <aside class="sidebar">
       <div class="brand"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
       <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰</button>
       <nav id="nav">
-        ${sections.map((s) => `
-          ${s.title ? `<div class="nav-section">${s.title}</div>` : ''}
-          ${s.items.map((it) => `
-            <button data-view="${it.id}" class="${State.view===it.id?'active':''}">
-              <span class="ico">${it.icon}</span> ${it.label}
-              ${it.id==='admin' ? `<span class="badge" id="admin-badge" style="display:none"></span>` : ''}
-            </button>`).join('')}
-        `).join('')}
+        ${sections.map((s) => s.solo
+          ? s.items.map(navItemBtn).join('')
+          : `<div class="nav-group ${_navOpen.has(s.id) ? 'open' : ''}" data-group="${s.id}">
+               <button class="nav-group-head" data-navgroup="${s.id}"><span class="ico">${s.icon}</span><span class="nav-group-title">${s.title}</span>${s.id === 'adm' ? '<span class="badge" id="admin-group-badge" style="display:none"></span>' : ''}<span class="nav-caret">▸</span></button>
+               <div class="nav-group-items">${s.items.map(navItemBtn).join('')}</div>
+             </div>`
+        ).join('')}
       </nav>
       <div class="userbox">
         <div class="name">${esc(u.firstName)} ${esc(u.lastName)}</div>
@@ -520,6 +534,13 @@ function renderApp() {
     <main class="main" id="main"></main>
   </div>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  // Dépliage/repliage des groupes de menu (sans recharger la vue).
+  $app.querySelectorAll('[data-navgroup]').forEach((b) => b.onclick = () => {
+    const g = b.closest('.nav-group'); const id = b.dataset.navgroup;
+    const open = !g.classList.contains('open');
+    g.classList.toggle('open', open);
+    if (open) _navOpen.add(id); else _navOpen.delete(id);
+  });
   document.getElementById('logout').onclick = () => logout();
   const toggle = document.getElementById('nav-toggle');
   if (toggle) toggle.onclick = () => document.querySelector('.sidebar').classList.toggle('nav-open');
@@ -533,8 +554,9 @@ async function refreshAdminBadge() {
     const { requests } = await api('GET', '/admin/requests');
     const pendingReq = requests.filter((r) => r.status === 'pending').length;
     adminBadgeCount = users.length + pendingReq;
-    const el = document.getElementById('admin-badge');
-    if (el && adminBadgeCount > 0) { el.style.display = ''; el.textContent = adminBadgeCount; }
+    [document.getElementById('admin-badge'), document.getElementById('admin-group-badge')].forEach((el) => {
+      if (el && adminBadgeCount > 0) { el.style.display = ''; el.textContent = adminBadgeCount; }
+    });
   } catch (e) {}
 }
 
@@ -561,6 +583,7 @@ function renderView() {
   if (v === 'tender') return renderTender(main);
   if (v === 'contracts') return renderContracts(main);
   if (v === 'hours') return renderHours(main);
+  if (v === 'tours') return renderTours(main);
 }
 
 /* =========================================================================
@@ -3686,6 +3709,68 @@ async function renderJustif(main) {
   list.querySelectorAll('[data-pdf]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/expenses/' + b.dataset.pdf + '/print'));
   list.querySelectorAll('[data-ok]').forEach((b) => b.onclick = async () => { await api('POST', '/admin/erp/expenses/' + b.dataset.ok + '/status', { status: 'approved' }); renderJustif(main); });
   list.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api('DELETE', '/admin/erp/expenses/' + b.dataset.del); renderJustif(main); });
+}
+
+/* --- Gestion des Tournées : retours de tournée + analyse de rentabilité ---- */
+let _toursYM = null;
+async function renderTours(main) {
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des Tournées</h1>
+    <p>Saisie des retours de tournée et analyse de la rentabilité par client.</p></div></div>
+    <div id="tours-body"><div class="alert info">Chargement…</div></div>`;
+  await loadToursView();
+}
+async function loadToursView() {
+  const body = document.getElementById('tours-body'); if (!body) return;
+  if (!_toursYM) _toursYM = iso(new Date()).slice(0, 7);
+  let meta, an;
+  try { meta = await api('GET', '/admin/erp/meta'); an = await api('GET', '/admin/erp/tours/analytics?ym=' + _toursYM); }
+  catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const opt = (id, label) => `<option value="${id}">${esc(label)}</option>`;
+  const maxMarge = Math.max(1, ...(an.byClient || []).map((x) => Math.abs(x.marge)));
+  body.innerHTML = `
+    <div class="card"><h3>Saisir un retour de tournée</h3>
+      <div class="grid2">
+        <div><label>Date</label><input id="t-date" type="date" value="${iso(new Date())}"></div>
+        <div><label>Chauffeur</label><select id="t-user">${(meta.users || []).map((u) => opt(u.id, u.name)).join('')}</select></div>
+        <div><label>Véhicule</label><select id="t-veh"><option value="">— véhicule —</option>${(meta.vehicles || []).map((v) => opt(v.id, v.plate || v.name)).join('')}</select></div>
+        <div><label>Contrat / client</label><select id="t-ctr"><option value="">— contrat —</option>${(meta.contracts || []).map((c) => opt(c.id, c.client)).join('')}</select></div>
+        <div><label>Km début</label><input id="t-km1" type="number" min="0"></div>
+        <div><label>Km fin</label><input id="t-km2" type="number" min="0"></div>
+        <div><label>Points prévus</label><input id="t-pp" type="number" min="0"></div>
+        <div><label>Points livrés</label><input id="t-pd" type="number" min="0"></div>
+        <div><label>Points en échec</label><input id="t-pf" type="number" min="0"></div>
+        <div><label>Ramassages</label><input id="t-pick" type="number" min="0"></div>
+        <div><label>Litres carburant (opt.)</label><input id="t-fuel" type="number" min="0" step="0.01"></div>
+        <div><label>Motif d'échec (opt.)</label><input id="t-fr"></div>
+        <div><label>Incident (opt.)</label><input id="t-inc"></div>
+      </div>
+      <div style="margin-top:.6rem"><button class="btn accent" id="t-save">Enregistrer le retour</button></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <h3 style="margin:0">Analyse — ${esc(an.ym)}</h3>
+        <label style="display:inline-flex;gap:.4rem;align-items:center;margin:0">Mois <input id="t-month" type="month" value="${_toursYM}" style="width:auto"></label>
+      </div>
+      <div class="grid cols-4" style="margin:.6rem 0">
+        <div class="stat"><div class="value" style="font-size:1.4rem">${an.count}</div><div class="label">Tournées</div></div>
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur(an.totals.recette)}</div><div class="label">Recette</div></div>
+        <div class="stat"><div class="value" style="font-size:1.4rem">${eur(an.totals.coutTotal)}</div><div class="label">Coût total</div></div>
+        <div class="stat ${an.totals.marge < 0 ? 'alt' : ''}"><div class="value" style="font-size:1.4rem">${eur(an.totals.marge)}</div><div class="label">Marge</div></div>
+      </div>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Client</th><th>Km</th><th>Pts</th><th>Recette</th><th>Coût</th><th>Marge</th><th></th></tr></thead>
+      <tbody>${(an.rows || []).length ? an.rows.map((r) => `<tr${r.marge < 0 ? ' style="background:#fef2f2"' : ''}><td>${fmtDate(r.date)}</td><td>${esc(r.userName || '')}</td><td>${esc(r.client)}</td><td>${r.km}</td><td>${r.points}</td><td>${eur(r.recette)}</td><td>${eur(r.coutTotal)}</td><td><strong>${eur(r.marge)}</strong></td><td><button class="btn ghost sm" data-tdel="${r.id}">✕</button></td></tr>`).join('') : '<tr><td colspan="9"><span class="help">Aucune tournée saisie pour ce mois.</span></td></tr>'}</tbody></table></div>
+      ${(an.byClient || []).length ? `<h3 style="margin-top:1rem">Marge par client</h3>${an.byClient.map((c) => `<div style="display:grid;grid-template-columns:160px 1fr auto;gap:.6rem;align-items:center;margin:.25rem 0"><span class="help">${esc(c.key)}</span><span style="background:#eef2f7;border-radius:5px;overflow:hidden"><span style="display:block;height:14px;width:${Math.round(Math.abs(c.marge) / maxMarge * 100)}%;background:${c.marge < 0 ? '#dc2626' : '#16a34a'}"></span></span><span style="${c.marge < 0 ? 'color:#dc2626;font-weight:600' : ''}">${eur(c.marge)}</span></div>`).join('')}` : ''}
+      <p class="help" style="margin-top:.6rem">La marge tient compte de la recette (points livrés × tarif du contrat), du coût chauffeur, du carburant et du coût véhicule. Une ligne en rouge est déficitaire.</p>
+    </div>`;
+  body.querySelector('#t-month').onchange = (e) => { _toursYM = e.target.value; loadToursView(); };
+  body.querySelector('#t-save').onclick = async () => {
+    const g = (id) => body.querySelector(id);
+    const payload = { date: g('#t-date').value, userId: g('#t-user').value, vehicleId: g('#t-veh').value, contractId: g('#t-ctr').value, kmStart: +g('#t-km1').value, kmEnd: +g('#t-km2').value, pointsPlanned: +g('#t-pp').value, pointsDelivered: +g('#t-pd').value, pointsFailed: +g('#t-pf').value, pickups: +g('#t-pick').value, fuelLiters: +g('#t-fuel').value, failReason: g('#t-fr').value, incident: g('#t-inc').value };
+    if (!payload.date || !payload.userId) { toast('Renseignez au moins la date et le chauffeur.', 'err'); return; }
+    try { await api('POST', '/admin/erp/tours', payload); toast('Retour de tournée enregistré.', 'ok'); loadToursView(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  body.querySelectorAll('[data-tdel]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer cette tournée ?')) return; try { await api('DELETE', '/admin/erp/tours/' + b.dataset.tdel); toast('Tournée supprimée.', 'ok'); loadToursView(); } catch (e) { toast(e.message, 'err'); } });
 }
 
 async function renderFinance(main) {
