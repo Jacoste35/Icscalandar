@@ -214,6 +214,13 @@ async function loadRefs() {
   State.closedPeriods = settings.closedPeriods || [];
   State.reglement = reglement;
   State._holidayYear = new Date().getFullYear();
+  await loadPendingDocs();
+}
+
+// Documents adressés au salarié non encore signés (bloquent l'accès au compte).
+async function loadPendingDocs() {
+  try { const { documents } = await api('GET', '/admin/erp/my-documents'); State.pendingDocs = (documents || []).filter((d) => d.status !== 'acked'); }
+  catch (e) { State.pendingDocs = []; }
 }
 // Contenu du règlement (serveur si disponible, sinon repli local).
 function reglementContent() { return (State.reglement && State.reglement.content) || window.REGLEMENT_INTERIEUR_HTML || ''; }
@@ -502,11 +509,53 @@ function renderReglementGate() {
   };
 }
 
+// Documents que le salarié a ouverts pendant cette session (avant signature).
+const _docsOpened = new Set();
+// Page de garde : documents adressés à signer avant d'accéder au compte.
+function renderDocumentsGate() {
+  const u = State.user;
+  const docs = State.pendingDocs || [];
+  $app.innerHTML = `
+  <div class="cgu-wrap"><div class="cgu-card" style="max-width:780px">
+    <div class="cgu-head"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" class="cgu-logo" alt=""><h1>Document(s) à signer</h1></div>
+    <p class="cgu-lead">${esc(u.firstName)}, un ou plusieurs documents vous ont été adressés par la direction. Vous devez les <strong>lire</strong> puis les <strong>signer électroniquement</strong> (accusé de réception et de lecture horodaté) pour accéder à votre compte.</p>
+    <div class="cgu-body" style="max-height:50vh">
+      ${docs.map((d) => `<div class="card" data-grow="${d.id}" style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.6rem">
+        <div style="min-width:0"><strong>${esc(d.label)}</strong><div class="help">Émis le ${fmtDate((d.createdAt || '').slice(0, 10))} · <span class="g-state">${(_docsOpened.has(d.id) || d.viewedAt) ? '✅ lu' : 'à lire'}</span></div></div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn ghost sm" data-gview="${d.id}">📄 Lire le document</button><button class="btn ok sm" data-gsign="${d.id}">✍️ Signer</button></div>
+      </div>`).join('')}
+    </div>
+    <p class="help">La signature électronique vaut reconnaissance d'avoir reçu et pris connaissance du document. Elle est horodatée et conservée à titre de preuve.</p>
+    <div class="cgu-actions"><button class="btn ghost" id="docs-logout">Se déconnecter</button></div>
+  </div></div>`;
+  document.getElementById('docs-logout').onclick = () => logout();
+  $app.querySelectorAll('[data-gview]').forEach((b) => b.onclick = () => {
+    const id = b.dataset.gview; _docsOpened.add(id);
+    api('POST', '/admin/erp/documents/' + id + '/seen').catch(() => {});
+    erpOpenHtml('GET', '/admin/erp/documents/' + id + '/view');
+    const row = b.closest('[data-grow]'); const st = row && row.querySelector('.g-state'); if (st) st.textContent = '✅ lu';
+  });
+  $app.querySelectorAll('[data-gsign]').forEach((b) => b.onclick = async () => {
+    const id = b.dataset.gsign;
+    const d = docs.find((x) => x.id === id);
+    if (!_docsOpened.has(id) && !(d && d.viewedAt)) { toast('Veuillez d\'abord lire le document (bouton « Lire le document »).', 'warn'); return; }
+    if (!confirm('Je certifie sur l\'honneur avoir reçu et pris connaissance de ce document. Confirmer la signature ?')) return;
+    try {
+      const r = await api('POST', '/admin/erp/documents/' + id + '/ack');
+      toast('Document signé le ' + (r.stamp || '') + '.', 'ok');
+      State.pendingDocs = (State.pendingDocs || []).filter((x) => x.id !== id);
+      if (State.pendingDocs.length) renderDocumentsGate(); else { await loadPendingDocs(); renderApp(); }
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
 function renderApp() {
   const u = State.user;
   // Pages de garde au premier accès : CGU puis règlement intérieur (version en vigueur).
   if (!u.cguAccepted) { renderCGU(); return; }
   if (!reglementUpToDate(u)) { renderReglementGate(); return; }
+  // Documents adressés non signés : lecture + signature obligatoires pour entrer.
+  if (State.pendingDocs && State.pendingDocs.length) { renderDocumentsGate(); return; }
   const sections = navSections();
   // Ouvre automatiquement le groupe contenant la vue active.
   const activeGroup = sections.find((s) => !s.solo && s.items.some((it) => it.id === State.view));
@@ -3553,13 +3602,17 @@ async function renderDocMgmt(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des documents</h1>
     <p>Générez vos courriers et contrats (publipostage) et exportez-les en PDF.</p></div></div>
     <div id="dm-body" class="empty">Chargement…</div>`;
-  let templates, meta;
-  try { templates = (await api('GET', '/admin/erp/templates')).templates; meta = await api('GET', '/admin/erp/meta'); }
+  let templates, meta, docOpts;
+  try { templates = (await api('GET', '/admin/erp/templates')).templates; meta = await api('GET', '/admin/erp/meta'); docOpts = await api('GET', '/admin/erp/doc-options'); }
   catch (e) { document.getElementById('dm-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const motifs = docOpts.motifs || [], faitsList = docOpts.faits || [];
   const cats = {};
   Object.entries(templates).forEach(([k, v]) => { (cats[v.category || 'Autres'] = cats[v.category || 'Autres'] || []).push([k, v.label]); });
   const optgroups = Object.keys(cats).map((c) => `<optgroup label="${esc(c)}">${cats[c].map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</optgroup>`).join('');
-  const userOpts = (meta.users || []).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('');
+  // Salariés rangés par groupe.
+  const byGroup = {}; (meta.users || []).forEach((u) => { const g = u.groupName || 'Sans groupe'; (byGroup[g] = byGroup[g] || []).push(u); });
+  const userOpts = Object.keys(byGroup).sort().map((g) => `<optgroup label="${esc(g)}">${byGroup[g].sort((a, b) => a.name.localeCompare(b.name)).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</optgroup>`).join('');
+  const customTpls = Object.entries(templates).filter(([, v]) => v.custom);
   const body = document.getElementById('dm-body'); body.className = '';
   body.innerHTML = `<div class="card"><h3>Générer un document</h3>
       <div class="grid2">
@@ -3567,8 +3620,17 @@ async function renderDocMgmt(main) {
         <div><label>Salarié concerné (si applicable)</label><select id="dm-user"><option value="">—</option>${userOpts}</select></div>
       </div>
       <div class="grid2">
-        <div><label>Motif / objet</label><input id="dm-motif" placeholder="ex. retards répétés / poste de conducteur"></div>
-        <div><label>Champ libre (faits, clause, rémunération…)</label><input id="dm-faits" placeholder="précisions à insérer"></div>
+        <div>
+          <label>Motif / objet</label>
+          <select id="dm-motif-sel"><option value="">— choisir un motif courant —</option>${motifs.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}<option value="__free__">✏️ Autre (saisie libre)…</option></select>
+          <div id="dm-motif-freewrap" style="display:none;margin-top:.4rem"><input id="dm-motif-free" placeholder="Saisissez le motif"><button class="btn ghost sm" id="dm-motif-save" style="margin-top:.3rem">💾 Ajouter à la liste</button></div>
+        </div>
+        <div>
+          <label>Champ libre (faits, clause, rémunération…)</label>
+          <select id="dm-faits-sel"><option value="">— insérer un texte type —</option>${faitsList.map((f, i) => `<option value="${i}">${esc(f.label)}</option>`).join('')}<option value="__free__">✏️ Écrire librement…</option></select>
+          <textarea id="dm-faits-text" style="min-height:90px;margin-top:.4rem" placeholder="Texte inséré dans le document (modifiable)."></textarea>
+          <button class="btn ghost sm" id="dm-faits-save">💾 Enregistrer ce texte comme modèle</button>
+        </div>
       </div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
         <button class="btn accent" id="dm-gen">Aperçu</button>
@@ -3578,16 +3640,47 @@ async function renderDocMgmt(main) {
       </div>
       <p class="help">Le brouillon est éditable avant export. La structure juridique (CCN Transports routiers IDCC 16) est automatique ; vous remplissez les champs.</p>
     </div>
+    <div class="card"><h3>Modèles de lettre</h3>
+      <p class="help">Enrichissez la base : créez un nouveau modèle ou importez le contenu d'une lettre type. Variables disponibles : <code>{{salarie.fullName}}</code>, <code>{{salarie.lastName}}</code>, <code>{{salarie.address}}</code>, <code>{{motif}}</code>, <code>{{faits}}</code>, <code>{{date}}</code>, <code>{{company.legal}}</code>, <code>{{company.address}}</code>.</p>
+      <button class="btn ghost sm" id="dm-newtpl">➕ Créer / importer un modèle</button>
+      ${customTpls.length ? `<div class="table-wrap" style="margin-top:.6rem"><table class="veh-table"><thead><tr><th>Modèle</th><th>Catégorie</th><th></th></tr></thead><tbody>${customTpls.map(([k, v]) => `<tr><td>${esc(v.label)}</td><td>${esc(v.category || '')}</td><td style="white-space:nowrap"><button class="btn ghost sm" data-tpledit="${k}">✎ Éditer</button> <button class="btn danger sm" data-tpldel="${k}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help" style="margin-top:.4rem">Aucun modèle personnalisé pour le moment.</p>'}
+    </div>
     <div id="dm-preview"></div>`;
+  const effMotif = () => { const s = body.querySelector('#dm-motif-sel'); return s.value === '__free__' ? body.querySelector('#dm-motif-free').value.trim() : s.value; };
   const collectVars = () => {
     const uid = body.querySelector('#dm-user').value; const u = (meta.users || []).find((x) => x.id === uid);
-    const motif = body.querySelector('#dm-motif').value, faits = body.querySelector('#dm-faits').value;
+    const motif = effMotif(), faits = body.querySelector('#dm-faits-text').value;
     return {
       motif, faits,
       salarie: u ? { fullName: u.name, lastName: (u.lastName || u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: u.address || '', birthDate: u.birthDate || '', hireDate: u.hireDate || '', poste: 'conducteur VL ≤ 3,5 T', coefficient: '110M' } : {},
       contrat: { type: 'CDI', lieu: 'Éterville (14930) et déplacements', horaires: '151,67 h/mois (35 h hebdomadaires)', remuneration: faits || 'selon grille — à compléter', motif, objet: motif, clause: faits, dateEffet: '', terme: '', lastDay: '', detail: faits },
     };
   };
+  // Motif : bascule saisie libre + enregistrement d'un nouveau motif.
+  const motifSel = body.querySelector('#dm-motif-sel');
+  motifSel.onchange = () => { body.querySelector('#dm-motif-freewrap').style.display = motifSel.value === '__free__' ? 'block' : 'none'; };
+  body.querySelector('#dm-motif-save').onclick = async () => {
+    const m = body.querySelector('#dm-motif-free').value.trim(); if (!m) { toast('Saisissez un motif.', 'err'); return; }
+    try { await api('POST', '/admin/erp/doc-options/motif', { motif: m }); toast('Motif ajouté à la liste.', 'ok'); renderDocMgmt(main); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  // Faits : insère le texte type choisi dans la zone éditable.
+  const faitsSel = body.querySelector('#dm-faits-sel'), faitsText = body.querySelector('#dm-faits-text');
+  faitsSel.onchange = () => { if (faitsSel.value === '__free__') { faitsText.value = ''; faitsText.focus(); } else if (faitsSel.value !== '') { const f = faitsList[+faitsSel.value]; if (f) faitsText.value = f.text; } };
+  body.querySelector('#dm-faits-save').onclick = async () => {
+    const text = faitsText.value.trim(); if (!text) { toast('La zone de texte est vide.', 'err'); return; }
+    const label = prompt('Nom de ce modèle de texte ?'); if (!label) return;
+    try { await api('POST', '/admin/erp/doc-options/fait', { label, text }); toast('Texte enregistré comme modèle.', 'ok'); renderDocMgmt(main); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  // Modèles de lettre : créer/importer, éditer, supprimer.
+  body.querySelector('#dm-newtpl').onclick = () => templateEditModal(main, null, null);
+  body.querySelectorAll('[data-tpledit]').forEach((b) => b.onclick = () => templateEditModal(main, b.dataset.tpledit, templates[b.dataset.tpledit]));
+  body.querySelectorAll('[data-tpldel]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Supprimer ce modèle personnalisé ?')) return;
+    try { await api('DELETE', '/admin/erp/templates/' + b.dataset.tpldel); toast('Modèle supprimé.', 'ok'); renderDocMgmt(main); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   const showSanctionBtn = () => { body.querySelector('#dm-sanction').style.display = body.querySelector('#dm-type').value === 'avertissement' ? 'inline-block' : 'none'; };
   body.querySelector('#dm-type').onchange = showSanctionBtn; showSanctionBtn();
   body.querySelector('#dm-gen').onclick = async () => {
@@ -3607,9 +3700,38 @@ async function renderDocMgmt(main) {
   };
   body.querySelector('#dm-sanction').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
-    try { await api('POST', '/admin/erp/documents/save-sanction', { userId: uid, type: 'Avertissement', motif: body.querySelector('#dm-motif').value }); toast('Avertissement enregistré au dossier du salarié.', 'ok'); }
+    try { await api('POST', '/admin/erp/documents/save-sanction', { userId: uid, type: 'Avertissement', motif: effMotif() }); toast('Avertissement enregistré au dossier du salarié.', 'ok'); }
     catch (e) { toast(e.message, 'err'); }
   };
+}
+
+// Création / édition / import d'un modèle de lettre.
+function templateEditModal(main, key, tpl) {
+  const isEdit = !!key;
+  modal({
+    title: isEdit ? 'Éditer le modèle' : 'Nouveau modèle de lettre',
+    bodyHTML: `
+      <label>Titre du modèle</label><input id="nt-label" value="${esc(tpl ? tpl.label : '')}" placeholder="ex. Mise à pied conservatoire">
+      <label>Catégorie</label><input id="nt-cat" value="${esc(tpl ? (tpl.category || '') : 'Personnalisés')}" placeholder="ex. Disciplinaire">
+      ${isEdit ? '' : '<label>Importer un fichier (.txt / .html)</label><input id="nt-file" type="file" accept=".txt,.html,.htm,text/plain,text/html">'}
+      <label>Contenu (HTML ou texte ; insérez les {{variables}})</label>
+      <textarea id="nt-body" style="min-height:200px;font-family:monospace;font-size:.78rem" placeholder="{{company.legal}}&#10;&#10;Objet : …&#10;&#10;{{salarie.civilite}} {{salarie.lastName}},&#10;&#10;{{faits}}&#10;&#10;La Direction">${esc(tpl ? tpl.body : '')}</textarea>
+      <p class="help">Pour renforcer la valeur du document, citez le fondement (contrat de travail, règlement intérieur, CCN Transports routiers IDCC 16) et conservez un ton factuel et daté.</p>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="nt-save">${isEdit ? 'Enregistrer' : 'Créer le modèle'}</button>`,
+    onMount: (ov) => {
+      const fileInp = ov.querySelector('#nt-file');
+      if (fileInp) fileInp.onchange = async (e) => { const f = e.target.files[0]; if (!f) return; ov.querySelector('#nt-body').value = await f.text(); if (!ov.querySelector('#nt-label').value) ov.querySelector('#nt-label').value = f.name.replace(/\.[^.]+$/, ''); };
+      ov.querySelector('#nt-save').onclick = async () => {
+        const label = ov.querySelector('#nt-label').value.trim(), category = ov.querySelector('#nt-cat').value.trim(), bodyTxt = ov.querySelector('#nt-body').value;
+        if (!label || !bodyTxt.trim()) { toast('Titre et contenu requis.', 'err'); return; }
+        try {
+          if (isEdit) await api('PUT', '/admin/erp/templates/' + key, { label, category, body: bodyTxt });
+          else await api('POST', '/admin/erp/templates', { label, category, body: bodyTxt });
+          closeModal(); toast(isEdit ? 'Modèle mis à jour.' : 'Modèle créé.', 'ok'); renderDocMgmt(main);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
 }
 
 // --- OCR (lecture de préfacturation scannée) ---------------------------------
@@ -5967,12 +6089,13 @@ async function adminDocSuivi(body) {
   body.innerHTML = `<div class="card">
     <h3>Suivi des documents adressés aux salariés</h3>
     <p class="help">Chaque document généré et adressé apparaît ici. Le salarié le retrouve à l'ouverture de l'application et certifie sur l'honneur l'avoir reçu et lu (signature électronique horodatée). L'attestation est alors disponible.</p>
-    ${docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Salarié</th><th>Émis le</th><th>Statut</th><th>Signé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr>
+    ${docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Salarié</th><th>Émis le</th><th>Statut</th><th>Lu le</th><th>Signé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr>
       <td>${esc(d.label)}</td><td>${esc(d.userName)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
-      <td>${d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : '<span class="pill warn">en attente d\'accusé</span>'}</td>
+      <td>${d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : (d.viewedAt || d.status === 'read') ? '<span class="pill warn">lu, non signé — à relancer</span>' : '<span class="pill danger">non ouvert</span>'}</td>
+      <td>${d.viewedAt ? fmtDateTime(d.viewedAt) : '—'}</td>
       <td>${d.ackedAt ? fmtDateTime(d.ackedAt) : '—'}</td>
       <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation PDF</button>` : ''}</td>
-    </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun document adressé pour le moment. Générez-en un depuis « Gestion documentaire ».</p>'}
+    </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun document adressé pour le moment. Générez-en un depuis « Gestion des documents ».</p>'}
   </div>`;
   body.querySelectorAll('[data-docview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.docview + '/view'));
   body.querySelectorAll('[data-att]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.att + '/attestation'));

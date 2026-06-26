@@ -128,9 +128,65 @@ function mount(app, deps) {
     const t = data.settings.erpTemplates[req.params.type];
     if (!t) return res.status(404).json({ error: 'modèle inconnu' });
     if (typeof req.body.body === 'string') t.body = req.body.body;
+    if (typeof req.body.label === 'string' && req.body.label.trim()) t.label = req.body.label.slice(0, 80);
+    if (typeof req.body.category === 'string' && req.body.category.trim()) t.category = req.body.category.slice(0, 40);
     audit.logAction(data, { ...actor(req), action: 'template.edit', entity: req.params.type });
     await save();
     res.json({ template: t });
+  }));
+  // Crée un nouveau modèle de lettre (envoyé par l'admin pour enrichir la base).
+  r.post('/templates', guard, withData(async (req, res, data) => {
+    const { label, category, body } = req.body || {};
+    if (!label || !body) return res.status(400).json({ error: 'Titre et contenu requis' });
+    const base = 'custom_' + String(label).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'custom';
+    let key = base, i = 2;
+    while (data.settings.erpTemplates[key]) key = base + '_' + (i++);
+    data.settings.erpTemplates[key] = { label: String(label).slice(0, 80), category: String(category || 'Personnalisés').slice(0, 40), body: String(body), custom: true };
+    audit.logAction(data, { ...actor(req), action: 'template.create', entity: key });
+    await save();
+    res.json({ key, template: data.settings.erpTemplates[key] });
+  }));
+  // Supprime un modèle personnalisé (les modèles par défaut sont protégés).
+  r.delete('/templates/:type', guard, withData(async (req, res, data) => {
+    const t = data.settings.erpTemplates[req.params.type];
+    if (!t) return res.status(404).json({ error: 'modèle inconnu' });
+    if (!t.custom) return res.status(400).json({ error: 'Modèle par défaut : non supprimable' });
+    delete data.settings.erpTemplates[req.params.type];
+    audit.logAction(data, { ...actor(req), action: 'template.delete', entity: req.params.type });
+    await save();
+    res.json({ ok: true });
+  }));
+  // Options de génération : motifs RH + « faits » types (listes éditables).
+  r.get('/doc-options', guard, withData(async (req, res, data) => {
+    res.json({ motifs: data.settings.docMotifs || [], faits: data.settings.docFaits || [] });
+  }));
+  r.post('/doc-options/motif', guard, withData(async (req, res, data) => {
+    const m = String((req.body || {}).motif || '').trim();
+    if (!m) return res.status(400).json({ error: 'Motif vide' });
+    data.settings.docMotifs = data.settings.docMotifs || [];
+    if (!data.settings.docMotifs.includes(m)) data.settings.docMotifs.push(m);
+    await save();
+    res.json({ motifs: data.settings.docMotifs });
+  }));
+  r.delete('/doc-options/motif', guard, withData(async (req, res, data) => {
+    const v = String(req.query.value || '');
+    data.settings.docMotifs = (data.settings.docMotifs || []).filter((x) => x !== v);
+    await save();
+    res.json({ motifs: data.settings.docMotifs });
+  }));
+  r.post('/doc-options/fait', guard, withData(async (req, res, data) => {
+    const { label, text } = req.body || {};
+    if (!label || !text) return res.status(400).json({ error: 'Libellé et texte requis' });
+    data.settings.docFaits = data.settings.docFaits || [];
+    data.settings.docFaits.push({ label: String(label).slice(0, 80), text: String(text).slice(0, 2000) });
+    await save();
+    res.json({ faits: data.settings.docFaits });
+  }));
+  r.delete('/doc-options/fait', guard, withData(async (req, res, data) => {
+    const v = String(req.query.value || '');
+    data.settings.docFaits = (data.settings.docFaits || []).filter((f) => f.label !== v);
+    await save();
+    res.json({ faits: data.settings.docFaits });
   }));
   // Génère un brouillon de document rempli (pas encore enregistré).
   r.post('/documents/render', guard, withData(async (req, res, data) => {
@@ -179,8 +235,9 @@ function mount(app, deps) {
 
   /* ---- Méta (formulaires : salariés détaillés, véhicules, contrats) --- */
   r.get('/meta', guard, withData(async (req, res, data) => {
+    const groupsById = Object.fromEntries((data.groups || []).map((g) => [g.id, g]));
     res.json({
-      users: (data.users || []).map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, name: `${u.firstName} ${u.lastName}`, hireDate: u.hireDate || '', address: u.address || '', birthDate: u.birthDate || '' })),
+      users: (data.users || []).map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, name: `${u.firstName} ${u.lastName}`, hireDate: u.hireDate || '', address: u.address || '', birthDate: u.birthDate || '', groupId: u.groupId || null, groupName: (groupsById[u.groupId] || {}).name || 'Sans groupe' })),
       vehicles: (data.vehicles || []).map((v) => ({ id: v.id, name: v.name, plate: v.plate })),
       contracts: (data.contracts || []).map((c) => ({ id: c.id, client: c.client || c.name || '', pricePerPoint: c.pricePerPoint })),
       tenderParams: data.settings.tenderParams || {},
@@ -408,7 +465,7 @@ function mount(app, deps) {
       id: erp.eid('doc'), userId, userName: `${u.firstName} ${u.lastName}`,
       type: type || 'document', label: label || (tpl && tpl.label) || 'Document', html: inner,
       createdAt: new Date().toISOString(), createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`,
-      status: 'sent', ackedAt: null, ackBy: null, ackName: null, ackRef: null,
+      status: 'sent', viewedAt: null, ackedAt: null, ackBy: null, ackName: null, ackRef: null,
     };
     data.erp.documents.push(doc);
     audit.logAction(data, { ...actor(req), action: 'document.issue', entity: doc.label, detail: doc.userName });
@@ -417,19 +474,30 @@ function mount(app, deps) {
   }));
   // Admin : suivi de tous les documents adressés (lu/reçu).
   r.get('/documents', guard, withData(async (req, res, data) => {
-    res.json({ documents: data.erp.documents.slice().reverse().map((d) => ({ id: d.id, userId: d.userId, userName: d.userName, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, ackedAt: d.ackedAt, ackName: d.ackName })) });
+    res.json({ documents: data.erp.documents.slice().reverse().map((d) => ({ id: d.id, userId: d.userId, userName: d.userName, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt, ackName: d.ackName })) });
   }));
   // Salarié : ses propres documents (authRequired seul).
   r.get('/my-documents', authRequired, withData(async (req, res, data) => {
     const mine = data.erp.documents.filter((d) => d.userId === req.user.id).slice().reverse()
-      .map((d) => ({ id: d.id, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, ackedAt: d.ackedAt }));
+      .map((d) => ({ id: d.id, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt }));
     res.json({ documents: mine });
+  }));
+  // Marque un document comme « ouvert/lu » par son destinataire (sans le signer).
+  r.post('/documents/:id/seen', authRequired, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc || doc.userId !== req.user.id) return res.status(404).json({ error: 'Document introuvable' });
+    if (!doc.viewedAt) { doc.viewedAt = new Date().toISOString(); if (doc.status === 'sent') doc.status = 'read'; await save(); }
+    res.json({ ok: true, viewedAt: doc.viewedAt });
   }));
   // Document imprimable (le salarié destinataire ou l'admin).
   r.get('/documents/:id/view', authRequired, withData(async (req, res, data) => {
     const doc = data.erp.documents.find((d) => d.id === req.params.id);
     if (!doc) return res.status(404).send('Document introuvable');
     if (req.user.role !== 'admin' && doc.userId !== req.user.id) return res.status(403).send('Accès refusé');
+    // Le destinataire qui ouvre son document : on horodate la première lecture.
+    if (doc.userId === req.user.id && req.user.role !== 'admin' && !doc.viewedAt) {
+      doc.viewedAt = new Date().toISOString(); if (doc.status === 'sent') doc.status = 'read'; await save();
+    }
     res.type('html').send(printableDoc(doc.label, doc.html));
   }));
   // Salarié : accuse réception / signe électroniquement sa lecture.
