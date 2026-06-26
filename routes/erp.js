@@ -482,6 +482,16 @@ function mount(app, deps) {
       .map((d) => ({ id: d.id, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt }));
     res.json({ documents: mine });
   }));
+  // Admin : annule / supprime l'envoi d'un document (et la signature associée).
+  r.delete('/documents/:id', guard, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Document introuvable' });
+    data.erp.documents = data.erp.documents.filter((d) => d.id !== req.params.id);
+    if (doc.ackRef) data.erp.acknowledgements = data.erp.acknowledgements.filter((a) => a.id !== doc.ackRef);
+    audit.logAction(data, { ...actor(req), action: 'document.cancel', entity: doc.label, detail: doc.userName });
+    await save();
+    res.json({ ok: true });
+  }));
   // Marque un document comme « ouvert/lu » par son destinataire (sans le signer).
   r.post('/documents/:id/seen', authRequired, withData(async (req, res, data) => {
     const doc = data.erp.documents.find((d) => d.id === req.params.id);

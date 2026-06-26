@@ -78,16 +78,47 @@ function ancienneteText(hireDate) {
   if (!p) return '—';
   return `${p.years} an${p.years>1?'s':''}, ${p.months} mois, ${p.days} j`;
 }
-// Message de remerciement proportionnel à l'ancienneté.
+// Sélection d'une phrase qui change chaque jour (index = jour calendaire).
+// L'offset évite que toutes les cartes tombent sur le même indice le même jour.
+function dailyPick(arr, offset) { return arr[(Math.floor(Date.now() / 86400000) + (offset || 0)) % arr.length]; }
+
+// Message de remerciement proportionnel à l'ancienneté (change tous les jours).
 function anciennetePhilo(hireDate) {
   const p = ancienneteParts(hireDate);
   if (!p) return '';
   const y = p.years;
-  if (y < 1) return "Bienvenue dans l'aventure ! Vos premiers pas comptent déjà pour toute l'équipe. 🌱";
-  if (y < 3) return `${y} an${y>1?'s':''} déjà : votre engagement prend racine. Merci pour votre implication ! 🌿`;
-  if (y < 5) return `${y} ans de fidélité : votre expérience est précieuse pour le collectif. Merci de votre constance. 🌳`;
-  if (y < 10) return `${y} ans parmi nous : un pilier de la maison. Votre dévouement force le respect. Merci infiniment. 🏅`;
-  return `${y} ans de loyauté : une véritable mémoire vivante de l'entreprise. Du fond du cœur, merci pour tout. 🎖️`;
+  const s = y > 1 ? 's' : '';
+  if (y < 1) return dailyPick([
+    "Bienvenue dans l'aventure ! Vos premiers pas comptent déjà pour toute l'équipe. 🌱",
+    "Nouvelle recrue, nouvelle énergie : ravis de vous compter parmi nous. Bon vent ! 🚀",
+    "Chaque grande carrière commence par un premier jour. Le vôtre est déjà prometteur. 🌱",
+    "Bienvenue ! Votre motivation des débuts est une vraie richesse pour le collectif. ✨",
+    "Les premiers mois forgent les meilleurs souvenirs. Heureux de débuter cette route avec vous. 🛣️",
+  ], 1);
+  if (y < 3) return dailyPick([
+    `${y} an${s} déjà : votre engagement prend racine. Merci pour votre implication ! 🌿`,
+    `${y} an${s} parmi nous et déjà un repère pour l'équipe. Continuez ainsi ! 🌿`,
+    `Deux saisons et plus à vos côtés : votre fiabilité se confirme jour après jour. Merci ! 🍃`,
+    `${y} an${s} de présence : vous connaissez désormais nos rouages sur le bout des doigts. Bravo ! 👏`,
+  ], 1);
+  if (y < 5) return dailyPick([
+    `${y} ans de fidélité : votre expérience est précieuse pour le collectif. Merci de votre constance. 🌳`,
+    `${y} ans déjà : vous êtes une valeur sûre sur qui l'on peut compter. Reconnaissance sincère. 🌳`,
+    `${y} années de sérieux et de régularité : un bel exemple pour toute l'équipe. Merci ! 🙏`,
+    `${y} ans à nos côtés : votre savoir-faire fait gagner tout le monde. Chapeau ! 🎩`,
+  ], 1);
+  if (y < 10) return dailyPick([
+    `${y} ans parmi nous : un pilier de la maison. Votre dévouement force le respect. Merci infiniment. 🏅`,
+    `${y} ans de loyauté : votre expérience est un repère pour les plus jeunes. Merci pour tout. 🏅`,
+    `Près d'une décennie ensemble : votre engagement est une fierté pour l'entreprise. Bravo et merci ! 🥇`,
+    `${y} ans de fidélité sans faille : vous incarnez les valeurs de la maison. Profonde gratitude. 🙌`,
+  ], 1);
+  return dailyPick([
+    `${y} ans de loyauté : une véritable mémoire vivante de l'entreprise. Du fond du cœur, merci pour tout. 🎖️`,
+    `${y} ans à nos côtés : votre constance est exceptionnelle. Toute la direction vous est reconnaissante. 🎖️`,
+    `Plus de dix ans d'engagement : un parcours remarquable qui inspire le respect. Merci infiniment. 🏆`,
+    `${y} années de fidélité : vous faites partie de l'histoire de la maison. Merci pour cette belle aventure. 💛`,
+  ], 1);
 }
 // Nombre de retards (RET validés) d'un utilisateur depuis N jours.
 function retardCountSince(requests, sinceDays) {
@@ -97,7 +128,7 @@ function retardCountSince(requests, sinceDays) {
 
 // Message philosophique selon le nombre de retards sur l'année (motivation).
 function philoMessageHTML(retardYear) {
-  const pick = (arr) => arr[Math.floor(Date.now() / 86400000) % arr.length];
+  const pick = (arr) => dailyPick(arr, 0);
   let bg, emoji, msg;
   if (retardYear === 0) {
     bg = 'var(--ok)'; emoji = '🌟';
@@ -105,6 +136,10 @@ function philoMessageHTML(retardYear) {
       "« La ponctualité est la politesse des rois. » Merci pour votre dévouement et votre régularité exemplaire.",
       "Toujours à l'heure : votre fiabilité est un pilier de l'équipe. Merci pour votre engagement sans faille.",
       "« Le succès, c'est se lever une fois de plus qu'on est tombé. » Votre constance fait la force du collectif. Bravo !",
+      "Zéro retard cette année : un sans-faute remarquable. Votre sérieux fait honneur à toute l'équipe. 👏",
+      "« Le temps, c'est du respect. » Et vous le respectez chaque matin. Merci pour cet exemple.",
+      "Votre ponctualité est une certitude pour vos collègues. Un grand merci pour cette fiabilité.",
+      "« Bien commencer la journée, c'est déjà la moitié du travail. » Vous le prouvez tous les jours. 🌅",
     ]);
   } else if (retardYear <= 3) {
     bg = '#eab308'; emoji = '⏳';
@@ -112,6 +147,9 @@ function philoMessageHTML(retardYear) {
       "« Mieux vaut prévenir que guérir. » Quelques retards seulement : un petit effort et vous visez le sans-faute !",
       "Chaque minute compte pour l'équipe. Vous êtes sur la bonne voie, gardez le cap !",
       "« Le temps perdu ne se rattrape jamais. » Anticipez vos trajets, vous y êtes presque.",
+      "Presque irréprochable ! Un dernier coup de collier sur les départs et c'est le sans-faute. 💪",
+      "« Qui se lève tôt n'a rien à craindre. » Encore un effort, le zéro retard est à portée de main.",
+      "Vous tenez le bon rythme. Un réveil cinq minutes plus tôt et l'objectif est atteint !",
     ]);
   } else if (retardYear <= 5) {
     bg = '#f97316'; emoji = '⚠️';
@@ -119,6 +157,9 @@ function philoMessageHTML(retardYear) {
       "« La discipline est le pont entre les objectifs et les réalisations. » Quelques retards de trop : reprenons de bonnes habitudes ensemble.",
       "Votre équipe compte sur vous chaque matin. Un effort sur la ponctualité ferait une vraie différence.",
       "« Qui veut voyager loin ménage sa monture… et part à l'heure. » Anticipons davantage les départs.",
+      "Il est temps de reprendre le contrôle de vos horaires. Vous avez les capacités, fixons-nous l'objectif zéro retard.",
+      "« Les petites habitudes font les grandes réussites. » Changeons une habitude le matin, le reste suivra.",
+      "Un trajet préparé la veille, c'est une matinée sereine. Essayons cette semaine !",
     ]);
   } else {
     bg = 'var(--danger)'; emoji = '🚨';
@@ -126,6 +167,9 @@ function philoMessageHTML(retardYear) {
       "« On ne récolte que ce que l'on sème. » Le nombre de retards devient préoccupant : un vrai changement d'habitude est nécessaire.",
       "La ponctualité est une marque de respect envers vos collègues. Reprenons ensemble le contrôle de vos horaires.",
       "« Demain est aujourd'hui ce qu'aujourd'hui était hier. » Agissons dès maintenant pour inverser la tendance.",
+      "Trop de retards cette année. Parlons-en ensemble : il existe sûrement des solutions concrètes pour repartir du bon pied.",
+      "« Le premier pas est toujours le plus difficile. » Faisons-le dès demain matin, ensemble.",
+      "Vos collègues commencent leur tournée sans vous : chaque retard pèse sur l'équipe. Reprenons la maîtrise du temps.",
     ]);
   }
   return `<div class="card" style="border-left:5px solid ${bg}"><h3 style="margin:0">${emoji} Ponctualité</h3><p style="margin:.4rem 0 0">${msg}</p>${retardYear>0?`<p class="help" style="margin:.3rem 0 0">${retardYear} retard(s) enregistré(s) sur l'année.</p>`:''}</div>`;
@@ -386,6 +430,7 @@ function navSections() {
   ] });
   groups.push({ id: 'space', icon: '👤', title: 'Mon espace', items: [
     { id: 'mydata', icon: '👤', label: 'Mon profil' },
+    { id: 'mydocs', icon: '📁', label: 'Mes documents' },
     { id: 'team', icon: '👥', label: 'Mon équipe' },
     { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
   ] });
@@ -626,6 +671,7 @@ function renderView() {
   if (v === 'dashboard') return renderDashboard(main);
   if (v === 'calendar') return renderCalendar(main);
   if (v === 'mydata') return renderMyData(main);
+  if (v === 'mydocs') return renderMyDocs(main);
   if (v === 'requests') return renderRequests(main);
   if (v === 'team') return renderTeam(main);
   if (v === 'organigramme') return renderOrganigramme(main);
@@ -1818,6 +1864,39 @@ function suiviHighlight(approved, codes) {
     const c = State.catByCode[code]; if (!c) return '';
     return `<div class="stat"><div class="value" style="font-size:1.3rem">${days[code]||0} <span class="unit">j</span> / ${hours[code]||0} <span class="unit">h</span></div><div class="label">${esc(c.label)}</div></div>`;
   }).join('');
+}
+
+// Espace personnel : documents reçus de la plateforme (avertissements, contrats…).
+async function renderMyDocs(main) {
+  main.innerHTML = `<div class="page-head"><div><h1>Mes documents</h1>
+    <p>Retrouvez et conservez les documents qui vous ont été adressés par la direction.</p></div></div>
+    <div id="myd-body" class="empty">Chargement…</div>`;
+  let docs;
+  try { docs = (await api('GET', '/admin/erp/my-documents')).documents; } catch (e) { document.getElementById('myd-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const body = document.getElementById('myd-body'); body.className = '';
+  const pending = docs.filter((d) => d.status !== 'acked');
+  if (!docs.length) { body.innerHTML = `<div class="alert info">Aucun document pour le moment. Les documents que la direction vous adresse (avertissements, contrats, attestations…) apparaîtront ici et y resteront archivés.</div>`; return; }
+  body.innerHTML = `
+    ${pending.length ? `<div class="alert warn">Vous avez <strong>${pending.length} document(s) à signer</strong>. La signature vaut accusé de réception et de lecture (horodatée).</div>` : ''}
+    <div class="card"><h3>Documents reçus (${docs.length})</h3>
+      <p class="help">Vos documents sont conservés ici. Pour ceux que vous avez signés, l'attestation de prise de connaissance est téléchargeable.</p>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Reçu le</th><th>Statut</th><th></th></tr></thead>
+        <tbody>${docs.map((d) => `<tr>
+          <td><strong>${esc(d.label)}</strong></td>
+          <td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
+          <td>${d.status === 'acked' ? `<span class="pill ok">signé le ${fmtDateTime(d.ackedAt)}</span>` : (d.viewedAt ? '<span class="pill warn">lu, à signer</span>' : '<span class="pill danger">à lire et signer</span>')}</td>
+          <td style="white-space:nowrap"><button class="btn ghost sm" data-mdview="${d.id}">📄 Consulter</button>${d.status === 'acked' ? ` <button class="btn ghost sm" data-mdatt="${d.id}">Attestation</button>` : ` <button class="btn ok sm" data-mdack="${d.id}">✍️ Signer</button>`}</td>
+        </tr>`).join('')}</tbody></table></div>
+    </div>`;
+  body.querySelectorAll('[data-mdview]').forEach((b) => b.onclick = () => { _docsOpened.add(b.dataset.mdview); api('POST', '/admin/erp/documents/' + b.dataset.mdview + '/seen').catch(() => {}); erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mdview + '/view'); });
+  body.querySelectorAll('[data-mdatt]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mdatt + '/attestation'));
+  body.querySelectorAll('[data-mdack]').forEach((b) => b.onclick = async () => {
+    const id = b.dataset.mdack; const d = docs.find((x) => x.id === id);
+    if (!_docsOpened.has(id) && !(d && d.viewedAt)) { toast('Veuillez d\'abord consulter le document.', 'warn'); return; }
+    if (!confirm('Je certifie sur l\'honneur avoir reçu et pris connaissance de ce document. Confirmer la signature ?')) return;
+    try { const r = await api('POST', '/admin/erp/documents/' + id + '/ack'); toast('Document signé le ' + (r.stamp || '') + '.', 'ok'); await loadPendingDocs(); renderMyDocs(main); }
+    catch (e) { toast(e.message, 'err'); }
+  });
 }
 
 async function renderMyData(main) {
@@ -3597,11 +3676,49 @@ async function erpOpenHtml(method, path, body) {
 }
 
 // --- Gestion documentaire (génération + PDF des courriers/contrats) ----------
+let _docMgmtTab = 'gen';
 async function renderDocMgmt(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des documents</h1>
-    <p>Générez vos courriers et contrats (publipostage) et exportez-les en PDF.</p></div></div>
+    <p>Générez vos courriers et contrats (publipostage), exportez-les en PDF et suivez les envois.</p></div></div>
+    <div class="view-switch" id="dm-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-dtab="gen">Générer un document</button>
+      <button data-dtab="sent">Documents envoyés</button>
+    </div>
     <div id="dm-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#dm-tabs');
+  const setActive = () => tabs.querySelectorAll('[data-dtab]').forEach((b) => b.classList.toggle('active', b.dataset.dtab === _docMgmtTab));
+  tabs.querySelectorAll('[data-dtab]').forEach((b) => b.onclick = () => { _docMgmtTab = b.dataset.dtab; setActive(); _docMgmtTab === 'sent' ? docMgmtSent(main) : docMgmtGen(main); });
+  setActive();
+  _docMgmtTab === 'sent' ? docMgmtSent(main) : docMgmtGen(main);
+}
+
+// Onglet « Documents envoyés » : suivi + annulation/suppression d'un envoi.
+async function docMgmtSent(main) {
+  const body = document.getElementById('dm-body'); if (!body) return; body.className = '';
+  let docs;
+  try { docs = (await api('GET', '/admin/erp/documents')).documents; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  body.innerHTML = `<div class="card"><h3>Documents adressés aux salariés</h3>
+    <p class="help">Suivez l'état de chaque document. Vous pouvez <strong>annuler / supprimer un envoi</strong> (le document et la signature éventuelle sont retirés).</p>
+    ${docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Salarié</th><th>Émis le</th><th>Statut</th><th>Lu le</th><th>Signé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr>
+      <td>${esc(d.label)}</td><td>${esc(d.userName)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
+      <td>${d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : (d.viewedAt || d.status === 'read') ? '<span class="pill warn">lu, non signé</span>' : '<span class="pill danger">non ouvert</span>'}</td>
+      <td>${d.viewedAt ? fmtDateTime(d.viewedAt) : '—'}</td><td>${d.ackedAt ? fmtDateTime(d.ackedAt) : '—'}</td>
+      <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation</button>` : ''} <button class="btn danger sm" data-doccancel="${d.id}" data-lbl="${esc(d.label)}">✕ Annuler l'envoi</button></td>
+    </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun document envoyé pour le moment.</p>'}
+  </div>`;
+  body.querySelectorAll('[data-docview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.docview + '/view'));
+  body.querySelectorAll('[data-att]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.att + '/attestation'));
+  body.querySelectorAll('[data-doccancel]').forEach((b) => b.onclick = async () => {
+    if (!confirm(`Annuler et supprimer l'envoi de « ${b.dataset.lbl} » ? Cette action est irréversible.`)) return;
+    try { await api('DELETE', '/admin/erp/documents/' + b.dataset.doccancel); toast('Envoi annulé.', 'ok'); docMgmtSent(main); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Onglet « Générer un document » (publipostage + modèles).
+async function docMgmtGen(main) {
+  const dmBody = document.getElementById('dm-body'); if (dmBody) dmBody.className = 'empty';
   let templates, meta, docOpts;
   try { templates = (await api('GET', '/admin/erp/templates')).templates; meta = await api('GET', '/admin/erp/meta'); docOpts = await api('GET', '/admin/erp/doc-options'); }
   catch (e) { document.getElementById('dm-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
