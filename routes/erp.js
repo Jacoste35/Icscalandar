@@ -130,6 +130,7 @@ function mount(app, deps) {
     if (typeof req.body.body === 'string') t.body = req.body.body;
     if (typeof req.body.label === 'string' && req.body.label.trim()) t.label = req.body.label.slice(0, 80);
     if (typeof req.body.category === 'string' && req.body.category.trim()) t.category = req.body.category.slice(0, 40);
+    t.edited = true; // protège l'édition manuelle des futurs rafraîchissements par défaut
     audit.logAction(data, { ...actor(req), action: 'template.edit', entity: req.params.type });
     await save();
     res.json({ template: t });
