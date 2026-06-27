@@ -21,6 +21,7 @@ const cashflow = require('../lib/erp/cashflow');
 const closing = require('../lib/erp/closing');
 const ik = require('../lib/erp/ik');
 const docsign = require('../lib/erp/docsign');
+const discipline = require('../lib/erp/discipline');
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -189,6 +190,37 @@ function mount(app, deps) {
     await save();
     res.json({ faits: data.settings.docFaits });
   }));
+  // Contexte disciplinaire d'un salarié, pour la génération d'un avertissement :
+  //  - dates des retards VALIDÉS par un administrateur (statut « approved ») ;
+  //  - compteur d'avertissements déjà au dossier ;
+  //  - proposition de mise à pied proportionnelle à la gravité du motif.
+  r.get('/documents/disciplinary-context', guard, withData(async (req, res, data) => {
+    const userId = req.query.userId;
+    const motif = String(req.query.motif || '');
+    const u = (data.users || []).find((x) => x.id === userId);
+    // Retards validés (RET, approuvés) — dates triées chronologiquement.
+    const retardDates = (data.requests || [])
+      .filter((rq) => rq.userId === userId && rq.category === 'RET' && rq.status === 'approved' && rq.startDate)
+      .map((rq) => rq.startDate)
+      .sort();
+    // Compteur d'avertissements déjà notifiés (sanctions de type « Avertissement »).
+    const sanctions = (data.sanctions || []).filter((s) => s.userId === userId);
+    const warnings = sanctions.filter((s) => /avertissement/i.test(s.type || ''));
+    const miseAPied = motif ? discipline.computeMiseAPied({ warningCount: warnings.length, motif }) : null;
+    res.json({
+      userId,
+      userName: u ? `${u.firstName} ${u.lastName}` : '',
+      retardDates,
+      retardCount: retardDates.length,
+      warningCount: warnings.length,
+      sanctionCount: sanctions.length,
+      sanctions: sanctions
+        .map((s) => ({ type: s.type, date: s.date, motif: s.motif }))
+        .sort((a, b) => (b.date || '').localeCompare(a.date || '')),
+      miseAPied,
+    });
+  }));
+
   // Génère un brouillon de document rempli (pas encore enregistré).
   r.post('/documents/render', guard, withData(async (req, res, data) => {
     const { type, vars } = req.body || {};
