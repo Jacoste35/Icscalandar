@@ -201,54 +201,120 @@
     bodyEl.appendChild(tbl);
   }
 
-  function renderDocuments(t, comp) {
+  // Dates 'YYYY-MM-DD' -> 'JJ/MM/AAAA' ; liste à la française (« a, b et c »).
+  const frDate = (d) => { const p = String(d || '').split('-'); return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : d; };
+  const frList = (arr) => !arr.length ? '' : arr.length === 1 ? arr[0] : arr.slice(0, -1).join(', ') + ' et ' + arr[arr.length - 1];
+
+  // Gestion des documents — limitée, pour le moment, à l'avertissement
+  // disciplinaire (tous motifs). Les autres modèles sont masqués.
+  async function renderDocuments(t, comp) {
     bodyEl.innerHTML = '';
-    bodyEl.appendChild(E('h3', 'erp', 'Générer un document (publipostage)'));
-    const types = Object.entries(t.templates);
+    bodyEl.appendChild(E('h3', 'erp', 'Avertissement disciplinaire'));
     const users = (comp.users || []);
+    let motifs = [], faitsLib = [];
+    try { const o = await api('GET', '/doc-options'); motifs = o.motifs || []; faitsLib = o.faits || []; } catch (e) {}
+
     const form = E('div');
     form.innerHTML = `
       <div class="erp-row">
-        <select id="dc-type">${types.map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select>
-        <select id="dc-user"><option value="">— salarié (si concerné) —</option>${users.map((u) => `<option value="${u.id}">${u.name}</option>`).join('')}</select>
+        <select id="dc-user"><option value="">— salarié concerné —</option>${users.map((u) => `<option value="${u.id}">${u.name}</option>`).join('')}</select>
+        <select id="dc-motif"><option value="">— motif de l'avertissement —</option>${motifs.map((m) => `<option value="${m}">${m}</option>`).join('')}</select>
       </div>
-      <div class="erp-row"><input id="dc-motif" placeholder="Motif / objet" style="min-width:260px"></div>
-      <div class="erp-row"><textarea id="dc-faits" placeholder="Faits précis (dates, détails) — ou tout texte libre"></textarea></div>
+      <div id="dc-context"></div>
+      <div class="erp-row"><textarea id="dc-faits" placeholder="Faits précis (dates, détails). Pré-rempli selon le motif ; les retards validés y sont injectés automatiquement."></textarea></div>
       <div class="erp-row">
         <button class="erp-btn" id="dc-gen">Générer le brouillon</button>
         <button class="erp-btn ghost" id="dc-save" style="display:none">Valider &amp; enregistrer (sanction)</button>
       </div>`;
     bodyEl.appendChild(form);
+    const ctxBox = form.querySelector('#dc-context');
     const preview = E('div', 'erp-card'); preview.style.display = 'none'; preview.style.background = '#fff'; preview.style.color = '#1e293b';
     bodyEl.appendChild(preview);
 
-    let lastType = '', lastUserId = '', lastMotif = '';
+    let lastCtx = null;
+    const userSel = form.querySelector('#dc-user');
+    const motifSel = form.querySelector('#dc-motif');
+    const faitsArea = form.querySelector('#dc-faits');
+
+    // Recharge le contexte disciplinaire (compteur, retards, proposition de
+    // mise à pied) et pré-remplit les « faits » à partir du motif sélectionné.
+    async function refreshContext() {
+      ctxBox.innerHTML = '';
+      const userId = userSel.value, motif = motifSel.value;
+      if (!userId) { lastCtx = null; return; }
+      let ctx;
+      try { ctx = await api('GET', '/documents/disciplinary-context?userId=' + encodeURIComponent(userId) + '&motif=' + encodeURIComponent(motif)); }
+      catch (e) { return; }
+      lastCtx = ctx;
+
+      // Pré-remplissage des faits selon le motif.
+      if (motif) {
+        const fait = faitsLib.find((f) => f.label === motif)
+          || faitsLib.find((f) => motif.toLowerCase().indexOf(f.label.toLowerCase()) !== -1);
+        let text = fait ? fait.text : '';
+        if (/retard/i.test(motif)) {
+          const datesFr = (ctx.retardDates || []).map(frDate);
+          const joined = datesFr.length ? frList(datesFr) : '[dates]';
+          const base = text || "Nous avons constaté, à plusieurs reprises, votre arrivée tardive sur votre lieu de prise de service, notamment les [dates], malgré nos rappels. Ces retards désorganisent la préparation et le départ des tournées et pénalisent l'ensemble de l'équipe.";
+          text = base.replace(/\[\s*dates?\s*\]/gi, joined);
+        }
+        if (text) faitsArea.value = text;
+      }
+
+      // Encart : compteur d'avertissements + proposition de mise à pied.
+      const m = ctx.miseAPied;
+      const level = m && m.proposed ? (m.gravite >= 4 ? 'critique' : 'urgent') : 'info';
+      let inner = `<strong>${ctx.userName || 'Salarié'}</strong> — Avertissements au dossier : <strong>${ctx.warningCount}</strong>`
+        + (ctx.sanctionCount > ctx.warningCount ? ` · sanctions totales : ${ctx.sanctionCount}` : '') + '.<br>';
+      if (/retard/i.test(motif)) {
+        const dz = ctx.retardDates || [];
+        inner += `Retards validés par un administrateur : <strong>${dz.length}</strong>`
+          + (dz.length ? ' — ' + dz.map(frDate).join(', ') : ' (aucun retard validé pour ce salarié)') + '.<br>';
+      }
+      if (m) {
+        inner += `Gravité du motif : <strong>${m.graviteLabel}</strong> · seuil de mise à pied : ${m.seuil} avertissement(s).<br>`;
+        inner += m.proposed
+          ? `<strong>Proposition : ${m.type}${m.jours ? ' — ' + m.jours + ' jour(s)' : ''}.</strong> ${m.justification}`
+          : m.justification;
+      }
+      const el = E('div', 'erp-alert ' + level, `<span class="badge">${m && m.proposed ? 'mise à pied' : 'dossier'}</span><div>${inner}</div>`);
+      ctxBox.appendChild(el);
+    }
+    userSel.onchange = refreshContext;
+    motifSel.onchange = refreshContext;
+
     form.querySelector('#dc-gen').onclick = async () => {
-      const type = form.querySelector('#dc-type').value;
-      const userId = form.querySelector('#dc-user').value;
-      const motif = form.querySelector('#dc-motif').value;
-      const faits = form.querySelector('#dc-faits').value;
+      const userId = userSel.value;
+      const motif = motifSel.value;
+      const faits = faitsArea.value;
+      if (!userId) return alert('Sélectionnez le salarié concerné.');
+      if (!motif) return alert('Sélectionnez le motif de l\'avertissement.');
       const u = users.find((x) => x.id === userId);
+      const m = lastCtx && lastCtx.miseAPied;
       const vars = {
         motif, faits,
         salarie: u ? { fullName: u.name, lastName: (u.lastName || u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: u.address || '', birthDate: u.birthDate || '', hireDate: u.hireDate || '', poste: 'conducteur VL ≤ 3,5 T', coefficient: '110M' } : {},
         contrat: { type: 'CDI', lieu: 'Éterville (14930) et déplacements', horaires: '151,67 h/mois (35 h hebdomadaires)', remuneration: 'selon grille — à compléter', periodeEssai: '1 mois', motif: motif, terme: '', objet: motif, clause: faits, dateEffet: '', lastDay: '', detail: '' },
+        miseAPied: m ? { proposed: m.proposed, type: m.type, jours: m.jours, graviteLabel: m.graviteLabel, warningCount: m.warningCount } : null,
       };
       try {
-        const { html } = await api('POST', '/documents/render', { type, vars });
+        const { html } = await api('POST', '/documents/render', { type: 'avertissement', vars });
         preview.innerHTML = `<div contenteditable="true" style="outline:none">${html}</div>`;
         preview.style.display = 'block';
-        lastType = type; lastUserId = userId; lastMotif = motif;
         const printBtn = E('button', 'erp-btn ghost', 'Imprimer / PDF'); printBtn.style.marginTop = '10px';
         printBtn.onclick = () => { const w = window.open('', '_blank'); w.document.write(preview.firstChild.innerHTML); w.document.close(); w.print(); };
         preview.appendChild(printBtn);
-        form.querySelector('#dc-save').style.display = (type === 'avertissement') ? 'inline-block' : 'none';
+        form.querySelector('#dc-save').style.display = 'inline-block';
       } catch (e) { alert('Erreur : ' + e.message); }
     };
     form.querySelector('#dc-save').onclick = async () => {
-      if (!lastUserId) return alert('Sélectionnez un salarié.');
-      try { await api('POST', '/documents/save-sanction', { userId: lastUserId, type: 'Avertissement', motif: lastMotif }); alert('Avertissement enregistré dans le dossier du salarié.'); }
-      catch (e) { alert('Erreur : ' + e.message); }
+      const userId = userSel.value, motif = motifSel.value;
+      if (!userId) return alert('Sélectionnez un salarié.');
+      try {
+        await api('POST', '/documents/save-sanction', { userId, type: 'Avertissement', motif });
+        alert('Avertissement enregistré dans le dossier du salarié.');
+        await refreshContext(); // met à jour le compteur immédiatement
+      } catch (e) { alert('Erreur : ' + e.message); }
     };
   }
 
