@@ -13,6 +13,8 @@ const db = require('./lib/db');
 const { getData, save, nextId, enableAccrual } = db;
 const holidays = require('./lib/holidays');
 const mail = require('./lib/mail');
+const pajgps = require('./lib/erp/pajgps');
+const { ensureErp } = require('./lib/erp');
 
 const ROLES = ['admin', 'responsable', 'employee'];
 
@@ -2986,6 +2988,91 @@ app.get('/api/staff/vehicle-km', authRequired, staffRequired, (req, res) => {
   const db = getData();
   res.json({ log: db.vehicleKmLog.slice(), vehicles: db.vehicles.map((v) => ({ id: v.id, name: v.name, plate: v.plate, km: v.km, baseKm: v.baseKm })) });
 });
+
+/* =========================================================================
+   GÉOLOCALISATION PAJ GPS
+   - Configuration (identifiants chiffrés) : administrateur uniquement.
+   - Vue temps réel (positions, vitesses, excès, arrêts) : encadrement.
+   ========================================================================= */
+
+// Configuration courante (sans jamais exposer le mot de passe).
+app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
+  const data = getData(); ensureErp(data);
+  const g = data.settings.pajgps;
+  res.json({
+    config: {
+      enabled: !!g.enabled,
+      email: g.email || '',
+      hasPassword: !!g.passwordEnc,
+      configured: !!(g.email && g.passwordEnc),
+      speedLimit: g.speedLimit || 115,
+      dayStart: g.dayStart || '05:00',
+      dayEnd: g.dayEnd || '18:00',
+      deviceMap: g.deviceMap || {},
+    },
+    isAdmin: req.user.role === 'admin',
+    vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
+  });
+});
+
+// Enregistre / met à jour la configuration (admin). Le mot de passe est chiffré.
+app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, res) => {
+  const data = getData(); ensureErp(data);
+  const g = data.settings.pajgps;
+  const b = req.body || {};
+  if (typeof b.email === 'string') g.email = b.email.trim();
+  if (typeof b.password === 'string' && b.password) g.passwordEnc = pajgps.encrypt(b.password);
+  if (b.clearPassword === true) g.passwordEnc = '';
+  if (typeof b.enabled === 'boolean') g.enabled = b.enabled;
+  if (b.speedLimit != null && Number.isFinite(Number(b.speedLimit))) g.speedLimit = Math.max(1, Math.round(Number(b.speedLimit)));
+  if (/^\d{1,2}:\d{2}$/.test(b.dayStart || '')) g.dayStart = b.dayStart;
+  if (/^\d{1,2}:\d{2}$/.test(b.dayEnd || '')) g.dayEnd = b.dayEnd;
+  if (b.deviceMap && typeof b.deviceMap === 'object') {
+    const clean = {};
+    for (const k of Object.keys(b.deviceMap)) { const v = b.deviceMap[k]; if (v) clean[String(k)] = String(v); }
+    g.deviceMap = clean;
+  }
+  pajgps.resetToken();
+  await save();
+  res.json({ ok: true, configured: !!(g.email && g.passwordEnc), enabled: !!g.enabled });
+});
+
+// Teste la connexion PAJ (identifiants stockés ou fournis) et renvoie les traceurs.
+app.post('/api/admin/geoloc/test', authRequired, adminRequired, async (req, res) => {
+  const data = getData(); ensureErp(data);
+  const g = data.settings.pajgps;
+  const b = req.body || {};
+  const email = (b.email && b.email.trim()) || g.email;
+  const password = (b.password && b.password) || pajgps.decrypt(g.passwordEnc);
+  if (!email || !password) return res.status(400).json({ error: 'Identifiants manquants.' });
+  try {
+    const devices = await pajgps.testConnection(email, password);
+    res.json({ ok: true, devices });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// Vue temps réel : positions, statut de mouvement, excès de vitesse du jour.
+app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) => {
+  const data = getData(); ensureErp(data);
+  const g = data.settings.pajgps;
+  if (!g.enabled || !g.email || !g.passwordEnc) {
+    return res.json({ positions: [], configured: !!(g.email && g.passwordEnc), enabled: !!g.enabled, error: g.enabled ? 'Identifiants PAJ manquants.' : 'Géolocalisation non activée.', config: pubCfg(g) });
+  }
+  try {
+    const r = await pajgps.refreshAndTrack(data, { force: req.query.force === '1' });
+    if (req.query.address !== '0') {
+      try { await pajgps.attachAddresses(data, r.list); } catch (e) { /* géocodage best-effort */ }
+    }
+    if (r.polled) { try { await save(); } catch (e) { /* persistance best-effort */ } }
+    res.json({ positions: r.list, day: data.pajState.day, error: r.error || '', enabled: true, configured: true, config: pubCfg(g) });
+  } catch (e) {
+    res.status(502).json({ error: e.message, positions: pajgps.liveList(data), config: pubCfg(g) });
+  }
+});
+
+function pubCfg(g) { return { speedLimit: g.speedLimit || 115, dayStart: g.dayStart || '05:00', dayEnd: g.dayEnd || '18:00' }; }
 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, getData, save });

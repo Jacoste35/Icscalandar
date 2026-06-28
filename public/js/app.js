@@ -444,6 +444,7 @@ function navSections() {
   // Exploitation & Transport
   const exp = [];
   if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
+  if (admin || staff) exp.push({ id: 'geoloc', icon: '🛰️', label: 'Géolocalisation' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
   if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
   if (admin) exp.push({ id: 'stocks', icon: '📦', label: 'Gestion des Stocks' });
@@ -690,6 +691,7 @@ function renderView() {
   if (v === 'contracts') return renderContracts(main);
   if (v === 'hours') return renderHours(main);
   if (v === 'tours') return renderTours(main);
+  if (v === 'geoloc') return renderGeoloc(main);
 }
 
 /* =========================================================================
@@ -769,11 +771,12 @@ async function renderDashboard(main) {
     const philo = isPresident ? '' : philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Panneaux véhicules + discipline (encadrement).
-    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '';
+    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '', geolocPanel = '';
     if (staff) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
+      try { if (typeof geolocDashboardHTML === 'function') geolocPanel = geolocDashboardHTML(await api('GET', '/staff/geoloc/live')); } catch (e) {}
     }
     let kmAnomalyPanel = '';
     if (isAdmin) {
@@ -820,6 +823,7 @@ async function renderDashboard(main) {
       </div>`}
       ${philo}
       ${myDocsPanel}
+      ${geolocPanel}
       ${messagesPanel}
       ${kmAnomalyPanel}
       ${stockAlertPanel}
@@ -852,6 +856,8 @@ async function renderDashboard(main) {
 
 // Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
 function bindDashboardActions(scope) {
+  // Liens de navigation insérés dans les panneaux d'accueil (ex. carte géoloc).
+  scope.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   // Mes documents : consulter, accuser réception (signature), attestation.
   scope.querySelectorAll('[data-mydocview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mydocview + '/view'));
   scope.querySelectorAll('[data-mydocatt]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mydocatt + '/attestation'));
