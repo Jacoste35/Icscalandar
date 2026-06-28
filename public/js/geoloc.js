@@ -150,7 +150,7 @@ function geolocCostHTML(positions) {
     return `<div class="geo-cost-row">
       <div class="geo-cost-head"><strong>${esc(geoVehLabel(p))}</strong>${c.closed ? ' <span class="geo-count">immobilisé</span>' : ' <span class="geo-count alt">en cours</span>'}<span class="geo-cost-total">${euroFmt(c.total)}</span></div>
       <div class="geo-cost-bar">${geoCostBar(c)}</div>
-      <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h · ${c.km} km · ${litFmt(c.liters)} — Salarié <strong>${euroFmt(c.salarie)}</strong> · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong></div>
+      <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h · ${c.km} km · ${litFmt(c.liters)} — Salarié <strong>${euroFmt(c.salarie)}</strong> · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong>${c.vehiculeFixe ? ` <span class="help">(dont leasing+assurance ${euroFmt(c.vehiculeFixe)})</span>` : ''}</div>
     </div>`;
   }).join('');
   return `<h3 style="margin-top:1rem">💶 Coût d'utilisation du jour</h3>
@@ -393,6 +393,9 @@ async function toggleGeoConfig(main) {
     <div class="grid cols-2">
       <label>Coût véhicule (€/km, hors carburant)<input id="gc-vkm" type="number" step="0.01" value="${c.vehicleCostPerKm != null ? c.vehicleCostPerKm : 0.25}" title="Entretien, pneus, usure, dépréciation"></label>
       <label>Charges patronales (%)<input id="gc-charges" type="number" step="1" value="${c.chargesPatrPct != null ? c.chargesPatrPct : 42}"></label>
+      <label>Mensualité véhicule (€ HT/mois)<input id="gc-lease" type="number" step="1" value="${c.vehicleMonthlyLease != null ? c.vehicleMonthlyLease : 1000}" title="Leasing / crédit Sprinter"></label>
+      <label>Assurance (€/mois)<input id="gc-insur" type="number" step="1" value="${c.vehicleMonthlyInsurance != null ? c.vehicleMonthlyInsurance : 220}"></label>
+      <label>Jours travaillés / mois (prorata)<input id="gc-fdays" type="number" step="1" value="${c.vehicleFixedDays != null ? c.vehicleFixedDays : 22}"></label>
     </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
       <button class="btn ghost" id="gc-test">🔌 Tester la connexion</button>
@@ -420,6 +423,9 @@ async function toggleGeoConfig(main) {
     consoUrban: Number(panel.querySelector('#gc-curb').value) || 12.5,
     vehicleCostPerKm: Number(panel.querySelector('#gc-vkm').value) || 0,
     chargesPatrPct: Number(panel.querySelector('#gc-charges').value) || 0,
+    vehicleMonthlyLease: Number(panel.querySelector('#gc-lease').value) || 0,
+    vehicleMonthlyInsurance: Number(panel.querySelector('#gc-insur').value) || 0,
+    vehicleFixedDays: Number(panel.querySelector('#gc-fdays').value) || 22,
     deviceMap,
   });
 
