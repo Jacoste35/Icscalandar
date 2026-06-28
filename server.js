@@ -3066,7 +3066,7 @@ app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) 
       try { await pajgps.attachAddresses(data, r.list); } catch (e) { /* géocodage best-effort */ }
     }
     if (r.polled) { try { await save(); } catch (e) { /* persistance best-effort */ } }
-    res.json({ positions: r.list, day: data.pajState.day, error: r.error || '', enabled: true, configured: true, config: pubCfg(g) });
+    res.json({ positions: r.list, day: data.pajState.day, error: r.error || '', enabled: true, configured: true, config: pubCfg(g), speedRecap: pajgps.weeklySpeedRecap(data) });
   } catch (e) {
     res.status(502).json({ error: e.message, positions: pajgps.liveList(data), config: pubCfg(g) });
   }
