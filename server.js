@@ -3016,10 +3016,16 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       chargesPatrPct: g.chargesPatrPct != null ? g.chargesPatrPct : 42,
       vehicleMonthlyLease: g.vehicleMonthlyLease != null ? g.vehicleMonthlyLease : 1000,
       vehicleMonthlyInsurance: g.vehicleMonthlyInsurance != null ? g.vehicleMonthlyInsurance : 220,
-      vehicleFixedDays: g.vehicleFixedDays != null ? g.vehicleFixedDays : 22,
+      vehicleFixedDays: g.vehicleFixedDays != null ? g.vehicleFixedDays : 21.5,
+      priseDePoste: g.priseDePoste || '', priseDePosteByUser: g.priseDePosteByUser || {},
     },
     isAdmin: req.user.role === 'admin',
     vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
+    // Chauffeurs affectés aux véhicules (pour définir leur heure de prise de poste).
+    drivers: Object.values((data.vehicles || []).reduce((acc, v) => {
+      if (v.assignedUserId) acc[v.assignedUserId] = { id: v.assignedUserId, name: v.assignedUserName || '—' };
+      return acc;
+    }, {})),
   });
 });
 
@@ -3046,7 +3052,13 @@ app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, re
   if (b.chargesPatrPct != null && Number.isFinite(Number(b.chargesPatrPct))) g.chargesPatrPct = Math.max(0, Number(b.chargesPatrPct));
   if (b.vehicleMonthlyLease != null && Number.isFinite(Number(b.vehicleMonthlyLease))) g.vehicleMonthlyLease = Math.max(0, Number(b.vehicleMonthlyLease));
   if (b.vehicleMonthlyInsurance != null && Number.isFinite(Number(b.vehicleMonthlyInsurance))) g.vehicleMonthlyInsurance = Math.max(0, Number(b.vehicleMonthlyInsurance));
-  if (b.vehicleFixedDays != null && Number.isFinite(Number(b.vehicleFixedDays))) g.vehicleFixedDays = Math.max(1, Math.round(Number(b.vehicleFixedDays)));
+  if (b.vehicleFixedDays != null && Number.isFinite(Number(b.vehicleFixedDays))) g.vehicleFixedDays = Math.max(1, Math.round(Number(b.vehicleFixedDays) * 2) / 2);
+  if (typeof b.priseDePoste === 'string') g.priseDePoste = /^\d{1,2}:\d{2}$/.test(b.priseDePoste) ? b.priseDePoste : '';
+  if (b.priseDePosteByUser && typeof b.priseDePosteByUser === 'object') {
+    const clean = {};
+    for (const k of Object.keys(b.priseDePosteByUser)) { const t = b.priseDePosteByUser[k]; if (/^\d{1,2}:\d{2}$/.test(t || '')) clean[String(k)] = t; }
+    g.priseDePosteByUser = clean;
+  }
   if (b.deviceMap && typeof b.deviceMap === 'object') {
     const clean = {};
     for (const k of Object.keys(b.deviceMap)) { const v = b.deviceMap[k]; if (v) clean[String(k)] = String(v); }
