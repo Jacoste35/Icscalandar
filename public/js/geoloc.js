@@ -41,6 +41,12 @@ function gTime(iso) {
   try { return new Date(iso).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' }); }
   catch (e) { return '—'; }
 }
+function gDate(iso) { try { return new Date(iso).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }); } catch (e) { return ''; } }
+function gIsToday(iso) { try { return gDate(iso) === gDate(Date.now()); } catch (e) { return false; } }
+// « depuis » : heure seule si aujourd'hui, sinon date + heure.
+function gStopSince(iso) { if (!iso) return '—'; return gIsToday(iso) ? gTime(iso) : `le ${gDate(iso)} à ${gTime(iso)}`; }
+// Date + heure complètes (pour le pied de tableau dépôt).
+function gDateTime(iso) { return iso ? `le ${gDate(iso)} à ${gTime(iso)}` : '—'; }
 // Véhicule stationné au dépôt -> « Disponible au dépôt ».
 // Priorité au rayon GPS (atDepot calculé côté serveur), repli sur l'adresse.
 function geoIsDepot(p) {
@@ -73,6 +79,8 @@ function geoStatusChips(active, depot) {
   let html = chip('green', counts.green) + chip('yellow', counts.yellow) + chip('orange', counts.orange) + chip('grey', counts.grey);
   if (!active || !active.length) html = '<span class="geo-chip">aucun en activité</span>';
   if (depot && depot.length) html += `<span class="geo-chip" style="background:#2563eb1a;color:#2563eb">🏠 ${depot.length} au dépôt</span>`;
+  const lateN = (active || []).filter((p) => p.late).length;
+  if (lateN) html += `<span class="geo-chip" style="background:#fee2e2;color:#b91c1c">⏰ ${lateN} en retard prise de poste</span>`;
   return html;
 }
 
@@ -84,9 +92,11 @@ function geolocLiveTableHTML(positions) {
     ? '<div class="geo-cards">' + active.map(geoVehCardHTML).join('') + '</div>'
     : '<p class="help">Aucun véhicule en activité — tous au dépôt.</p>';
   if (depot.length) {
+    const foot = depot.map((p) => `<li><strong>${esc(geoVehLabel(p))}</strong> — arrêté ${gDateTime(p.finalStopAt)}</li>`).join('');
     html += `<details class="geo-drop" id="geodrop-depot">
       <summary>🏠 Véhicules au dépôt <span class="geo-count">${depot.length}</span></summary>
       <div class="geo-cards" style="margin-top:.5rem">${depot.map(geoVehCardHTML).join('')}</div>
+      <div class="geo-depot-foot"><strong>Cessation de mouvement</strong><ul>${foot}</ul></div>
     </details>`;
   }
   return html;
@@ -100,10 +110,13 @@ function geoVehCardHTML(p) {
     : (p.address || (p.lat != null ? `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : 'Position inconnue'));
   const maps = (p.lat != null && !depot) ? `<a class="geo-maps" href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Voir ↗</a>` : '';
   const meta = [];
-  if (p.moving) meta.push('en route');
-  else if (!depot && p.finalStopAt) meta.push(`arrêté depuis ${gTime(p.finalStopAt)}`);
+  if (p.activeSince) meta.push(`actif depuis ${gTime(p.activeSince)}`);
+  if (p.moving) meta.push('en tournée');
+  else if (depot) meta.push(`immobilisé depuis ${gStopSince(p.finalStopAt)}`);
+  else if (p.finalStopAt) meta.push(`arrêté depuis ${gStopSince(p.finalStopAt)}`);
   if (p.battery != null) meta.push(`🔋 ${Math.round(p.battery)}%`);
   meta.push(`maj ${gTime(p.ts)}`);
+  const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
   return `<div class="geo-card geo-${st}">
     <div class="geo-card-top">
       <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(geoVehLabel(p))}</span>
@@ -112,6 +125,7 @@ function geoVehCardHTML(p) {
     ${p.plate && p.vehicleName ? `<div class="geo-sub">${esc(p.plate)}</div>` : ''}
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
+    ${lateHtml}
     ${geoStatsHTML(p.stats)}
   </div>`;
 }
@@ -395,8 +409,16 @@ async function toggleGeoConfig(main) {
       <label>Charges patronales (%)<input id="gc-charges" type="number" step="1" value="${c.chargesPatrPct != null ? c.chargesPatrPct : 42}"></label>
       <label>Mensualité véhicule (€ HT/mois)<input id="gc-lease" type="number" step="1" value="${c.vehicleMonthlyLease != null ? c.vehicleMonthlyLease : 1000}" title="Leasing / crédit Sprinter"></label>
       <label>Assurance (€/mois)<input id="gc-insur" type="number" step="1" value="${c.vehicleMonthlyInsurance != null ? c.vehicleMonthlyInsurance : 220}"></label>
-      <label>Jours travaillés / mois (prorata)<input id="gc-fdays" type="number" step="1" value="${c.vehicleFixedDays != null ? c.vehicleFixedDays : 22}"></label>
+      <label>Jours travaillés / mois (prorata)<input id="gc-fdays" type="number" step="0.5" value="${c.vehicleFixedDays != null ? c.vehicleFixedDays : 21.5}"></label>
     </div>
+    <h3 style="margin:.8rem 0 .2rem">🕒 Prise de poste (retard chauffeur)</h3>
+    <p class="help">Heure d'embauche prévue. Si le véhicule démarre après, le retard du chauffeur est signalé sur l'accueil et dans le résumé.</p>
+    <div class="grid cols-2">
+      <label>Heure par défaut (tous)<input id="gc-prise" type="time" value="${esc(c.priseDePoste || '')}"></label>
+    </div>
+    ${(cfg.drivers && cfg.drivers.length)
+      ? `<p class="help" style="margin:.5rem 0 .2rem">Par chauffeur (laisser vide = heure par défaut) :</p><div class="grid cols-2">${cfg.drivers.map((dr) => `<label>${esc(dr.name)}<input type="time" data-prise="${dr.id}" value="${esc((c.priseDePosteByUser && c.priseDePosteByUser[dr.id]) || '')}"></label>`).join('')}</div>`
+      : '<p class="help">Associez les chauffeurs aux véhicules (Gestion des véhicules) pour définir une heure par chauffeur.</p>'}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
       <button class="btn ghost" id="gc-test">🔌 Tester la connexion</button>
       <button class="btn" id="gc-save">💾 Enregistrer</button>
@@ -425,7 +447,9 @@ async function toggleGeoConfig(main) {
     chargesPatrPct: Number(panel.querySelector('#gc-charges').value) || 0,
     vehicleMonthlyLease: Number(panel.querySelector('#gc-lease').value) || 0,
     vehicleMonthlyInsurance: Number(panel.querySelector('#gc-insur').value) || 0,
-    vehicleFixedDays: Number(panel.querySelector('#gc-fdays').value) || 22,
+    vehicleFixedDays: Number(panel.querySelector('#gc-fdays').value) || 21.5,
+    priseDePoste: panel.querySelector('#gc-prise').value || '',
+    priseDePosteByUser: (() => { const m = {}; panel.querySelectorAll('[data-prise]').forEach((i) => { if (i.value) m[i.dataset.prise] = i.value; }); return m; })(),
     deviceMap,
   });
 
