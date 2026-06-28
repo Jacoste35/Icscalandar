@@ -3011,6 +3011,9 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       deviceMap: g.deviceMap || {},
       depotLat: g.depotLat, depotLng: g.depotLng, depotRadius: g.depotRadius || 300,
       fuelPrice: g.fuelPrice || 1.75, roadSpeedLookup: g.roadSpeedLookup !== false,
+      consoRoad90: g.consoRoad90 || 9.5, consoUrban: g.consoUrban || 12.5,
+      vehicleCostPerKm: g.vehicleCostPerKm != null ? g.vehicleCostPerKm : 0.25,
+      chargesPatrPct: g.chargesPatrPct != null ? g.chargesPatrPct : 42,
     },
     isAdmin: req.user.role === 'admin',
     vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
@@ -3034,6 +3037,10 @@ app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, re
   if (b.depotRadius != null && Number.isFinite(Number(b.depotRadius))) g.depotRadius = Math.max(20, Math.round(Number(b.depotRadius)));
   if (b.fuelPrice != null && Number.isFinite(Number(b.fuelPrice))) g.fuelPrice = Math.max(0, Number(b.fuelPrice));
   if (typeof b.roadSpeedLookup === 'boolean') g.roadSpeedLookup = b.roadSpeedLookup;
+  if (b.consoRoad90 != null && Number.isFinite(Number(b.consoRoad90))) g.consoRoad90 = Math.max(1, Number(b.consoRoad90));
+  if (b.consoUrban != null && Number.isFinite(Number(b.consoUrban))) g.consoUrban = Math.max(1, Number(b.consoUrban));
+  if (b.vehicleCostPerKm != null && Number.isFinite(Number(b.vehicleCostPerKm))) g.vehicleCostPerKm = Math.max(0, Number(b.vehicleCostPerKm));
+  if (b.chargesPatrPct != null && Number.isFinite(Number(b.chargesPatrPct))) g.chargesPatrPct = Math.max(0, Number(b.chargesPatrPct));
   if (b.deviceMap && typeof b.deviceMap === 'object') {
     const clean = {};
     for (const k of Object.keys(b.deviceMap)) { const v = b.deviceMap[k]; if (v) clean[String(k)] = String(v); }

@@ -861,3 +861,13 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .dash-acc[open] > summary { border-radius: 12px 12px 0 0; border-bottom: none; }
 .dash-acc > .card { margin: 0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: none; }
 .dash-acc > summary:hover { background: #f8fafc; }
+
+/* Géolocalisation — coût d'utilisation par pôle */
+.geo-cost-legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .8rem; margin: .3rem 0; }
+.geo-cost-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: .3rem; vertical-align: -1px; }
+.geo-cost-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: #eef2f7; margin: .15rem 0; }
+.geo-cost-bar.geo-cost-grand { height: 18px; border-radius: 9px; margin-bottom: .6rem; }
+.geo-cost-seg { display: block; height: 100%; }
+.geo-cost-row { padding: .5rem 0; border-bottom: 1px solid var(--border); }
+.geo-cost-head { display: flex; align-items: center; gap: .5rem; }
+.geo-cost-total { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }

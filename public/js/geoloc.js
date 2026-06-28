@@ -119,6 +119,32 @@ function geoStatsHTML(s) {
   return `<div class="geo-stats"><span class="geo-km help">${km}</span>${conso}</div>`;
 }
 
+// Coût d'utilisation du jour par véhicule, décomposé par pôle de dépense.
+const GEO_POLES = [['salarie', 'Salarié', '#2563eb'], ['carburant', 'Carburant', '#ea580c'], ['vehicule', 'Véhicule', '#64748b']];
+function geoCostBar(c) {
+  return GEO_POLES.map(([k, lbl, col]) => c[k] > 0 && c.total > 0
+    ? `<span class="geo-cost-seg" style="width:${(c[k] / c.total * 100).toFixed(1)}%;background:${col}" title="${lbl} : ${euroFmt(c[k])}"></span>` : '').join('');
+}
+function geolocCostHTML(positions) {
+  const items = (positions || []).filter((p) => p.cost && p.cost.total > 0).sort((a, b) => b.cost.total - a.cost.total);
+  if (!items.length) return '';
+  const grand = { salarie: 0, carburant: 0, vehicule: 0, total: 0 };
+  items.forEach((p) => { GEO_POLES.forEach(([k]) => grand[k] += p.cost[k]); grand.total += p.cost.total; });
+  const rows = items.map((p) => {
+    const c = p.cost;
+    return `<div class="geo-cost-row">
+      <div class="geo-cost-head"><strong>${esc(geoVehLabel(p))}</strong>${c.closed ? ' <span class="geo-count">immobilisé</span>' : ' <span class="geo-count alt">en cours</span>'}<span class="geo-cost-total">${euroFmt(c.total)}</span></div>
+      <div class="geo-cost-bar">${geoCostBar(c)}</div>
+      <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h · ${c.km} km · ${litFmt(c.liters)} — Salarié <strong>${euroFmt(c.salarie)}</strong> · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong></div>
+    </div>`;
+  }).join('');
+  return `<h3 style="margin-top:1rem">💶 Coût d'utilisation du jour</h3>
+    <p class="help">Total flotte aujourd'hui : <strong>${euroFmt(grand.total)}</strong> — cumul jusqu'au retour au dépôt ou 18h.</p>
+    <div class="geo-cost-legend">${GEO_POLES.map(([k, lbl, col]) => `<span><i style="background:${col}"></i>${lbl} ${euroFmt(grand[k])}</span>`).join('')}</div>
+    <div class="geo-cost-bar geo-cost-grand">${geoCostBar(grand)}</div>
+    ${rows}`;
+}
+
 // Excès de vitesse DU JOUR — uniquement les véhicules concernés ; rien sinon.
 // Affiche le comparatif vitesse relevée / vitesse autorisée.
 function geolocSpeedTableHTML(positions, cfg) {
@@ -185,6 +211,7 @@ function geolocDashboardHTML(d) {
       <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
       ${err}
       ${geolocLiveTableHTML(d.positions || [])}
+      ${geolocCostHTML(d.positions || [])}
       ${geolocSpeedTableHTML(d.positions || [], d.config)}
       ${geolocWeeklyRecapHTML(d.speedRecap, d.config)}
     </details>
@@ -268,6 +295,7 @@ async function loadGeoloc(force) {
     const upd = (d.positions || []).reduce((mx, p) => (p.ts && p.ts > mx ? p.ts : mx), '');
     listEl.innerHTML = `<p class="help">Dernière mise à jour : ${gTime(upd) || '—'} ${d.day ? '· ' + d.day : ''}</p>`
       + geolocLiveTableHTML(d.positions || [])
+      + geolocCostHTML(d.positions || [])
       + geolocSpeedTableHTML(d.positions || [], d.config)
       + geolocWeeklyRecapHTML(d.speedRecap, d.config);
   } catch (e) {
@@ -342,6 +370,14 @@ async function toggleGeoConfig(main) {
     <div class="grid cols-2">
       <label>Prix du gazole (€/L)<input id="gc-fuel" type="number" step="0.01" value="${c.fuelPrice || 1.75}"></label>
       <label>Limites de route (OpenStreetMap)<select id="gc-road"><option value="1" ${c.roadSpeedLookup ? 'selected' : ''}>Activées</option><option value="0" ${!c.roadSpeedLookup ? 'selected' : ''}>Désactivées</option></select></label>
+      <label>Conso à 90 km/h (L/100)<input id="gc-c90" type="number" step="0.1" value="${c.consoRoad90 || 9.5}" title="Sprinter 314 CDI ≈ 9,5"></label>
+      <label>Conso en ville (L/100)<input id="gc-curb" type="number" step="0.1" value="${c.consoUrban || 12.5}"></label>
+    </div>
+    <h3 style="margin:.8rem 0 .2rem">💶 Coût d'utilisation</h3>
+    <p class="help">Décompose le coût journalier par pôle : salarié (chauffeur affecté × taux horaire de la gestion des heures + charges), carburant et véhicule.</p>
+    <div class="grid cols-2">
+      <label>Coût véhicule (€/km, hors carburant)<input id="gc-vkm" type="number" step="0.01" value="${c.vehicleCostPerKm != null ? c.vehicleCostPerKm : 0.25}" title="Entretien, pneus, usure, dépréciation"></label>
+      <label>Charges patronales (%)<input id="gc-charges" type="number" step="1" value="${c.chargesPatrPct != null ? c.chargesPatrPct : 42}"></label>
     </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
       <button class="btn ghost" id="gc-test">🔌 Tester la connexion</button>
@@ -365,6 +401,10 @@ async function toggleGeoConfig(main) {
     depotRadius: Number(panel.querySelector('#gc-drad').value) || 300,
     fuelPrice: Number(panel.querySelector('#gc-fuel').value) || 1.75,
     roadSpeedLookup: panel.querySelector('#gc-road').value === '1',
+    consoRoad90: Number(panel.querySelector('#gc-c90').value) || 9.5,
+    consoUrban: Number(panel.querySelector('#gc-curb').value) || 12.5,
+    vehicleCostPerKm: Number(panel.querySelector('#gc-vkm').value) || 0,
+    chargesPatrPct: Number(panel.querySelector('#gc-charges').value) || 0,
     deviceMap,
   });
 
