@@ -1,13 +1,14 @@
 /* Service worker — coquille hors-ligne + accélération du chargement.
    Règle d'or : on ne met JAMAIS en cache les réponses /api (authentifiées,
    changeantes) ni les requêtes non-GET. Le réseau reste la source de vérité. */
-const VERSION = 'ics-v1';
+const VERSION = 'ics-v2';
 const CORE = [
   '/',
   '/index.html',
   '/css/styles.css',
   '/js/app.js',
   '/js/reglement.js',
+  '/js/geoloc.js',
   '/img/logo.png',
   '/img/logo.svg',
   '/img/icon-192.png',
