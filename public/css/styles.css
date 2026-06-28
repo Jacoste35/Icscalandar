@@ -831,3 +831,14 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 @media (max-width: 600px) {
   .geo-cards { grid-template-columns: 1fr; }
 }
+
+/* Géolocalisation — menus déroulants (accueil) */
+.geo-drop { border: 1px solid var(--border); border-radius: 10px; padding: .2rem .6rem; margin-top: .5rem; background: #fff; }
+.geo-drop > summary { cursor: pointer; font-weight: 700; padding: .55rem .2rem; list-style: none; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.geo-drop > summary::-webkit-details-marker { display: none; }
+.geo-drop > summary::before { content: '▸'; color: var(--muted); transition: transform .15s; }
+.geo-drop[open] > summary::before { transform: rotate(90deg); }
+.geo-drop-main { border-color: var(--brand); }
+.geo-count { font-size: .74rem; font-weight: 700; background: #eef2ff; color: var(--brand); border-radius: 999px; padding: .1rem .5rem; }
+.geo-count.alt { background: #eff6ff; color: #2563eb; }
+.geo-drop > summary + * { margin-top: .3rem; }
