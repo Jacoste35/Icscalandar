@@ -776,7 +776,8 @@ async function renderDashboard(main) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
-      try { if (typeof geolocDashboardHTML === 'function') geolocPanel = geolocDashboardHTML(await api('GET', '/staff/geoloc/live')); } catch (e) {}
+      // Panneau géoloc auto-actualisé (rempli/rafraîchi par geolocStartDashboard).
+      if (typeof geolocStartDashboard === 'function') geolocPanel = '<div id="dash-geoloc"></div>';
     }
     let kmAnomalyPanel = '';
     if (isAdmin) {
@@ -858,6 +859,8 @@ async function renderDashboard(main) {
 function bindDashboardActions(scope) {
   // Liens de navigation insérés dans les panneaux d'accueil (ex. carte géoloc).
   scope.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  // Démarre le panneau géoloc auto-actualisé (encadrement).
+  if (typeof geolocStartDashboard === 'function' && scope.querySelector('#dash-geoloc')) geolocStartDashboard();
   // Mes documents : consulter, accuser réception (signature), attestation.
   scope.querySelectorAll('[data-mydocview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mydocview + '/view'));
   scope.querySelectorAll('[data-mydocatt]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.mydocatt + '/attestation'));

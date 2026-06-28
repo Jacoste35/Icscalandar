@@ -51,10 +51,30 @@ function geoIsDepot(p) {
 }
 function geoEffectiveStatus(p) { return p.lat == null ? 'grey' : (geoIsDepot(p) ? 'depot' : p.status); }
 
-// Liste responsive des véhicules (cartes).
+const euroFmt = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+const litFmt = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' L';
+
+// Sépare les véhicules en activité de ceux au dépôt.
+function geolocSplit(positions) {
+  const depot = [], active = [];
+  (positions || []).forEach((p) => (geoIsDepot(p) ? depot : active).push(p));
+  return { depot, active };
+}
+
+// Liste responsive : véhicules en activité + dépôt regroupé dans un menu déroulant.
 function geolocLiveTableHTML(positions) {
-  if (!positions.length) return '<p class="help">Aucun véhicule géolocalisé pour le moment.</p>';
-  return '<div class="geo-cards">' + positions.map(geoVehCardHTML).join('') + '</div>';
+  if (!positions || !positions.length) return '<p class="help">Aucun véhicule géolocalisé pour le moment.</p>';
+  const { depot, active } = geolocSplit(positions);
+  let html = active.length
+    ? '<div class="geo-cards">' + active.map(geoVehCardHTML).join('') + '</div>'
+    : '<p class="help">Aucun véhicule en activité — tous au dépôt.</p>';
+  if (depot.length) {
+    html += `<details class="geo-drop" id="geodrop-depot">
+      <summary>🏠 Véhicules au dépôt <span class="geo-count">${depot.length}</span></summary>
+      <div class="geo-cards" style="margin-top:.5rem">${depot.map(geoVehCardHTML).join('')}</div>
+    </details>`;
+  }
+  return html;
 }
 function geoVehCardHTML(p) {
   const st = geoEffectiveStatus(p);
@@ -81,6 +101,7 @@ function geoVehCardHTML(p) {
 }
 
 // Excès de vitesse DU JOUR — uniquement les véhicules concernés ; rien sinon.
+// Affiche le comparatif vitesse relevée / vitesse autorisée.
 function geolocSpeedTableHTML(positions, cfg) {
   cfg = cfg || {};
   const limit = cfg.speedLimit || 115;
@@ -91,55 +112,83 @@ function geolocSpeedTableHTML(positions, cfg) {
   if (!ranked.length) return '';
   const total = ranked.reduce((s, r) => s + r.count, 0);
   const rows = ranked.map((r, i) => {
-    const detail = r.times.length ? r.times.map((t) => `${gTime(t.at)} (${t.speed})`).join(', ') : '—';
+    const detail = r.times.length
+      ? r.times.map((t) => `${gTime(t.at)} : <strong>${t.speed}</strong>${t.limit ? ` / ${t.limit}${t.road ? ' (route)' : ''}` : ''}`).join(' · ')
+      : '—';
     return `<tr><td>${i + 1}</td><td><strong>${esc(r.label)}</strong></td>
       <td style="text-align:center;font-weight:700;color:#ea580c">${r.count}</td>
-      <td><span class="help">${esc(detail)}</span></td></tr>`;
+      <td><span class="help">relevée / autorisée — ${detail}</span></td></tr>`;
   }).join('');
   return `<h3 style="margin-top:1rem">🚨 Excès de vitesse du jour</h3>
-    <p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')}, seuil &gt; ${limit} km/h — total : <strong>${total}</strong>.</p>
+    <p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')} — limite de la route si connue, sinon seuil &gt; ${limit} km/h. Total : <strong>${total}</strong>.</p>
     <div class="table-wrap"><table class="report-table">
-    <thead><tr><th>#</th><th>Véhicule</th><th style="text-align:center">Excès</th><th>Heures (vitesse)</th></tr></thead>
+    <thead><tr><th>#</th><th>Véhicule</th><th style="text-align:center">Excès</th><th>Détail (relevée / autorisée km/h)</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
-// Récapitulatif hebdomadaire des excès sur 3 mois glissants.
+// Récapitulatif hebdomadaire des excès sur 3 mois glissants + pertes L/€.
 function geolocWeeklyRecapHTML(recap, cfg) {
   if (!recap || !recap.length) return '';
-  const limit = (cfg && cfg.speedLimit) || 115;
   const grandTotal = recap.reduce((s, w) => s + w.total, 0);
+  const grandL = recap.reduce((s, w) => s + (w.liters || 0), 0);
+  const grandE = recap.reduce((s, w) => s + (w.euros || 0), 0);
+  if (grandTotal === 0) return ''; // rien tant qu'aucun excès sur la période
   const rows = recap.map((w, i) => {
-    const veh = w.vehicles.length ? w.vehicles.map((v) => `${esc(v.label)} (${v.count})`).join(', ') : '<span class="help">—</span>';
+    const veh = w.vehicles.length
+      ? w.vehicles.map((v) => `${esc(v.label)} : ${v.count} excès${v.maxRecorded ? ` (max ${v.maxRecorded}${v.limit ? '/' + v.limit : ''} km/h)` : ''}${v.liters ? ` — ${litFmt(v.liters)} · ${euroFmt(v.euros)}` : ''}`).join('<br>')
+      : '<span class="help">—</span>';
     return `<tr class="${w.total > 0 ? 'geo-wk-hit' : 'geo-wk-zero'}">
       <td>${i === 0 ? '<strong>Cette semaine</strong><br>' : ''}<span class="help">${esc(w.label)}</span></td>
       <td class="geo-wk-total">${w.total}</td>
+      <td style="text-align:right">${w.liters ? litFmt(w.liters) : '—'}</td>
+      <td style="text-align:right">${w.euros ? euroFmt(w.euros) : '—'}</td>
       <td>${veh}</td></tr>`;
   }).join('');
-  return `<h3 style="margin-top:1rem">📅 Récapitulatif hebdomadaire (3 mois glissants)</h3>
-    <p class="help">Total sur la période : <strong>${grandTotal}</strong> excès &gt; ${limit} km/h, semaine par semaine (lundi → dimanche).</p>
+  return `<h3 style="margin-top:1rem">📅 Récapitulatif hebdomadaire des excès (3 mois glissants)</h3>
+    <p class="help">Total période : <strong>${grandTotal}</strong> excès — sur-consommation estimée <strong>${litFmt(grandL)}</strong> soit <strong>${euroFmt(grandE)}</strong>. Estimation : différence de consommation théorique entre la vitesse relevée et la limite autorisée.</p>
     <div class="table-wrap"><table class="report-table geo-recap-table">
-      <thead><tr><th>Semaine</th><th style="text-align:center">Excès</th><th>Véhicules concernés</th></tr></thead>
+      <thead><tr><th>Semaine</th><th style="text-align:center">Excès</th><th style="text-align:right">Carburant perdu</th><th style="text-align:right">Coût</th><th>Détail par véhicule</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
 }
 
-// Bloc complet pour l'accueil (encadrement).
+// Bloc accueil (encadrement) : menu déroulant « Véhicules en temps réel ».
 function geolocDashboardHTML(d) {
   if (!d || (!d.configured && !d.enabled)) {
     return isStaff() && State.user.role === 'admin'
       ? `<div class="card"><h3>🛰️ Géolocalisation</h3><p class="help">Non configurée. Ouvrez <strong>Exploitation &amp; Transport → Géolocalisation</strong> pour saisir les identifiants PAJ GPS.</p></div>`
       : '';
   }
+  const { depot, active } = geolocSplit(d.positions || []);
   const err = d.error ? `<div class="alert warn" style="margin:.4rem 0">${esc(d.error)}</div>` : '';
   return `<div class="card">
-    <div class="geo-head">
-      <h3 style="margin:0">🛰️ Véhicules en temps réel</h3>
-      <button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button>
-    </div>
-    ${err}
-    ${geolocLiveTableHTML(d.positions || [])}
-    ${geolocSpeedTableHTML(d.positions || [], d.config)}
-    ${geolocWeeklyRecapHTML(d.speedRecap, d.config)}
+    <details class="geo-drop geo-drop-main" id="geodrop-main">
+      <summary>🛰️ Véhicules en temps réel <span class="geo-count">${active.length} en activité</span>${depot.length ? `<span class="geo-count alt">${depot.length} au dépôt</span>` : ''}</summary>
+      <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
+      ${err}
+      ${geolocLiveTableHTML(d.positions || [])}
+      ${geolocSpeedTableHTML(d.positions || [], d.config)}
+      ${geolocWeeklyRecapHTML(d.speedRecap, d.config)}
+    </details>
   </div>`;
+}
+
+/* ---- Panneau d'accueil auto-actualisé ------------------------------- */
+let _dashGeoTimer = null;
+async function geolocRefreshDashboard() {
+  const el = document.getElementById('dash-geoloc');
+  if (!el || State.view !== 'dashboard') { if (_dashGeoTimer) { clearInterval(_dashGeoTimer); _dashGeoTimer = null; } return; }
+  try {
+    const d = await api('GET', '/staff/geoloc/live');
+    const openIds = [...el.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
+    el.innerHTML = geolocDashboardHTML(d);
+    openIds.forEach((id) => { const x = el.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
+    el.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  } catch (e) { /* silencieux */ }
+}
+function geolocStartDashboard() {
+  if (_dashGeoTimer) clearInterval(_dashGeoTimer);
+  geolocRefreshDashboard();
+  _dashGeoTimer = setInterval(geolocRefreshDashboard, 30000);
 }
 
 /* ---- Vue carte plein écran ------------------------------------------ */
@@ -269,6 +318,12 @@ async function toggleGeoConfig(main) {
       <label>Longitude du dépôt<input id="gc-dlng" type="number" step="any" value="${c.depotLng != null ? c.depotLng : ''}"></label>
       <label>Rayon du dépôt (mètres)<input id="gc-drad" type="number" value="${c.depotRadius || 300}"></label>
     </div>
+    <h3 style="margin:.8rem 0 .2rem">⛽ Sur-consommation & limites de route</h3>
+    <p class="help">Le récap hebdomadaire estime le carburant perdu par les excès (différence de consommation théorique entre la vitesse relevée et la limite autorisée).</p>
+    <div class="grid cols-2">
+      <label>Prix du gazole (€/L)<input id="gc-fuel" type="number" step="0.01" value="${c.fuelPrice || 1.75}"></label>
+      <label>Limites de route (OpenStreetMap)<select id="gc-road"><option value="1" ${c.roadSpeedLookup ? 'selected' : ''}>Activées</option><option value="0" ${!c.roadSpeedLookup ? 'selected' : ''}>Désactivées</option></select></label>
+    </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
       <button class="btn ghost" id="gc-test">🔌 Tester la connexion</button>
       <button class="btn" id="gc-save">💾 Enregistrer</button>
@@ -289,6 +344,8 @@ async function toggleGeoConfig(main) {
     depotLat: parseFloat(panel.querySelector('#gc-dlat').value),
     depotLng: parseFloat(panel.querySelector('#gc-dlng').value),
     depotRadius: Number(panel.querySelector('#gc-drad').value) || 300,
+    fuelPrice: Number(panel.querySelector('#gc-fuel').value) || 1.75,
+    roadSpeedLookup: panel.querySelector('#gc-road').value === '1',
     deviceMap,
   });
 
