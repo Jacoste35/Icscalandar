@@ -871,3 +871,6 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-cost-row { padding: .5rem 0; border-bottom: 1px solid var(--border); }
 .geo-cost-head { display: flex; align-items: center; gap: .5rem; }
 .geo-cost-total { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* Géolocalisation — pastilles de statut dans le résumé */
+.geo-chip { font-size: .72rem; font-weight: 700; border-radius: 999px; padding: .12rem .5rem; background: #f1f5f9; color: #475569; white-space: nowrap; }
