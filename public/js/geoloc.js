@@ -97,7 +97,26 @@ function geoVehCardHTML(p) {
     ${p.plate && p.vehicleName ? `<div class="geo-sub">${esc(p.plate)}</div>` : ''}
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
+    ${geoStatsHTML(p.stats)}
   </div>`;
+}
+
+const GEO_RATE = {
+  green: { label: 'Conducteur économique', cls: 'green' },
+  yellow: { label: 'À surveiller', cls: 'yellow' },
+  red: { label: 'Dépense inutile', cls: 'red' },
+  na: { label: 'données insuffisantes', cls: 'na' },
+};
+// Bloc kilométrage + consommation moyenne (note d'éco-conduite colorée).
+function geoStatsHTML(s) {
+  if (!s) return '';
+  const km = `📏 <strong>${s.kmDay}</strong> km auj. · ${s.kmMonth} km/30j · ${s.kmQuarter} km/90j`;
+  let conso = '';
+  if (s.avgConso != null) {
+    const r = GEO_RATE[s.rating] || GEO_RATE.na;
+    conso = `<span class="geo-rate geo-rate-${r.cls}" title="Sur-consommation évitable : ${s.excessPct}%">⛽ ${s.avgConso} L/100${s.urbanShare ? ` · ville ${s.urbanShare}%` : ''} — ${r.label}</span>`;
+  }
+  return `<div class="geo-stats"><span class="geo-km help">${km}</span>${conso}</div>`;
 }
 
 // Excès de vitesse DU JOUR — uniquement les véhicules concernés ; rien sinon.
