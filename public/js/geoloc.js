@@ -15,12 +15,12 @@ function ensureLeaflet() {
   _leafletPromise = new Promise((resolve, reject) => {
     const css = document.createElement('link');
     css.rel = 'stylesheet';
-    css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    css.href = '/vendor/leaflet/leaflet.css';
     document.head.appendChild(css);
     const js = document.createElement('script');
-    js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    js.src = '/vendor/leaflet/leaflet.js';
     js.onload = () => resolve(window.L);
-    js.onerror = () => reject(new Error('Impossible de charger la carte (connexion requise).'));
+    js.onerror = () => reject(new Error('Impossible de charger la carte.'));
     document.head.appendChild(js);
   });
   return _leafletPromise;
@@ -31,6 +31,7 @@ const GEO_STATUS = {
   green: { color: '#16a34a', label: 'En mouvement', dot: '🟢' },
   yellow: { color: '#eab308', label: 'À l’arrêt (récent)', dot: '🟡' },
   orange: { color: '#ea580c', label: 'À l’arrêt prolongé', dot: '🟠' },
+  depot: { color: '#2563eb', label: 'Disponible au dépôt', dot: '🏠' },
   grey: { color: '#94a3b8', label: 'Sans position', dot: '⚪' },
 };
 function geoStatusMeta(s) { return GEO_STATUS[s] || GEO_STATUS.grey; }
@@ -40,53 +41,86 @@ function gTime(iso) {
   try { return new Date(iso).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' }); }
   catch (e) { return '—'; }
 }
-function gSpeed(p) { return (p.speed != null ? Math.round(p.speed) : 0) + ' km/h'; }
+// Véhicule stationné au dépôt (Éterville) -> « Disponible au dépôt ».
+function geoIsDepot(p) {
+  if (p.moving) return false;
+  const a = (p.address || '').toLowerCase();
+  return a.indexOf('éterville') !== -1 || a.indexOf('eterville') !== -1 || a.indexOf('14930') !== -1;
+}
+function geoEffectiveStatus(p) { return p.lat == null ? 'grey' : (geoIsDepot(p) ? 'depot' : p.status); }
 
-// Tableau « liste des véhicules » (position, adresse, vitesse, statut, arrêt).
+// Liste responsive des véhicules (cartes).
 function geolocLiveTableHTML(positions) {
   if (!positions.length) return '<p class="help">Aucun véhicule géolocalisé pour le moment.</p>';
-  const rows = positions.map((p) => {
-    const m = geoStatusMeta(p.lat == null ? 'grey' : p.status);
-    const arret = p.moving ? '<span class="help">en route</span>'
-      : (p.finalStopAt ? `depuis ${gTime(p.finalStopAt)}` : '—');
-    const addr = p.address || (p.lat != null ? `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : '—');
-    const maps = p.lat != null ? ` <a href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener" title="Ouvrir dans Google Maps">📍</a>` : '';
-    const batt = p.battery != null ? ` · 🔋${Math.round(p.battery)}%` : '';
-    return `<tr>
-      <td><span title="${esc(m.label)}">${m.dot}</span> <strong>${esc(geoVehLabel(p))}</strong>${p.plate && p.vehicleName ? `<br><span class="help">${esc(p.plate)}</span>` : ''}</td>
-      <td>${esc(addr)}${maps}</td>
-      <td style="text-align:right;font-weight:600;${(p.speed || 0) > 0 ? 'color:#16a34a' : ''}">${gSpeed(p)}</td>
-      <td>${esc(m.label)}<br><span class="help">${arret}${batt}</span></td>
-    </tr>`;
-  }).join('');
-  return `<div style="overflow:auto"><table class="report-table">
-    <thead><tr><th>Véhicule</th><th>Position (adresse)</th><th style="text-align:right">Vitesse</th><th>Statut / arrêt</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+  return '<div class="geo-cards">' + positions.map(geoVehCardHTML).join('') + '</div>';
+}
+function geoVehCardHTML(p) {
+  const st = geoEffectiveStatus(p);
+  const m = geoStatusMeta(st);
+  const depot = st === 'depot';
+  const speed = Math.round(p.speed || 0);
+  const addr = depot ? 'Disponible au dépôt'
+    : (p.address || (p.lat != null ? `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : 'Position inconnue'));
+  const maps = (p.lat != null && !depot) ? `<a class="geo-maps" href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Voir ↗</a>` : '';
+  const meta = [];
+  if (p.moving) meta.push('en route');
+  else if (!depot && p.finalStopAt) meta.push(`arrêté depuis ${gTime(p.finalStopAt)}`);
+  if (p.battery != null) meta.push(`🔋 ${Math.round(p.battery)}%`);
+  meta.push(`maj ${gTime(p.ts)}`);
+  return `<div class="geo-card geo-${st}">
+    <div class="geo-card-top">
+      <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(geoVehLabel(p))}</span>
+      <span class="geo-speed ${speed > 0 ? 'on' : ''}">${speed} km/h</span>
+    </div>
+    ${p.plate && p.vehicleName ? `<div class="geo-sub">${esc(p.plate)}</div>` : ''}
+    <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
+    <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
+  </div>`;
 }
 
-// Tableau « classement des excès de vitesse » du jour (fenêtre + seuil).
+// Excès de vitesse DU JOUR — uniquement les véhicules concernés ; rien sinon.
 function geolocSpeedTableHTML(positions, cfg) {
   cfg = cfg || {};
   const limit = cfg.speedLimit || 115;
   const ranked = positions
     .map((p) => ({ label: geoVehLabel(p), count: (p.overspeed && p.overspeed.count) || 0, times: (p.overspeed && p.overspeed.times) || [] }))
+    .filter((r) => r.count > 0)
     .sort((a, b) => b.count - a.count);
+  if (!ranked.length) return '';
   const total = ranked.reduce((s, r) => s + r.count, 0);
-  const head = `<p class="help">Excès relevés entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')}, seuil &gt; ${limit} km/h — total du jour : <strong>${total}</strong>.</p>`;
-  if (!ranked.length) return head + '<p class="help">—</p>';
   const rows = ranked.map((r, i) => {
     const detail = r.times.length ? r.times.map((t) => `${gTime(t.at)} (${t.speed})`).join(', ') : '—';
-    return `<tr${r.count > 0 ? ' style="background:rgba(234,88,12,.08)"' : ''}>
-      <td>${i + 1}</td><td><strong>${esc(r.label)}</strong></td>
-      <td style="text-align:center;font-weight:700${r.count > 0 ? ';color:#ea580c' : ''}">${r.count}</td>
+    return `<tr><td>${i + 1}</td><td><strong>${esc(r.label)}</strong></td>
+      <td style="text-align:center;font-weight:700;color:#ea580c">${r.count}</td>
       <td><span class="help">${esc(detail)}</span></td></tr>`;
   }).join('');
-  return head + `<div style="overflow:auto"><table class="report-table">
+  return `<h3 style="margin-top:1rem">🚨 Excès de vitesse du jour</h3>
+    <p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')}, seuil &gt; ${limit} km/h — total : <strong>${total}</strong>.</p>
+    <div class="table-wrap"><table class="report-table">
     <thead><tr><th>#</th><th>Véhicule</th><th style="text-align:center">Excès</th><th>Heures (vitesse)</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
-// Bloc complet pour l'accueil (encadrement) : 2 cartes (liste + excès).
+// Récapitulatif hebdomadaire des excès sur 3 mois glissants.
+function geolocWeeklyRecapHTML(recap, cfg) {
+  if (!recap || !recap.length) return '';
+  const limit = (cfg && cfg.speedLimit) || 115;
+  const grandTotal = recap.reduce((s, w) => s + w.total, 0);
+  const rows = recap.map((w, i) => {
+    const veh = w.vehicles.length ? w.vehicles.map((v) => `${esc(v.label)} (${v.count})`).join(', ') : '<span class="help">—</span>';
+    return `<tr class="${w.total > 0 ? 'geo-wk-hit' : 'geo-wk-zero'}">
+      <td>${i === 0 ? '<strong>Cette semaine</strong><br>' : ''}<span class="help">${esc(w.label)}</span></td>
+      <td class="geo-wk-total">${w.total}</td>
+      <td>${veh}</td></tr>`;
+  }).join('');
+  return `<h3 style="margin-top:1rem">📅 Récapitulatif hebdomadaire (3 mois glissants)</h3>
+    <p class="help">Total sur la période : <strong>${grandTotal}</strong> excès &gt; ${limit} km/h, semaine par semaine (lundi → dimanche).</p>
+    <div class="table-wrap"><table class="report-table geo-recap-table">
+      <thead><tr><th>Semaine</th><th style="text-align:center">Excès</th><th>Véhicules concernés</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+
+// Bloc complet pour l'accueil (encadrement).
 function geolocDashboardHTML(d) {
   if (!d || (!d.configured && !d.enabled)) {
     return isStaff() && State.user.role === 'admin'
@@ -95,14 +129,14 @@ function geolocDashboardHTML(d) {
   }
   const err = d.error ? `<div class="alert warn" style="margin:.4rem 0">${esc(d.error)}</div>` : '';
   return `<div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
+    <div class="geo-head">
       <h3 style="margin:0">🛰️ Véhicules en temps réel</h3>
       <button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button>
     </div>
     ${err}
     ${geolocLiveTableHTML(d.positions || [])}
-    <h3 style="margin-top:1rem">🚨 Excès de vitesse du jour</h3>
     ${geolocSpeedTableHTML(d.positions || [], d.config)}
+    ${geolocWeeklyRecapHTML(d.speedRecap, d.config)}
   </div>`;
 }
 
@@ -164,8 +198,8 @@ async function loadGeoloc(force) {
     const upd = (d.positions || []).reduce((mx, p) => (p.ts && p.ts > mx ? p.ts : mx), '');
     listEl.innerHTML = `<p class="help">Dernière mise à jour : ${gTime(upd) || '—'} ${d.day ? '· ' + d.day : ''}</p>`
       + geolocLiveTableHTML(d.positions || [])
-      + `<h3 style="margin-top:1rem">🚨 Excès de vitesse du jour</h3>`
-      + geolocSpeedTableHTML(d.positions || [], d.config);
+      + geolocSpeedTableHTML(d.positions || [], d.config)
+      + geolocWeeklyRecapHTML(d.speedRecap, d.config);
   } catch (e) {
     if (alertEl) alertEl.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
@@ -178,7 +212,8 @@ function drawGeoMarkers(positions) {
   const pts = [];
   positions.forEach((p) => {
     if (p.lat == null || p.lng == null) return;
-    const m = geoStatusMeta(p.status);
+    const st = geoEffectiveStatus(p);
+    const m = geoStatusMeta(st);
     // Trace de déplacement du jour.
     if (Array.isArray(p.trail) && p.trail.length > 1) {
       L.polyline(p.trail.map((t) => [t.lat, t.lng]), { color: m.color, weight: 3, opacity: .5 }).addTo(_geoLayers);
@@ -186,14 +221,15 @@ function drawGeoMarkers(positions) {
     const marker = L.circleMarker([p.lat, p.lng], {
       radius: 9, color: '#fff', weight: 2, fillColor: m.color, fillOpacity: 1,
     }).addTo(_geoLayers);
-    const arret = p.moving ? 'en mouvement' : (p.finalStopAt ? `arrêté depuis ${gTime(p.finalStopAt)}` : 'à l’arrêt');
+    const arret = st === 'depot' ? 'Disponible au dépôt'
+      : (p.moving ? 'en mouvement' : (p.finalStopAt ? `arrêté depuis ${gTime(p.finalStopAt)}` : 'à l’arrêt'));
     marker.bindPopup(`<strong>${esc(geoVehLabel(p))}</strong><br>
       ${m.dot} ${esc(m.label)}<br>
-      Vitesse : <strong>${gSpeed(p)}</strong><br>
-      ${p.address ? esc(p.address) + '<br>' : ''}
+      Vitesse : <strong>${Math.round(p.speed || 0)} km/h</strong><br>
+      ${(p.address && st !== 'depot') ? esc(p.address) + '<br>' : ''}
       ${esc(arret)}<br>
       Excès aujourd'hui : <strong>${(p.overspeed && p.overspeed.count) || 0}</strong><br>
-      <span style="color:#64748b">${gTime(p.ts)}</span>`);
+      <span style="color:#64748b">maj ${gTime(p.ts)}</span>`);
     pts.push([p.lat, p.lng]);
   });
   if (pts.length && _geoFirstFit) {
