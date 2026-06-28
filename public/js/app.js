@@ -761,12 +761,12 @@ async function renderDashboard(main) {
 
     // Mes retards (compteurs glissants) + classement (encadrement)
     const myRetards = events.filter((e) => e.userId === viewUser.id && e.category === 'RET' && e.status === 'approved');
-    const retardCards = isPresident ? '' : `<div class="grid cols-4">
+    const retardCards = isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">⏱️ Mes retards</h3><div class="grid cols-4">
       ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
       ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
       ${statCard('Retards (semestre)', retardCountSince(myRetards, 182), 'retard(s)')}
       ${statCard('Retards (année)', retardCountSince(myRetards, 365), 'retard(s)', true)}
-    </div>`;
+    </div></div>`;
     const classement = staff ? retardRankingHTML(events, team) : '';
     const philo = isPresident ? '' : philoMessageHTML(retardCountSince(myRetards, 365));
 
@@ -816,12 +816,12 @@ async function renderDashboard(main) {
     dashBody.innerHTML = `
       ${previewBar}
       ${anc}
-      ${isPresident ? '' : `<div class="grid cols-4">
+      ${isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">📊 Mes compteurs</h3><div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
         ${statCard('Congés N-1 restants', b.congesN1, 'jours')}
         ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h`)}
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
-      </div>`}
+      </div></div>`}
       ${philo}
       ${myDocsPanel}
       ${geolocPanel}
@@ -843,6 +843,8 @@ async function renderDashboard(main) {
       ${dashWeekCard('Semaine en cours', curStart, events, true)}
       ${dashWeekCard('Semaine à venir (+1)', next1, events)}
       ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
+    // Rend chaque section de l'accueil repliable (ouvrir/masquer à la demande).
+    makeDashCollapsible(dashBody);
     // Sélecteur d'aperçu (toujours actif pour l'admin).
     const psel = dashBody.querySelector('#dash-preview');
     if (psel) psel.onchange = () => { _previewUserId = psel.value || null; renderDashboard(document.getElementById('main')); };
@@ -853,6 +855,34 @@ async function renderDashboard(main) {
   } catch (e) {
     document.getElementById('dash-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
+}
+
+// Accordéon de l'accueil : transforme chaque carte en section repliable, en
+// mémorisant l'état ouvert/fermé (localStorage) pour le conserver entre les
+// rendus. La barre d'aperçu admin et le panneau géoloc (déjà déroulant) sont
+// laissés intacts.
+function dashAccState() { try { return JSON.parse(localStorage.getItem('ics_dash_acc') || '{}'); } catch (e) { return {}; } }
+function dashAccSave(s) { try { localStorage.setItem('ics_dash_acc', JSON.stringify(s)); } catch (e) {} }
+function slugTitle(t) { return String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48); }
+function makeDashCollapsible(scope) {
+  const state = dashAccState();
+  [...scope.children].forEach((el) => {
+    if (!el.classList || !el.classList.contains('card')) return;        // seulement les cartes
+    if (el.querySelector('#dash-preview')) return;                       // garde l'aperçu admin visible
+    const h = el.querySelector('h1, h2, h3, h4');
+    if (!h) return;                                                      // sans titre : on laisse tel quel
+    const key = slugTitle(h.textContent);
+    const det = document.createElement('details');
+    det.className = 'dash-acc';
+    det.open = key in state ? !!state[key] : true;                       // ouvert par défaut
+    const sum = document.createElement('summary');
+    sum.innerHTML = h.innerHTML;
+    h.remove();
+    el.parentNode.insertBefore(det, el);
+    det.appendChild(sum);
+    det.appendChild(el);
+    det.addEventListener('toggle', () => { const s = dashAccState(); s[key] = det.open; dashAccSave(s); });
+  });
 }
 
 // Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
