@@ -866,6 +866,9 @@ function dashAccSave(s) { try { localStorage.setItem('ics_dash_acc', JSON.string
 function slugTitle(t) { return String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48); }
 function makeDashCollapsible(scope) {
   const state = dashAccState();
+  // Sur téléphone, tout est fermé par défaut pour simplifier l'affichage ;
+  // sur ordinateur, ouvert par défaut. L'état choisi par l'utilisateur prime.
+  const isMobile = window.matchMedia('(max-width: 768px)').matches;
   [...scope.children].forEach((el) => {
     if (!el.classList || !el.classList.contains('card')) return;        // seulement les cartes
     if (el.querySelector('#dash-preview')) return;                       // garde l'aperçu admin visible
@@ -874,7 +877,7 @@ function makeDashCollapsible(scope) {
     const key = slugTitle(h.textContent);
     const det = document.createElement('details');
     det.className = 'dash-acc';
-    det.open = key in state ? !!state[key] : true;                       // ouvert par défaut
+    det.open = key in state ? !!state[key] : !isMobile;                  // mobile : fermé par défaut
     const sum = document.createElement('summary');
     sum.innerHTML = h.innerHTML;
     h.remove();

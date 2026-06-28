@@ -28,11 +28,11 @@ function ensureLeaflet() {
 
 /* ---- Helpers d'affichage -------------------------------------------- */
 const GEO_STATUS = {
-  green: { color: '#16a34a', label: 'En mouvement', dot: '🟢' },
-  yellow: { color: '#eab308', label: 'À l’arrêt (récent)', dot: '🟡' },
-  orange: { color: '#ea580c', label: 'À l’arrêt prolongé', dot: '🟠' },
-  depot: { color: '#2563eb', label: 'Disponible au dépôt', dot: '🏠' },
-  grey: { color: '#94a3b8', label: 'Sans position', dot: '⚪' },
+  green: { color: '#16a34a', label: 'En tournée', short: 'en tournée', dot: '🟢' },
+  yellow: { color: '#eab308', label: 'Arrêt temporaire', short: 'arrêt temp.', dot: '🟡' },
+  orange: { color: '#ea580c', label: 'Arrêt prolongé', short: 'arrêt prolongé', dot: '🟠' },
+  depot: { color: '#2563eb', label: 'Disponible au dépôt', short: 'au dépôt', dot: '🏠' },
+  grey: { color: '#94a3b8', label: 'Sans position', short: 'sans position', dot: '⚪' },
 };
 function geoStatusMeta(s) { return GEO_STATUS[s] || GEO_STATUS.grey; }
 function geoVehLabel(p) { return p.vehicleName || p.plate || p.name || ('Traceur ' + p.deviceId); }
@@ -59,6 +59,21 @@ function geolocSplit(positions) {
   const depot = [], active = [];
   (positions || []).forEach((p) => (geoIsDepot(p) ? depot : active).push(p));
   return { depot, active };
+}
+
+// Résumé coloré du statut réel des véhicules (en tournée / arrêts / dépôt).
+function geoStatusChips(active, depot) {
+  const counts = { green: 0, yellow: 0, orange: 0, grey: 0 };
+  (active || []).forEach((p) => { const s = p.lat == null ? 'grey' : p.status; counts[s] = (counts[s] || 0) + 1; });
+  const chip = (s, n) => {
+    if (!n) return '';
+    const m = GEO_STATUS[s];
+    return `<span class="geo-chip" style="background:${m.color}1a;color:${m.color}">${m.dot} ${n} ${m.short}</span>`;
+  };
+  let html = chip('green', counts.green) + chip('yellow', counts.yellow) + chip('orange', counts.orange) + chip('grey', counts.grey);
+  if (!active || !active.length) html = '<span class="geo-chip">aucun en activité</span>';
+  if (depot && depot.length) html += `<span class="geo-chip" style="background:#2563eb1a;color:#2563eb">🏠 ${depot.length} au dépôt</span>`;
+  return html;
 }
 
 // Liste responsive : véhicules en activité + dépôt regroupé dans un menu déroulant.
@@ -207,7 +222,7 @@ function geolocDashboardHTML(d) {
   const err = d.error ? `<div class="alert warn" style="margin:.4rem 0">${esc(d.error)}</div>` : '';
   return `<div class="card">
     <details class="geo-drop geo-drop-main" id="geodrop-main">
-      <summary>🛰️ Véhicules en temps réel <span class="geo-count">${active.length} en activité</span>${depot.length ? `<span class="geo-count alt">${depot.length} au dépôt</span>` : ''}</summary>
+      <summary>🛰️ Véhicules en temps réel ${geoStatusChips(active, depot)}</summary>
       <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
       ${err}
       ${geolocLiveTableHTML(d.positions || [])}
