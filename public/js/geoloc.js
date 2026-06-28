@@ -41,9 +41,11 @@ function gTime(iso) {
   try { return new Date(iso).toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' }); }
   catch (e) { return '—'; }
 }
-// Véhicule stationné au dépôt (Éterville) -> « Disponible au dépôt ».
+// Véhicule stationné au dépôt -> « Disponible au dépôt ».
+// Priorité au rayon GPS (atDepot calculé côté serveur), repli sur l'adresse.
 function geoIsDepot(p) {
   if (p.moving) return false;
+  if (p.atDepot) return true;
   const a = (p.address || '').toLowerCase();
   return a.indexOf('éterville') !== -1 || a.indexOf('eterville') !== -1 || a.indexOf('14930') !== -1;
 }
@@ -260,6 +262,13 @@ async function toggleGeoConfig(main) {
       <label>Début de journée<input id="gc-start" type="time" value="${esc(c.dayStart)}"></label>
       <label>Fin de journée<input id="gc-end" type="time" value="${esc(c.dayEnd)}"></label>
     </div>
+    <h3 style="margin:.8rem 0 .2rem">🏠 Dépôt (état « Disponible au dépôt »)</h3>
+    <p class="help">Un véhicule à l'arrêt à moins du rayon indiqué autour de ce point est affiché « au dépôt ».</p>
+    <div class="grid cols-2">
+      <label>Latitude du dépôt<input id="gc-dlat" type="number" step="any" value="${c.depotLat != null ? c.depotLat : ''}"></label>
+      <label>Longitude du dépôt<input id="gc-dlng" type="number" step="any" value="${c.depotLng != null ? c.depotLng : ''}"></label>
+      <label>Rayon du dépôt (mètres)<input id="gc-drad" type="number" value="${c.depotRadius || 300}"></label>
+    </div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
       <button class="btn ghost" id="gc-test">🔌 Tester la connexion</button>
       <button class="btn" id="gc-save">💾 Enregistrer</button>
@@ -277,6 +286,9 @@ async function toggleGeoConfig(main) {
     enabled: panel.querySelector('#gc-enabled').value === '1',
     dayStart: panel.querySelector('#gc-start').value || '05:00',
     dayEnd: panel.querySelector('#gc-end').value || '18:00',
+    depotLat: parseFloat(panel.querySelector('#gc-dlat').value),
+    depotLng: parseFloat(panel.querySelector('#gc-dlng').value),
+    depotRadius: Number(panel.querySelector('#gc-drad').value) || 300,
     deviceMap,
   });
 

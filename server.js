@@ -3009,6 +3009,7 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       dayStart: g.dayStart || '05:00',
       dayEnd: g.dayEnd || '18:00',
       deviceMap: g.deviceMap || {},
+      depotLat: g.depotLat, depotLng: g.depotLng, depotRadius: g.depotRadius || 300,
     },
     isAdmin: req.user.role === 'admin',
     vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
@@ -3027,6 +3028,9 @@ app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, re
   if (b.speedLimit != null && Number.isFinite(Number(b.speedLimit))) g.speedLimit = Math.max(1, Math.round(Number(b.speedLimit)));
   if (/^\d{1,2}:\d{2}$/.test(b.dayStart || '')) g.dayStart = b.dayStart;
   if (/^\d{1,2}:\d{2}$/.test(b.dayEnd || '')) g.dayEnd = b.dayEnd;
+  if (b.depotLat != null && Number.isFinite(Number(b.depotLat))) g.depotLat = Number(b.depotLat);
+  if (b.depotLng != null && Number.isFinite(Number(b.depotLng))) g.depotLng = Number(b.depotLng);
+  if (b.depotRadius != null && Number.isFinite(Number(b.depotRadius))) g.depotRadius = Math.max(20, Math.round(Number(b.depotRadius)));
   if (b.deviceMap && typeof b.deviceMap === 'object') {
     const clean = {};
     for (const k of Object.keys(b.deviceMap)) { const v = b.deviceMap[k]; if (v) clean[String(k)] = String(v); }
