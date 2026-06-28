@@ -3014,6 +3014,9 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       consoRoad90: g.consoRoad90 || 9.5, consoUrban: g.consoUrban || 12.5,
       vehicleCostPerKm: g.vehicleCostPerKm != null ? g.vehicleCostPerKm : 0.25,
       chargesPatrPct: g.chargesPatrPct != null ? g.chargesPatrPct : 42,
+      vehicleMonthlyLease: g.vehicleMonthlyLease != null ? g.vehicleMonthlyLease : 1000,
+      vehicleMonthlyInsurance: g.vehicleMonthlyInsurance != null ? g.vehicleMonthlyInsurance : 220,
+      vehicleFixedDays: g.vehicleFixedDays != null ? g.vehicleFixedDays : 22,
     },
     isAdmin: req.user.role === 'admin',
     vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
@@ -3041,6 +3044,9 @@ app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, re
   if (b.consoUrban != null && Number.isFinite(Number(b.consoUrban))) g.consoUrban = Math.max(1, Number(b.consoUrban));
   if (b.vehicleCostPerKm != null && Number.isFinite(Number(b.vehicleCostPerKm))) g.vehicleCostPerKm = Math.max(0, Number(b.vehicleCostPerKm));
   if (b.chargesPatrPct != null && Number.isFinite(Number(b.chargesPatrPct))) g.chargesPatrPct = Math.max(0, Number(b.chargesPatrPct));
+  if (b.vehicleMonthlyLease != null && Number.isFinite(Number(b.vehicleMonthlyLease))) g.vehicleMonthlyLease = Math.max(0, Number(b.vehicleMonthlyLease));
+  if (b.vehicleMonthlyInsurance != null && Number.isFinite(Number(b.vehicleMonthlyInsurance))) g.vehicleMonthlyInsurance = Math.max(0, Number(b.vehicleMonthlyInsurance));
+  if (b.vehicleFixedDays != null && Number.isFinite(Number(b.vehicleFixedDays))) g.vehicleFixedDays = Math.max(1, Math.round(Number(b.vehicleFixedDays)));
   if (b.deviceMap && typeof b.deviceMap === 'object') {
     const clean = {};
     for (const k of Object.keys(b.deviceMap)) { const v = b.deviceMap[k]; if (v) clean[String(k)] = String(v); }
