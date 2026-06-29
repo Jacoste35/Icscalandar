@@ -240,8 +240,10 @@ function geolocDashboardHTML(d) {
   }
   const { depot, active } = geolocSplit(d.positions || []);
   const err = d.error ? `<div class="alert warn" style="margin:.4rem 0">${esc(d.error)}</div>` : '';
+  // Ouvert par défaut sur ordinateur (mis en avant) ; replié sur téléphone.
+  const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
   return `<div class="card">
-    <details class="geo-drop geo-drop-main" id="geodrop-main">
+    <details class="geo-drop geo-drop-main" id="geodrop-main"${isMobile ? '' : ' open'}>
       <summary><span class="geo-main-title">🛰️ Géolocalisation des chauffeurs</span> ${geoStatusChips(active, depot)}</summary>
       <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
       ${err}
@@ -261,10 +263,20 @@ async function geolocRefreshDashboard() {
   try {
     const d = await api('GET', '/staff/geoloc/live');
     const openIds = [...el.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
-    el.innerHTML = geolocDashboardHTML(d);
+    const html = geolocDashboardHTML(d);
+    el.innerHTML = html || geolocFallbackHTML('Aucune donnée de géolocalisation pour le moment.');
     openIds.forEach((id) => { const x = el.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
     el.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
-  } catch (e) { /* silencieux */ }
+  } catch (e) {
+    // Ne jamais laisser le panneau vide : afficher au moins l'en-tête.
+    if (!el.innerHTML.trim()) el.innerHTML = geolocFallbackHTML('Données momentanément indisponibles — réessai automatique…');
+  }
+}
+function geolocFallbackHTML(msg) {
+  return `<div class="card"><details class="geo-drop geo-drop-main" open>
+    <summary><span class="geo-main-title">🛰️ Géolocalisation des chauffeurs</span></summary>
+    <div class="geo-drop-body"><div class="alert info">${esc(msg)}</div></div>
+  </details></div>`;
 }
 function geolocStartDashboard() {
   if (_dashGeoTimer) clearInterval(_dashGeoTimer);
