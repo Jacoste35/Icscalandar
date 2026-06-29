@@ -115,8 +115,8 @@ function geoVehCardHTML(p) {
   else if (depot) meta.push(`immobilisé depuis ${gStopSince(p.finalStopAt)}`);
   else if (p.finalStopAt) meta.push(`arrêté depuis ${gStopSince(p.finalStopAt)}`);
   meta.push(`maj ${gTime(p.ts)}`);
-  // À l'arrêt prolongé : gasoil consommé dans la journée (estimation).
-  const fuelLine = (st === 'orange' && p.stats && p.stats.litersDay != null)
+  // À l'arrêt prolongé ou au dépôt : gasoil consommé dans la journée (estimation).
+  const fuelLine = ((st === 'orange' || st === 'depot') && p.stats && p.stats.litersDay != null)
     ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil consommés aujourd'hui (estimé)</div>` : '';
   const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
   return `<div class="geo-card geo-${st}">
