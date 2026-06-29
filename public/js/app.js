@@ -776,8 +776,11 @@ async function renderDashboard(main) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
-      // Panneau géoloc auto-actualisé (rempli/rafraîchi par geolocStartDashboard).
-      if (typeof geolocStartDashboard === 'function') geolocPanel = '<div id="dash-geoloc"></div>';
+      // Panneau géoloc : en-tête statique TOUJOURS visible (styles inline, sans
+      // dépendance au CSS ni au chargement asynchrone), rempli ensuite par
+      // geolocStartDashboard avec les données temps réel.
+      geolocPanel = '<div id="dash-geoloc"><div class="card" style="padding:0;overflow:hidden;border:2px solid #14427e;border-radius:14px">'
+        + '<div style="padding:.85rem 1rem;background:linear-gradient(135deg,#14427e,#2563eb);color:#fff;font-weight:800;font-size:1.05rem">🛰️ Géolocalisation des chauffeurs <span style="font-weight:400;opacity:.85;font-size:.85rem">— chargement…</span></div></div></div>';
     }
     let kmAnomalyPanel = '';
     if (isAdmin) {
