@@ -892,3 +892,12 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-wk-track { height: 8px; background: #eef2f7; border-radius: 4px; overflow: hidden; margin-top: .3rem; }
 .geo-wk-fill { display: block; height: 100%; background: #ea580c; border-radius: 4px; }
 .geo-wk-detail { margin-top: .3rem; }
+
+/* Géolocalisation — mise en avant du panneau d'accueil */
+.geo-drop-main { border: 2px solid var(--brand); border-radius: 14px; box-shadow: 0 4px 16px rgba(20,66,126,.16); overflow: hidden; }
+.geo-drop-main > summary { background: linear-gradient(135deg, #14427e, #2563eb); color: #fff; padding: .85rem 1rem; font-size: 1.05rem; border-radius: 0; }
+.geo-drop-main > summary::before { color: rgba(255,255,255,.8); }
+.geo-drop-main > summary:hover { filter: brightness(1.06); background: linear-gradient(135deg, #14427e, #2563eb); }
+.geo-main-title { font-weight: 800; letter-spacing: .2px; }
+.geo-drop-main[open] > summary { box-shadow: 0 2px 6px rgba(0,0,0,.12); }
+.geo-drop-main > .geo-drop-body, .geo-drop-main > *:not(summary) { padding: 0 .6rem; }
