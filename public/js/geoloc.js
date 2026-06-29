@@ -259,15 +259,23 @@ async function geolocRefreshDashboard() {
   if (!el || State.view !== 'dashboard') { if (_dashGeoTimer) { clearInterval(_dashGeoTimer); _dashGeoTimer = null; } return; }
   try {
     const d = await api('GET', '/staff/geoloc/live');
-    const openIds = [...el.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
-    const html = geolocDashboardHTML(d);
-    el.innerHTML = html || geolocFallbackHTML('Aucune donnée de géolocalisation pour le moment.');
-    openIds.forEach((id) => { const x = el.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
-    el.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+    geolocSaveCache(d);
+    geolocPaintDashboard(el, d);
   } catch (e) {
-    // Ne jamais rester bloqué sur « chargement… » : afficher l'en-tête + l'erreur.
-    el.innerHTML = geolocFallbackHTML('Connexion momentanément indisponible — réessai automatique… ' + (e && e.message ? '(' + e.message + ')' : ''));
+    // Réseau indisponible : on garde le cache déjà affiché ; sinon en-tête + erreur.
+    const cached = geolocLoadCache();
+    if (cached) geolocPaintDashboard(el, cached, '⚠️ Hors-ligne — dernières positions connues.');
+    else el.innerHTML = geolocFallbackHTML('Connexion momentanément indisponible — réessai automatique… ' + (e && e.message ? '(' + e.message + ')' : ''));
   }
+}
+// Peint le panneau en conservant l'état ouvert/fermé des sous-menus.
+function geolocPaintDashboard(el, d, note) {
+  const openIds = [...el.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
+  if (note && d) d = Object.assign({}, d, { error: note });
+  const html = geolocDashboardHTML(d);
+  el.innerHTML = html || geolocFallbackHTML('Aucune donnée de géolocalisation pour le moment.');
+  openIds.forEach((id) => { const x = el.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
+  el.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
 }
 function geolocFallbackHTML(msg) {
   return `<div class="card"><details class="geo-drop geo-drop-main" open>
@@ -275,8 +283,26 @@ function geolocFallbackHTML(msg) {
     <div class="geo-drop-body"><div class="alert info">${esc(msg)}</div></div>
   </details></div>`;
 }
+
+/* ---- Cache local des positions (affichage instantané à l'ouverture) ---- */
+const GEO_CACHE_KEY = 'ics_geoloc_cache';
+function geolocSaveCache(d) {
+  try {
+    // On retire les traces (volumineuses, inutiles pour le tableau) du cache.
+    const slim = Object.assign({}, d, { positions: (d.positions || []).map((p) => { const q = Object.assign({}, p); delete q.trail; return q; }) });
+    localStorage.setItem(GEO_CACHE_KEY, JSON.stringify({ at: Date.now(), d: slim }));
+  } catch (e) { /* quota/indispo : ignoré */ }
+}
+function geolocLoadCache() {
+  try { const raw = localStorage.getItem(GEO_CACHE_KEY); const o = raw ? JSON.parse(raw) : null; return o && o.d ? o.d : null; } catch (e) { return null; }
+}
+
 function geolocStartDashboard() {
   if (_dashGeoTimer) clearInterval(_dashGeoTimer);
+  // Affichage INSTANTANÉ depuis le cache (pas de « chargement… »), puis frais.
+  const el = document.getElementById('dash-geoloc');
+  const cached = geolocLoadCache();
+  if (el && cached) geolocPaintDashboard(el, cached);
   geolocRefreshDashboard();
   _dashGeoTimer = setInterval(geolocRefreshDashboard, 30000);
 }
@@ -320,6 +346,19 @@ async function renderGeoloc(main) {
     main.querySelector('#geo-alert').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
 
+  // Affichage instantané depuis le cache (positions connues), avant le réseau.
+  const cached = geolocLoadCache();
+  if (cached && (cached.positions || []).length) {
+    try {
+      drawGeoMarkers(cached.positions);
+      const listEl0 = document.getElementById('geo-list');
+      if (listEl0) listEl0.innerHTML = '<p class="help">Dernières positions connues — actualisation…</p>'
+        + geolocLiveTableHTML(cached.positions)
+        + geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(cached.positions))
+        + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(cached.positions, cached.config))
+        + geoDrop('geodrop-recap', '📅 Récapitulatif hebdomadaire des excès (3 mois)', geolocWeeklyRecapHTML(cached.speedRecap, cached.config));
+    } catch (e) { /* cache illisible : ignoré */ }
+  }
   await loadGeoloc(true);
   _geoTimer = setInterval(() => { if (State.view === 'geoloc' && autoChk.checked) loadGeoloc(false); else if (State.view !== 'geoloc') { clearInterval(_geoTimer); _geoTimer = null; } }, 30000);
 }
@@ -330,6 +369,7 @@ async function loadGeoloc(force) {
   if (!listEl) return;
   try {
     const d = await api('GET', '/staff/geoloc/live' + (force ? '?force=1' : ''));
+    geolocSaveCache(d);
     if (alertEl) alertEl.innerHTML = d.error ? `<div class="alert warn">${esc(d.error)}</div>` : '';
     if (!d.enabled || !d.configured) {
       listEl.innerHTML = `<p class="help">${d.enabled ? 'Identifiants PAJ manquants.' : 'Géolocalisation non activée.'} ${State.user.role === 'admin' ? 'Cliquez sur « Configuration ».' : 'Contactez un administrateur.'}</p>`;
