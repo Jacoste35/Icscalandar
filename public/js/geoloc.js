@@ -114,8 +114,10 @@ function geoVehCardHTML(p) {
   if (p.moving) meta.push('en tournée');
   else if (depot) meta.push(`immobilisé depuis ${gStopSince(p.finalStopAt)}`);
   else if (p.finalStopAt) meta.push(`arrêté depuis ${gStopSince(p.finalStopAt)}`);
-  if (p.battery != null) meta.push(`🔋 ${Math.round(p.battery)}%`);
   meta.push(`maj ${gTime(p.ts)}`);
+  // À l'arrêt prolongé : gasoil consommé dans la journée (estimation).
+  const fuelLine = (st === 'orange' && p.stats && p.stats.litersDay != null)
+    ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil consommés aujourd'hui (estimé)</div>` : '';
   const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
   return `<div class="geo-card geo-${st}">
     <div class="geo-card-top">
@@ -125,6 +127,7 @@ function geoVehCardHTML(p) {
     ${p.plate && p.vehicleName ? `<div class="geo-sub">${esc(p.plate)}</div>` : ''}
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
+    ${fuelLine}
     ${lateHtml}
     ${geoStatsHTML(p.stats)}
   </div>`;

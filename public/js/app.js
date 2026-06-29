@@ -445,6 +445,7 @@ function navSections() {
   const exp = [];
   if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
   if (admin || staff) exp.push({ id: 'geoloc', icon: '🛰️', label: 'Géolocalisation' });
+  if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Carburant' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
   if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
   if (admin) exp.push({ id: 'stocks', icon: '📦', label: 'Gestion des Stocks' });
@@ -692,6 +693,74 @@ function renderView() {
   if (v === 'hours') return renderHours(main);
   if (v === 'tours') return renderTours(main);
   if (v === 'geoloc') return renderGeoloc(main);
+  if (v === 'carburant') return renderCarburant(main);
+}
+
+/* =========================================================================
+   CARBURANT — import & suivi des transactions AS 24
+   ========================================================================= */
+const euro2 = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+async function renderCarburant(main) {
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>⛽ Carburant</h1>
+    <p>Suivi des pleins (cartes AS 24) — litres et coûts par véhicule.</p></div></div>
+    <div id="fuel-body" class="empty">Chargement…</div>`;
+  await loadCarburant();
+}
+async function loadCarburant() {
+  const body = document.getElementById('fuel-body'); if (!body) return;
+  let d;
+  try { d = await api('GET', '/staff/fuel'); } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  body.className = '';
+  const s = d.summary || {};
+  const importBlock = d.isAdmin ? `
+    <div class="card">
+      <h3 style="margin-top:0">Importer un export AS 24</h3>
+      <p class="help">Depuis AS 24 FleetManager → Info-Service, exportez vos transactions (Excel <strong>.xlsx</strong> ou CSV) puis déposez le fichier ici. Les doublons (même n° de transaction) sont ignorés.${d.available ? '' : ' <strong style="color:#b91c1c">Lecture Excel indisponible sur le serveur.</strong>'}</p>
+      <div class="erp-row" style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+        <input type="file" id="fuel-file" accept=".xlsx,.xls,.csv">
+        <button class="btn accent" id="fuel-import">📥 Importer</button>
+        <span class="help" id="fuel-status"></span>
+      </div>
+    </div>` : '';
+  const cards = `<div class="grid cols-4">
+    ${statCard('Transactions', s.count || 0, '')}
+    ${statCard('Litres', (s.liters || 0).toLocaleString('fr-FR'), 'L')}
+    ${statCard('Total TTC', euro2(s.ttc || 0), '', true)}
+    ${statCard('Total HT', euro2(s.ht || 0), '')}
+  </div>`;
+  const byVeh = (d.byVehicle || []).length ? `<h3 class="erp" style="margin-top:1rem">Par véhicule</h3>
+    <div class="table-wrap"><table class="report-table"><thead><tr><th>Véhicule (AS 24)</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Total TTC</th></tr></thead>
+    <tbody>${d.byVehicle.map((b) => `<tr><td>${esc(b.vehicle)}</td><td style="text-align:center">${b.count}</td><td style="text-align:right">${b.liters.toLocaleString('fr-FR')} L</td><td style="text-align:right">${euro2(b.ttc)}</td></tr>`).join('')}</tbody></table></div>` : '';
+  const txns = (d.transactions || []).length ? `<h3 class="erp" style="margin-top:1rem">Transactions (${(d.transactions || []).length})</h3>
+    <div class="table-wrap"><table class="report-table"><thead><tr><th>Date</th><th>Station</th><th>Véhicule</th><th>Chauffeur</th><th style="text-align:right">Litres</th><th style="text-align:right">TTC</th><th>État</th>${d.isAdmin ? '<th></th>' : ''}</tr></thead>
+    <tbody>${d.transactions.map((t) => `<tr>
+      <td>${esc(t.date)}${t.time ? ' ' + esc(t.time) : ''}</td><td>${esc(t.place)}</td><td>${esc(t.vehicleName)}</td><td>${esc(t.driver)}</td>
+      <td style="text-align:right">${(t.liters || 0).toLocaleString('fr-FR')}</td><td style="text-align:right">${euro2(t.amountTTC)}</td>
+      <td><span class="pill ${t.state && t.state.toLowerCase().indexOf('non') === -1 ? 'paid' : 'draft'}">${esc(t.state || '')}</span></td>
+      ${d.isAdmin ? `<td><button class="btn ghost sm" data-fueldel="${t.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`
+    : '<div class="alert info">Aucune transaction. Importez un export AS 24.</div>';
+
+  body.innerHTML = importBlock + cards + byVeh + txns;
+
+  if (d.isAdmin) {
+    const fileEl = body.querySelector('#fuel-file');
+    body.querySelector('#fuel-import').onclick = async () => {
+      const f = fileEl.files && fileEl.files[0];
+      if (!f) { toast('Sélectionnez un fichier AS 24.', 'warn'); return; }
+      const st = body.querySelector('#fuel-status'); st.textContent = 'Import en cours…';
+      try {
+        const dataUrl = await new Promise((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(String(fr.result)); fr.onerror = () => reject(new Error('Lecture impossible')); fr.readAsDataURL(f); });
+        const r = await api('POST', '/staff/fuel/import', { fileBase64: dataUrl });
+        toast(`${r.added} transaction(s) importée(s)${r.skipped ? `, ${r.skipped} doublon(s) ignoré(s)` : ''}.`, 'ok');
+        loadCarburant();
+      } catch (e) { st.textContent = ''; toast('Erreur : ' + e.message, 'err'); }
+    };
+    body.querySelectorAll('[data-fueldel]').forEach((b) => b.onclick = async () => {
+      if (!confirm('Supprimer cette transaction ?')) return;
+      try { await api('DELETE', '/staff/fuel/' + b.dataset.fueldel); loadCarburant(); } catch (e) { toast(e.message, 'err'); }
+    });
+  }
 }
 
 /* =========================================================================
