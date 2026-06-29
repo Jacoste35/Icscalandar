@@ -910,3 +910,7 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-ex-chips, .geo-wk-chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
 .geo-ex-chip, .geo-wk-chip { font-size: .76rem; background: #f1f5f9; color: #334155; border-radius: 6px; padding: .18rem .5rem; white-space: nowrap; }
 .geo-recap-sum { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; border-radius: 10px; padding: .55rem .75rem; font-size: .92rem; margin-bottom: .4rem; }
+
+/* Géolocalisation — boutons PDF chauffeur */
+.geo-pdf-row { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .2rem 0 .6rem; }
+.geo-ex-head .btn.sm { margin-left: auto; }
