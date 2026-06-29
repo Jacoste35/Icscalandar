@@ -190,45 +190,42 @@ function geolocSpeedTableHTML(positions, cfg) {
     .sort((a, b) => b.count - a.count);
   if (!ranked.length) return '';
   const total = ranked.reduce((s, r) => s + r.count, 0);
-  const rows = ranked.map((r, i) => {
-    const detail = r.times.length
-      ? r.times.map((t) => `${gTime(t.at)} : <strong>${t.speed}</strong>${t.limit ? ` / ${t.limit}${t.road ? ' (route)' : ''}` : ''}`).join(' · ')
-      : '—';
-    return `<tr><td>${i + 1}</td><td><strong>${esc(r.label)}</strong></td>
-      <td style="text-align:center;font-weight:700;color:#ea580c">${r.count}</td>
-      <td><span class="help">relevée / autorisée — ${detail}</span></td></tr>`;
+  const cards = ranked.map((r) => {
+    const chips = (r.times || []).map((t) => `<span class="geo-ex-chip">${gTime(t.at)} · <strong>${t.speed}</strong>${t.limit ? `/${t.limit}` : ''}${t.road ? ' <span class="help">route</span>' : ''}</span>`).join('');
+    return `<div class="geo-ex-card">
+      <div class="geo-ex-head"><span class="geo-ex-veh">🚗 ${esc(r.label)}</span><span class="geo-ex-count">${r.count} excès</span></div>
+      ${chips ? `<div class="geo-ex-chips">${chips}</div>` : ''}
+    </div>`;
   }).join('');
-  return `<p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')} — limite de la route si connue, sinon seuil &gt; ${limit} km/h. Total : <strong>${total}</strong>.</p>
-    <div class="table-wrap"><table class="report-table">
-    <thead><tr><th>#</th><th>Véhicule</th><th style="text-align:center">Excès</th><th>Détail (relevée / autorisée km/h)</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+  return `<p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')} — <strong>vitesse relevée / limite autorisée</strong> (km/h). Limite de la route si connue, sinon seuil ${limit}. Total du jour : <strong>${total}</strong>.</p>
+    ${cards}`;
 }
 
-// Récapitulatif hebdomadaire des excès sur 3 mois glissants — graphique à
-// barres horizontales (lisible) : une ligne par semaine, détail véhicule sous
-// les semaines concernées.
+// Récapitulatif hebdomadaire des excès sur 3 mois glissants — cartes claires :
+// bandeau de synthèse + une carte par semaine ayant eu des excès (les semaines
+// vides sont résumées). Responsive (les cartes et pastilles s'empilent).
 function geolocWeeklyRecapHTML(recap, cfg) {
   if (!recap || !recap.length) return '';
   const grandTotal = recap.reduce((s, w) => s + w.total, 0);
   if (grandTotal === 0) return ''; // rien tant qu'aucun excès sur la période
   const grandL = recap.reduce((s, w) => s + (w.liters || 0), 0);
   const grandE = recap.reduce((s, w) => s + (w.euros || 0), 0);
-  const maxN = Math.max(1, ...recap.map((w) => w.total));
-  const rows = recap.map((w, i) => {
-    const pct = Math.round(w.total / maxN * 100);
-    const detail = (w.total && w.vehicles.length)
-      ? `<div class="geo-wk-detail help">${w.vehicles.map((v) => `${esc(v.label)} ${v.count}${v.maxRecorded ? ` (max ${v.maxRecorded}${v.limit ? '/' + v.limit : ''})` : ''}${v.euros ? ` · ${euroFmt(v.euros)}` : ''}`).join(' — ')}</div>` : '';
-    return `<div class="geo-wk-row${w.total ? '' : ' geo-wk-zero'}">
-      <div class="geo-wk-top">
-        <span class="geo-wk-week">${i === 0 ? '<strong>Cette sem.</strong> ' : ''}${esc(w.label)}</span>
-        <span class="geo-wk-num">${w.total ? `<strong>${w.total}</strong> excès${w.euros ? ` · ${euroFmt(w.euros)}` : ''}` : '—'}</span>
+  const hit = recap.filter((w) => w.total > 0);
+  const empties = recap.length - hit.length;
+  const cards = hit.map((w, i) => {
+    const isCurrent = w === recap[0];
+    const chips = (w.vehicles || []).map((v) => `<span class="geo-wk-chip">${esc(v.label)} <strong>${v.count}</strong>${v.maxRecorded ? ` · ${v.maxRecorded}${v.limit ? '/' + v.limit : ''} km/h` : ''}</span>`).join('');
+    return `<div class="geo-wk-card">
+      <div class="geo-wk-head">
+        <span class="geo-wk-week">${isCurrent ? '📍 ' : '📅 '}${esc(w.label)}${isCurrent ? ' <span class="help">(en cours)</span>' : ''}</span>
+        <span class="geo-wk-tot">${w.total} excès${w.euros ? ` · ${euroFmt(w.euros)}` : ''}</span>
       </div>
-      <div class="geo-wk-track"><span class="geo-wk-fill" style="width:${pct}%"></span></div>
-      ${detail}
+      ${chips ? `<div class="geo-wk-chips">${chips}</div>` : ''}
     </div>`;
   }).join('');
-  return `<p class="help">Total période : <strong>${grandTotal}</strong> excès — sur-consommation estimée <strong>${litFmt(grandL)}</strong> soit <strong>${euroFmt(grandE)}</strong> (différence de conso entre vitesse relevée et limite autorisée).</p>
-    ${rows}`;
+  return `<div class="geo-recap-sum">📊 Sur 3 mois : <strong>${grandTotal}</strong> excès · sur-conso <strong>${litFmt(grandL)}</strong> · <strong>${euroFmt(grandE)}</strong></div>
+    ${cards}
+    ${empties ? `<p class="help">${empties} semaine(s) sans excès sur la période.</p>` : ''}`;
 }
 
 // Bloc accueil (encadrement) : menu déroulant « Véhicules en temps réel ».
