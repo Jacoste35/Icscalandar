@@ -167,11 +167,16 @@ function geolocCostHTML(positions) {
       <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h · ${c.km} km · ${litFmt(c.liters)} — Salarié <strong>${euroFmt(c.salarie)}</strong> · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong>${c.vehiculeFixe ? ` <span class="help">(dont leasing+assurance ${euroFmt(c.vehiculeFixe)})</span>` : ''}</div>
     </div>`;
   }).join('');
-  return `<h3 style="margin-top:1rem">💶 Coût d'utilisation du jour</h3>
-    <p class="help">Total flotte aujourd'hui : <strong>${euroFmt(grand.total)}</strong> — cumul jusqu'au retour au dépôt ou 18h.</p>
+  return `<p class="help">Total flotte aujourd'hui : <strong>${euroFmt(grand.total)}</strong> — cumul jusqu'au retour au dépôt ou 18h.</p>
     <div class="geo-cost-legend">${GEO_POLES.map(([k, lbl, col]) => `<span><i style="background:${col}"></i>${lbl} ${euroFmt(grand[k])}</span>`).join('')}</div>
     <div class="geo-cost-bar geo-cost-grand">${geoCostBar(grand)}</div>
     ${rows}`;
+}
+
+// Enrobe un contenu dans un menu déroulant (vide -> rien).
+function geoDrop(id, title, inner, open) {
+  if (!inner) return '';
+  return `<details class="geo-drop geo-sub" id="${id}"${open ? ' open' : ''}><summary>${title}</summary><div class="geo-drop-body">${inner}</div></details>`;
 }
 
 // Excès de vitesse DU JOUR — uniquement les véhicules concernés ; rien sinon.
@@ -193,36 +198,37 @@ function geolocSpeedTableHTML(positions, cfg) {
       <td style="text-align:center;font-weight:700;color:#ea580c">${r.count}</td>
       <td><span class="help">relevée / autorisée — ${detail}</span></td></tr>`;
   }).join('');
-  return `<h3 style="margin-top:1rem">🚨 Excès de vitesse du jour</h3>
-    <p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')} — limite de la route si connue, sinon seuil &gt; ${limit} km/h. Total : <strong>${total}</strong>.</p>
+  return `<p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')} — limite de la route si connue, sinon seuil &gt; ${limit} km/h. Total : <strong>${total}</strong>.</p>
     <div class="table-wrap"><table class="report-table">
     <thead><tr><th>#</th><th>Véhicule</th><th style="text-align:center">Excès</th><th>Détail (relevée / autorisée km/h)</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
-// Récapitulatif hebdomadaire des excès sur 3 mois glissants + pertes L/€.
+// Récapitulatif hebdomadaire des excès sur 3 mois glissants — graphique à
+// barres horizontales (lisible) : une ligne par semaine, détail véhicule sous
+// les semaines concernées.
 function geolocWeeklyRecapHTML(recap, cfg) {
   if (!recap || !recap.length) return '';
   const grandTotal = recap.reduce((s, w) => s + w.total, 0);
+  if (grandTotal === 0) return ''; // rien tant qu'aucun excès sur la période
   const grandL = recap.reduce((s, w) => s + (w.liters || 0), 0);
   const grandE = recap.reduce((s, w) => s + (w.euros || 0), 0);
-  if (grandTotal === 0) return ''; // rien tant qu'aucun excès sur la période
+  const maxN = Math.max(1, ...recap.map((w) => w.total));
   const rows = recap.map((w, i) => {
-    const veh = w.vehicles.length
-      ? w.vehicles.map((v) => `${esc(v.label)} : ${v.count} excès${v.maxRecorded ? ` (max ${v.maxRecorded}${v.limit ? '/' + v.limit : ''} km/h)` : ''}${v.liters ? ` — ${litFmt(v.liters)} · ${euroFmt(v.euros)}` : ''}`).join('<br>')
-      : '<span class="help">—</span>';
-    return `<tr class="${w.total > 0 ? 'geo-wk-hit' : 'geo-wk-zero'}">
-      <td>${i === 0 ? '<strong>Cette semaine</strong><br>' : ''}<span class="help">${esc(w.label)}</span></td>
-      <td class="geo-wk-total">${w.total}</td>
-      <td style="text-align:right">${w.liters ? litFmt(w.liters) : '—'}</td>
-      <td style="text-align:right">${w.euros ? euroFmt(w.euros) : '—'}</td>
-      <td>${veh}</td></tr>`;
+    const pct = Math.round(w.total / maxN * 100);
+    const detail = (w.total && w.vehicles.length)
+      ? `<div class="geo-wk-detail help">${w.vehicles.map((v) => `${esc(v.label)} ${v.count}${v.maxRecorded ? ` (max ${v.maxRecorded}${v.limit ? '/' + v.limit : ''})` : ''}${v.euros ? ` · ${euroFmt(v.euros)}` : ''}`).join(' — ')}</div>` : '';
+    return `<div class="geo-wk-row${w.total ? '' : ' geo-wk-zero'}">
+      <div class="geo-wk-top">
+        <span class="geo-wk-week">${i === 0 ? '<strong>Cette sem.</strong> ' : ''}${esc(w.label)}</span>
+        <span class="geo-wk-num">${w.total ? `<strong>${w.total}</strong> excès${w.euros ? ` · ${euroFmt(w.euros)}` : ''}` : '—'}</span>
+      </div>
+      <div class="geo-wk-track"><span class="geo-wk-fill" style="width:${pct}%"></span></div>
+      ${detail}
+    </div>`;
   }).join('');
-  return `<h3 style="margin-top:1rem">📅 Récapitulatif hebdomadaire des excès (3 mois glissants)</h3>
-    <p class="help">Total période : <strong>${grandTotal}</strong> excès — sur-consommation estimée <strong>${litFmt(grandL)}</strong> soit <strong>${euroFmt(grandE)}</strong>. Estimation : différence de consommation théorique entre la vitesse relevée et la limite autorisée.</p>
-    <div class="table-wrap"><table class="report-table geo-recap-table">
-      <thead><tr><th>Semaine</th><th style="text-align:center">Excès</th><th style="text-align:right">Carburant perdu</th><th style="text-align:right">Coût</th><th>Détail par véhicule</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+  return `<p class="help">Total période : <strong>${grandTotal}</strong> excès — sur-consommation estimée <strong>${litFmt(grandL)}</strong> soit <strong>${euroFmt(grandE)}</strong> (différence de conso entre vitesse relevée et limite autorisée).</p>
+    ${rows}`;
 }
 
 // Bloc accueil (encadrement) : menu déroulant « Véhicules en temps réel ».
@@ -240,9 +246,9 @@ function geolocDashboardHTML(d) {
       <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
       ${err}
       ${geolocLiveTableHTML(d.positions || [])}
-      ${geolocCostHTML(d.positions || [])}
-      ${geolocSpeedTableHTML(d.positions || [], d.config)}
-      ${geolocWeeklyRecapHTML(d.speedRecap, d.config)}
+      ${geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(d.positions || []))}
+      ${geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(d.positions || [], d.config))}
+      ${geoDrop('geodrop-recap', '📅 Récapitulatif hebdomadaire des excès (3 mois)', geolocWeeklyRecapHTML(d.speedRecap, d.config))}
     </details>
   </div>`;
 }
@@ -321,12 +327,14 @@ async function loadGeoloc(force) {
       return;
     }
     drawGeoMarkers(d.positions || []);
+    const openIds = [...listEl.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
     const upd = (d.positions || []).reduce((mx, p) => (p.ts && p.ts > mx ? p.ts : mx), '');
     listEl.innerHTML = `<p class="help">Dernière mise à jour : ${gTime(upd) || '—'} ${d.day ? '· ' + d.day : ''}</p>`
       + geolocLiveTableHTML(d.positions || [])
-      + geolocCostHTML(d.positions || [])
-      + geolocSpeedTableHTML(d.positions || [], d.config)
-      + geolocWeeklyRecapHTML(d.speedRecap, d.config);
+      + geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(d.positions || []))
+      + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(d.positions || [], d.config))
+      + geoDrop('geodrop-recap', '📅 Récapitulatif hebdomadaire des excès (3 mois)', geolocWeeklyRecapHTML(d.speedRecap, d.config));
+    openIds.forEach((id) => { const x = listEl.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
   } catch (e) {
     if (alertEl) alertEl.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }

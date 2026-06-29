@@ -880,3 +880,15 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-depot-foot { margin-top: .6rem; padding-top: .5rem; border-top: 1px dashed var(--border); font-size: .82rem; }
 .geo-depot-foot ul { margin: .3rem 0 0; padding-left: 1.1rem; }
 .geo-depot-foot li { margin: .15rem 0; }
+
+/* Géolocalisation — sous-menus déroulants + récap hebdo en barres */
+.geo-sub { margin-top: .5rem; }
+.geo-drop-body { padding: .35rem .2rem .2rem; }
+.geo-wk-row { padding: .4rem 0; border-bottom: 1px solid var(--border); }
+.geo-wk-row.geo-wk-zero { opacity: .45; }
+.geo-wk-top { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; font-size: .84rem; }
+.geo-wk-week { color: var(--muted); }
+.geo-wk-num { white-space: nowrap; }
+.geo-wk-track { height: 8px; background: #eef2f7; border-radius: 4px; overflow: hidden; margin-top: .3rem; }
+.geo-wk-fill { display: block; height: 100%; background: #ea580c; border-radius: 4px; }
+.geo-wk-detail { margin-top: .3rem; }
