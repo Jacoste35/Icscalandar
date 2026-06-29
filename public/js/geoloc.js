@@ -242,7 +242,7 @@ function geolocDashboardHTML(d) {
   const err = d.error ? `<div class="alert warn" style="margin:.4rem 0">${esc(d.error)}</div>` : '';
   return `<div class="card">
     <details class="geo-drop geo-drop-main" id="geodrop-main">
-      <summary>🛰️ Véhicules en temps réel ${geoStatusChips(active, depot)}</summary>
+      <summary><span class="geo-main-title">🛰️ Géolocalisation des chauffeurs</span> ${geoStatusChips(active, depot)}</summary>
       <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
       ${err}
       ${geolocLiveTableHTML(d.positions || [])}

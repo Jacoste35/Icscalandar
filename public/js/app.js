@@ -815,6 +815,7 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${previewBar}
+      ${geolocPanel}
       ${anc}
       ${isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">📊 Mes compteurs</h3><div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
@@ -824,7 +825,6 @@ async function renderDashboard(main) {
       </div></div>`}
       ${philo}
       ${myDocsPanel}
-      ${geolocPanel}
       ${messagesPanel}
       ${kmAnomalyPanel}
       ${stockAlertPanel}
