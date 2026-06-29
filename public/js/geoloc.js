@@ -268,8 +268,8 @@ async function geolocRefreshDashboard() {
     openIds.forEach((id) => { const x = el.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
     el.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   } catch (e) {
-    // Ne jamais laisser le panneau vide : afficher au moins l'en-tête.
-    if (!el.innerHTML.trim()) el.innerHTML = geolocFallbackHTML('Données momentanément indisponibles — réessai automatique…');
+    // Ne jamais rester bloqué sur « chargement… » : afficher l'en-tête + l'erreur.
+    el.innerHTML = geolocFallbackHTML('Connexion momentanément indisponible — réessai automatique… ' + (e && e.message ? '(' + e.message + ')' : ''));
   }
 }
 function geolocFallbackHTML(msg) {
