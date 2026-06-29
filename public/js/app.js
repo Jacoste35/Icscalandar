@@ -5265,6 +5265,7 @@ async function renderHours(main) {
       <button data-htab="resume">Résumé des amplitudes</button>
       <button data-htab="import">Import rapport d'activité</button>
       <button data-htab="saisie">Saisie manuelle</button>
+      <button data-htab="bulletins">Bulletins de salaire</button>
     </div>
     <div id="hr-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#hr-tabs');
@@ -5279,6 +5280,110 @@ function hrTab(tab) {
   if (tab === 'hsup') return hoursHsup(body);
   if (tab === 'import') return hoursImport(body);
   if (tab === 'saisie') return hoursSaisie(body);
+  if (tab === 'bulletins') return hoursBulletins(body);
+}
+
+/* ---- Bulletins de salaire : upload + lecture + relecture + application --- */
+const BULL_CATS = [['congesN', 'Congés N'], ['congesN1', 'Congés N-1'], ['rcc', 'RCC (h)'], ['heuresSupp', 'Récup. / h. sup (h)']];
+let _bullUsers = [];
+function hoursBulletins(body) {
+  body.innerHTML = `
+    <div class="alert info">Importez les bulletins de paie (PDF). Les compteurs détectés (congés payés N / N-1, RCC, récupération) sont <strong>proposés</strong> ; vous les relisez et corrigez avant de les appliquer aux comptes des salariés.</div>
+    <div class="card">
+      <div class="erp-row" style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+        <input type="file" id="bull-files" accept="application/pdf" multiple>
+        <button class="btn accent" id="bull-read">📄 Lire les bulletins</button>
+        <span class="help" id="bull-status"></span>
+      </div>
+    </div>
+    <div id="bull-review"></div>`;
+  body.querySelector('#bull-read').onclick = bullRead;
+}
+
+function bullFileToData(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve({ name: file.name, data: String(fr.result) });
+    fr.onerror = () => reject(new Error('Lecture du fichier impossible'));
+    fr.readAsDataURL(file);
+  });
+}
+
+async function bullRead() {
+  const input = document.getElementById('bull-files');
+  const status = document.getElementById('bull-status');
+  const files = [...(input.files || [])];
+  if (!files.length) { toast('Sélectionnez au moins un bulletin PDF.', 'warn'); return; }
+  status.textContent = 'Lecture en cours…';
+  try {
+    const payload = await Promise.all(files.map(bullFileToData));
+    const { results, users } = await api('POST', '/staff/payslips/parse', { files: payload });
+    _bullUsers = users || [];
+    bullRenderReview(results || []);
+    status.textContent = `${results.length} bulletin(s) lu(s).`;
+  } catch (e) { status.textContent = ''; toast('Erreur : ' + e.message, 'err'); }
+}
+
+function bullConfBadge(c) {
+  const m = c >= 3 ? ['#16a34a', 'fiable'] : c >= 1 ? ['#eab308', 'à vérifier'] : ['#ef4444', 'incertain'];
+  return `<span class="pill" style="background:${m[0]}22;color:${m[0]}">détection ${m[1]}</span>`;
+}
+
+function bullRenderReview(results) {
+  const wrap = document.getElementById('bull-review');
+  const userOpts = (sel) => '<option value="">— choisir un salarié —</option>'
+    + _bullUsers.map((u) => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+  wrap.innerHTML = results.map((r, i) => {
+    const cur = (_bullUsers.find((u) => u.id === r.matchedUserId) || {}).balances || {};
+    const rows = BULL_CATS.map(([k, lbl]) => {
+      const proposed = r.values && r.values[k] != null ? r.values[k] : (cur[k] != null ? cur[k] : '');
+      const detected = r.found && r.found[k] ? '<span class="pill" style="background:#3b82f622;color:#3b82f6">lu</span>' : '<span class="help">non détecté</span>';
+      return `<label style="display:block;margin:.3rem 0">${lbl} ${detected}<br>
+        <span class="help">actuel : <b data-cur="${k}">${cur[k] != null ? cur[k] : '—'}</b> →</span>
+        <input data-f="${k}" type="number" step="0.5" value="${proposed}" style="width:120px"></label>`;
+    }).join('');
+    const src = (r.lines || []).length ? `<details style="margin-top:.4rem"><summary class="help">Voir les lignes lues</summary><pre style="white-space:pre-wrap;font-size:.75rem;color:#475569">${esc(r.lines.join('\n'))}</pre></details>` : '';
+    const err = r.error ? `<div class="alert warn" style="margin:.3rem 0">Lecture partielle : ${esc(r.error)}</div>` : '';
+    return `<div class="card bull-card" data-i="${i}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <strong>📄 ${esc(r.fileName)}</strong> ${bullConfBadge(r.confidence)}
+      </div>
+      ${err}
+      <div class="erp-row" style="margin:.5rem 0"><label>Salarié<br><select data-user style="min-width:220px">${userOpts(r.matchedUserId)}</select></label></div>
+      <div class="grid cols-2">${rows}</div>
+      ${src}
+    </div>`;
+  }).join('') + `<div style="margin-top:1rem"><button class="btn accent" id="bull-apply">✅ Valider et appliquer aux comptes</button></div>`;
+
+  // Met à jour la colonne « actuel » quand on change le salarié.
+  wrap.querySelectorAll('.bull-card').forEach((card) => {
+    const sel = card.querySelector('[data-user]');
+    sel.onchange = () => {
+      const u = _bullUsers.find((x) => x.id === sel.value);
+      const bal = (u && u.balances) || {};
+      card.querySelectorAll('[data-cur]').forEach((sp) => { const k = sp.dataset.cur; sp.textContent = bal[k] != null ? bal[k] : '—'; });
+    };
+  });
+  wrap.querySelector('#bull-apply').onclick = bullApply;
+}
+
+async function bullApply() {
+  const cards = [...document.querySelectorAll('.bull-card')];
+  const items = [];
+  for (const card of cards) {
+    const userId = card.querySelector('[data-user]').value;
+    if (!userId) continue;
+    const it = { userId };
+    card.querySelectorAll('[data-f]').forEach((inp) => { if (inp.value !== '') it[inp.dataset.f] = Number(inp.value); });
+    items.push(it);
+  }
+  if (!items.length) { toast('Associez au moins un bulletin à un salarié.', 'warn'); return; }
+  if (!confirm(`Appliquer les compteurs à ${items.length} salarié(s) ? Les valeurs remplaceront leurs soldes actuels.`)) return;
+  try {
+    const { applied } = await api('POST', '/staff/payslips/apply', { items });
+    toast(`Compteurs mis à jour pour ${applied.length} salarié(s).`, 'ok');
+    await loadHours();
+  } catch (e) { toast('Erreur : ' + e.message, 'err'); }
 }
 
 // Résumé : amplitudes réalisées par chauffeur, pour un mois sélectionnable

@@ -14,6 +14,7 @@ const { getData, save, nextId, enableAccrual } = db;
 const holidays = require('./lib/holidays');
 const mail = require('./lib/mail');
 const pajgps = require('./lib/erp/pajgps');
+const payslip = require('./lib/erp/payslip');
 const { ensureErp } = require('./lib/erp');
 
 const ROLES = ['admin', 'responsable', 'employee'];
@@ -2954,6 +2955,53 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
     .map((s) => s.month);
   await save();
   res.json({ added, reopened, planned, kmUpdated, kmFlagged });
+});
+
+/* ---- Bulletins de salaire : lecture (PDF) + application aux compteurs --- */
+// Lit un ou plusieurs bulletins (PDF en base64) et propose, par salarié, les
+// valeurs détectées (CP N / N-1, RCC, récup.). Rien n'est appliqué ici.
+app.post('/api/staff/payslips/parse', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const files = (req.body && req.body.files) || [];
+  if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'Aucun fichier fourni.' });
+  const usersMin = db.users.filter((u) => u.status !== 'deleted').map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName }));
+  const balById = {}; db.users.forEach((u) => { balById[u.id] = u.balances || {}; });
+  const results = [];
+  for (const f of files.slice(0, 40)) {
+    const r = { fileName: String((f && f.name) || 'bulletin.pdf'), error: '', matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] };
+    try {
+      const b64 = String((f && f.data) || '').replace(/^data:[^,]*,/, '');
+      if (!b64) throw new Error('Fichier vide.');
+      const text = await payslip.pdfToText(Buffer.from(b64, 'base64'));
+      Object.assign(r, payslip.extractFromText(text, usersMin));
+    } catch (e) { r.error = e.message; }
+    results.push(r);
+  }
+  res.json({
+    results,
+    users: usersMin.map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}`, balances: balById[u.id] || {} })),
+  });
+});
+
+// Applique les compteurs validés (relus par l'admin) aux comptes des salariés.
+app.post('/api/staff/payslips/apply', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const items = (req.body && req.body.items) || [];
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Rien à appliquer.' });
+  const applied = [];
+  for (const it of items) {
+    const u = db.users.find((x) => x.id === (it && it.userId));
+    if (!u) continue;
+    u.balances = u.balances || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
+    let changed = false;
+    for (const k of ['congesN', 'congesN1', 'rcc', 'heuresSupp']) {
+      if (it[k] !== undefined && it[k] !== '' && Number.isFinite(Number(it[k]))) { u.balances[k] = Number(it[k]); changed = true; }
+    }
+    if (it.congesN !== undefined && it.congesN !== '' && Number.isFinite(Number(it.congesN))) enableAccrual(u);
+    if (changed) applied.push({ userId: u.id, name: `${u.firstName} ${u.lastName}`, balances: u.balances });
+  }
+  await save();
+  res.json({ applied });
 });
 
 // Anomalies de kilométrage en attente de validation (encadrement).
