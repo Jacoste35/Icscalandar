@@ -901,3 +901,12 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-main-title { font-weight: 800; letter-spacing: .2px; }
 .geo-drop-main[open] > summary { box-shadow: 0 2px 6px rgba(0,0,0,.12); }
 .geo-drop-main > .geo-drop-body, .geo-drop-main > *:not(summary) { padding: 0 .6rem; }
+
+/* Géolocalisation — excès & récap en cartes responsives */
+.geo-ex-card, .geo-wk-card { border: 1px solid var(--border); border-left: 4px solid #ea580c; border-radius: 10px; padding: .55rem .7rem; margin: .45rem 0; background: #fff; }
+.geo-ex-head, .geo-wk-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.geo-ex-veh, .geo-wk-week { font-weight: 700; }
+.geo-ex-count, .geo-wk-tot { font-size: .76rem; font-weight: 800; color: #b91c1c; background: #fee2e2; border-radius: 999px; padding: .14rem .6rem; white-space: nowrap; }
+.geo-ex-chips, .geo-wk-chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
+.geo-ex-chip, .geo-wk-chip { font-size: .76rem; background: #f1f5f9; color: #334155; border-radius: 6px; padding: .18rem .5rem; white-space: nowrap; }
+.geo-recap-sum { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; border-radius: 10px; padding: .55rem .75rem; font-size: .92rem; margin-bottom: .4rem; }
