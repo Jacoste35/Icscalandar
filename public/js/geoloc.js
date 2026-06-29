@@ -185,7 +185,7 @@ function geolocSpeedTableHTML(positions, cfg) {
   cfg = cfg || {};
   const limit = cfg.speedLimit || 115;
   const ranked = positions
-    .map((p) => ({ label: geoVehLabel(p), count: (p.overspeed && p.overspeed.count) || 0, times: (p.overspeed && p.overspeed.times) || [] }))
+    .map((p) => ({ deviceId: p.deviceId, label: geoVehLabel(p), count: (p.overspeed && p.overspeed.count) || 0, times: (p.overspeed && p.overspeed.times) || [] }))
     .filter((r) => r.count > 0)
     .sort((a, b) => b.count - a.count);
   if (!ranked.length) return '';
@@ -193,7 +193,8 @@ function geolocSpeedTableHTML(positions, cfg) {
   const cards = ranked.map((r) => {
     const chips = (r.times || []).map((t) => `<span class="geo-ex-chip">${gTime(t.at)} · <strong>${t.speed}</strong>${t.limit ? `/${t.limit}` : ''}${t.road ? ' <span class="help">route</span>' : ''}</span>`).join('');
     return `<div class="geo-ex-card">
-      <div class="geo-ex-head"><span class="geo-ex-veh">🚗 ${esc(r.label)}</span><span class="geo-ex-count">${r.count} excès</span></div>
+      <div class="geo-ex-head"><span class="geo-ex-veh">🚗 ${esc(r.label)}</span><span class="geo-ex-count">${r.count} excès</span>
+        <button class="btn ghost sm" data-geopdf-day="${esc(String(r.deviceId))}">📄 PDF chauffeur</button></div>
       ${chips ? `<div class="geo-ex-chips">${chips}</div>` : ''}
     </div>`;
   }).join('');
@@ -223,7 +224,12 @@ function geolocWeeklyRecapHTML(recap, cfg) {
       ${chips ? `<div class="geo-wk-chips">${chips}</div>` : ''}
     </div>`;
   }).join('');
+  // Liste des véhicules concernés -> un PDF par chauffeur (avec extrapolation annuelle).
+  const vehSet = {};
+  recap.forEach((w) => (w.vehicles || []).forEach((v) => { vehSet[v.label] = true; }));
+  const pdfBtns = Object.keys(vehSet).map((lbl) => `<button class="btn ghost sm" data-geopdf-recap="${encodeURIComponent(lbl)}">📄 ${esc(lbl)}</button>`).join(' ');
   return `<div class="geo-recap-sum">📊 Sur 3 mois : <strong>${grandTotal}</strong> excès · sur-conso <strong>${litFmt(grandL)}</strong> · <strong>${euroFmt(grandE)}</strong></div>
+    ${pdfBtns ? `<div class="geo-pdf-row"><span class="help">PDF à envoyer aux chauffeurs :</span> ${pdfBtns}</div>` : ''}
     ${cards}
     ${empties ? `<p class="help">${empties} semaine(s) sans excès sur la période.</p>` : ''}`;
 }
@@ -272,10 +278,96 @@ async function geolocRefreshDashboard() {
 function geolocPaintDashboard(el, d, note) {
   const openIds = [...el.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
   if (note && d) d = Object.assign({}, d, { error: note });
+  _geoLastData = d;
   const html = geolocDashboardHTML(d);
   el.innerHTML = html || geolocFallbackHTML('Aucune donnée de géolocalisation pour le moment.');
   openIds.forEach((id) => { const x = el.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
   el.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  geoBindPdfButtons(el);
+}
+
+// Données live courantes (pour la génération des PDF chauffeur).
+let _geoLastData = null;
+function geoBindPdfButtons(scope) {
+  scope.querySelectorAll('[data-geopdf-day]').forEach((b) => b.onclick = () => geoExcessDayPdf(b.getAttribute('data-geopdf-day')));
+  scope.querySelectorAll('[data-geopdf-recap]').forEach((b) => b.onclick = () => geoRecapPdf(decodeURIComponent(b.getAttribute('data-geopdf-recap'))));
+}
+
+/* ---- Génération de PDF à envoyer aux chauffeurs --------------------- */
+function geoPrintWindow(title, bodyHtml) {
+  const w = window.open('', '_blank');
+  if (!w) { toast('Autorisez les fenêtres pop-up pour générer le PDF.', 'warn'); return; }
+  w.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${esc(title)}</title>
+    <style>
+      @page{margin:18mm}
+      body{font:13px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;color:#1e293b;max-width:760px;margin:0 auto;padding:10px}
+      h1{font-size:18px;margin:0 0 2px} h2{font-size:15px;margin:18px 0 6px}
+      .head{border-bottom:3px solid #14427e;padding-bottom:8px;margin-bottom:14px}
+      .co{font-weight:800;color:#14427e} .muted{color:#64748b;font-size:12px}
+      table{width:100%;border-collapse:collapse;margin:8px 0} th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;font-size:12.5px}
+      th{background:#f1f5f9}
+      .big{font-size:22px;font-weight:800;color:#b91c1c}
+      .box{border:1px solid #fed7aa;background:#fff7ed;border-radius:8px;padding:10px 12px;margin:10px 0}
+      .ok{border-color:#bbf7d0;background:#f0fdf4}
+      .noprint{margin-top:22px;text-align:center}
+      @media print{.noprint{display:none}}
+    </style></head><body>${bodyHtml}
+    <div class="noprint"><button onclick="window.print()" style="padding:9px 18px;font-size:14px;cursor:pointer">🖨️ Imprimer / Enregistrer en PDF</button></div>
+    </body></html>`);
+  w.document.close();
+}
+
+// PDF journalier des excès d'un véhicule (à remettre au chauffeur).
+function geoExcessDayPdf(deviceId) {
+  const d = _geoLastData; if (!d) return;
+  const p = (d.positions || []).find((x) => String(x.deviceId) === String(deviceId));
+  if (!p) { toast('Véhicule introuvable.', 'err'); return; }
+  const times = (p.overspeed && p.overspeed.times) || [];
+  const dateStr = new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const driver = (p.cost && p.cost.driverName) || '';
+  const rows = times.map((t) => `<tr><td>${gTime(t.at)}</td><td><strong>${t.speed} km/h</strong></td><td>${t.limit ? t.limit + ' km/h' : '—'}</td><td>${t.limit ? '+' + Math.max(0, t.speed - t.limit) + ' km/h' : '—'}</td><td>${t.road ? 'limite route' : 'seuil'}</td></tr>`).join('');
+  const body = `
+    <div class="head"><div class="co">INTER COLIS SERVICES</div><div class="muted">Relevé de conduite — sécurité & éco-conduite</div></div>
+    <h1>Excès de vitesse du jour</h1>
+    <p class="muted">${esc(dateStr)}</p>
+    <table><tr><td><strong>Véhicule</strong></td><td>${esc(geoVehLabel(p))}${p.plate ? ' — ' + esc(p.plate) : ''}</td></tr>
+    ${driver ? `<tr><td><strong>Chauffeur</strong></td><td>${esc(driver)}</td></tr>` : ''}
+    <tr><td><strong>Nombre d'excès</strong></td><td><strong>${times.length}</strong></td></tr></table>
+    ${times.length ? `<h2>Détail des dépassements</h2>
+      <table><thead><tr><th>Heure</th><th>Vitesse relevée</th><th>Vitesse autorisée</th><th>Dépassement</th><th>Source</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="box">Chaque excès augmente le risque d'accident et la consommation de carburant. Merci de respecter les limitations pour votre sécurité et celle des autres.</div>`
+    : `<div class="box ok">✅ Aucun excès relevé aujourd'hui. Merci pour votre conduite responsable !</div>`}
+    <p class="muted">Document généré le ${new Date().toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })}.</p>`;
+  geoPrintWindow('Excès du jour — ' + geoVehLabel(p), body);
+}
+
+// PDF récapitulatif 3 mois d'un chauffeur, avec extrapolation annuelle du coût.
+function geoRecapPdf(label) {
+  const d = _geoLastData; if (!d) return;
+  const recap = d.speedRecap || [];
+  const weeks = recap.map((w) => ({ label: w.label, v: (w.vehicles || []).find((x) => x.label === label) })).filter((x) => x.v);
+  if (!weeks.length) { toast('Aucun excès pour ce véhicule sur la période.', 'info'); return; }
+  const totCount = weeks.reduce((s, w) => s + (w.v.count || 0), 0);
+  const totL = weeks.reduce((s, w) => s + (w.v.liters || 0), 0);
+  const totE = weeks.reduce((s, w) => s + (w.v.euros || 0), 0);
+  const yearL = totL * 4, yearE = totE * 4; // 3 mois glissants ≈ 1/4 d'année
+  const rows = weeks.map((w) => `<tr><td>${esc(w.label)}</td><td style="text-align:center">${w.v.count}</td><td style="text-align:right">${litFmt(w.v.liters || 0)}</td><td style="text-align:right">${euroFmt(w.v.euros || 0)}</td></tr>`).join('');
+  const body = `
+    <div class="head"><div class="co">INTER COLIS SERVICES</div><div class="muted">Bilan éco-conduite — 3 derniers mois</div></div>
+    <h1>Récapitulatif des excès de vitesse</h1>
+    <p class="muted">Véhicule : <strong>${esc(label)}</strong> — édité le ${new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })}</p>
+    <h2>Semaine par semaine</h2>
+    <table><thead><tr><th>Semaine</th><th style="text-align:center">Excès</th><th style="text-align:right">Carburant perdu</th><th style="text-align:right">Coût</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th>Total 3 mois</th><th style="text-align:center">${totCount}</th><th style="text-align:right">${litFmt(totL)}</th><th style="text-align:right">${euroFmt(totE)}</th></tr></tfoot></table>
+    <div class="box">
+      <div>Projection sur 12 mois à ce rythme :</div>
+      <div class="big">≈ ${euroFmt(yearE)} / an</div>
+      <div class="muted">soit environ ${litFmt(yearL)} de carburant gaspillé inutilement chaque année.</div>
+      <p style="margin:.6rem 0 0">Chaque excès de vitesse <strong>évitable</strong> représente une dépense inutile pour l'entreprise (sur-consommation), en plus du risque routier et des sanctions. Lever le pied, c'est plus de sécurité et des économies pour tous.</p>
+    </div>
+    <p class="muted">Estimation basée sur la différence de consommation théorique entre la vitesse relevée et la limite autorisée (Mercedes Sprinter 314 CDI).</p>`;
+  geoPrintWindow('Récap 3 mois — ' + label, body);
 }
 function geolocFallbackHTML(msg) {
   return `<div class="card"><details class="geo-drop geo-drop-main" open>
@@ -350,13 +442,17 @@ async function renderGeoloc(main) {
   const cached = geolocLoadCache();
   if (cached && (cached.positions || []).length) {
     try {
+      _geoLastData = cached;
       drawGeoMarkers(cached.positions);
       const listEl0 = document.getElementById('geo-list');
-      if (listEl0) listEl0.innerHTML = '<p class="help">Dernières positions connues — actualisation…</p>'
-        + geolocLiveTableHTML(cached.positions)
-        + geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(cached.positions))
-        + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(cached.positions, cached.config))
-        + geoDrop('geodrop-recap', '📅 Récapitulatif hebdomadaire des excès (3 mois)', geolocWeeklyRecapHTML(cached.speedRecap, cached.config));
+      if (listEl0) {
+        listEl0.innerHTML = '<p class="help">Dernières positions connues — actualisation…</p>'
+          + geolocLiveTableHTML(cached.positions)
+          + geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(cached.positions))
+          + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(cached.positions, cached.config))
+          + geoDrop('geodrop-recap', '📅 Récapitulatif hebdomadaire des excès (3 mois)', geolocWeeklyRecapHTML(cached.speedRecap, cached.config));
+        geoBindPdfButtons(listEl0);
+      }
     } catch (e) { /* cache illisible : ignoré */ }
   }
   await loadGeoloc(true);
@@ -369,7 +465,7 @@ async function loadGeoloc(force) {
   if (!listEl) return;
   try {
     const d = await api('GET', '/staff/geoloc/live' + (force ? '?force=1' : ''));
-    geolocSaveCache(d);
+    geolocSaveCache(d); _geoLastData = d;
     if (alertEl) alertEl.innerHTML = d.error ? `<div class="alert warn">${esc(d.error)}</div>` : '';
     if (!d.enabled || !d.configured) {
       listEl.innerHTML = `<p class="help">${d.enabled ? 'Identifiants PAJ manquants.' : 'Géolocalisation non activée.'} ${State.user.role === 'admin' ? 'Cliquez sur « Configuration ».' : 'Contactez un administrateur.'}</p>`;
@@ -384,6 +480,7 @@ async function loadGeoloc(force) {
       + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(d.positions || [], d.config))
       + geoDrop('geodrop-recap', '📅 Récapitulatif hebdomadaire des excès (3 mois)', geolocWeeklyRecapHTML(d.speedRecap, d.config));
     openIds.forEach((id) => { const x = listEl.querySelector('#' + (window.CSS && CSS.escape ? CSS.escape(id) : id)); if (x) x.open = true; });
+    geoBindPdfButtons(listEl);
   } catch (e) {
     if (alertEl) alertEl.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`;
   }
