@@ -3092,16 +3092,26 @@ app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) 
   if (!g.enabled || !g.email || !g.passwordEnc) {
     return res.json({ positions: [], configured: !!(g.email && g.passwordEnc), enabled: !!g.enabled, error: g.enabled ? 'Identifiants PAJ manquants.' : 'Géolocalisation non activée.', config: pubCfg(g) });
   }
+  // Endpoint volontairement « incassable » : on renvoie toujours 200 avec ce
+  // qu'on peut (positions en cache + message d'erreur éventuel), pour ne jamais
+  // laisser le panneau d'accueil bloqué sur « chargement… ».
+  let positions = [], errMsg = '', day = '', speedRecap = [];
   try {
     const r = await pajgps.refreshAndTrack(data, { force: req.query.force === '1' });
+    positions = r.list || [];
+    errMsg = r.error || '';
     if (req.query.address !== '0') {
-      try { await pajgps.attachAddresses(data, r.list); } catch (e) { /* géocodage best-effort */ }
+      try { await pajgps.attachAddresses(data, positions); } catch (e) { /* géocodage best-effort */ }
     }
     if (r.polled) { try { await save(); } catch (e) { /* persistance best-effort */ } }
-    res.json({ positions: r.list, day: data.pajState.day, error: r.error || '', enabled: true, configured: true, config: pubCfg(g), speedRecap: pajgps.weeklySpeedRecap(data) });
   } catch (e) {
-    res.status(502).json({ error: e.message, positions: pajgps.liveList(data), config: pubCfg(g) });
+    errMsg = e.message;
+    try { positions = pajgps.liveList(data); } catch (e2) { positions = []; }
+    console.error('Géoloc live:', e && e.stack ? e.stack : e);
   }
+  try { day = data.pajState.day; } catch (e) {}
+  try { speedRecap = pajgps.weeklySpeedRecap(data); } catch (e) { speedRecap = []; console.error('Géoloc recap:', e && e.stack ? e.stack : e); }
+  res.json({ positions, day, error: errMsg, enabled: true, configured: true, config: pubCfg(g), speedRecap });
 });
 
 function pubCfg(g) { return { speedLimit: g.speedLimit || 115, dayStart: g.dayStart || '05:00', dayEnd: g.dayEnd || '18:00' }; }
