@@ -15,6 +15,7 @@ const holidays = require('./lib/holidays');
 const mail = require('./lib/mail');
 const pajgps = require('./lib/erp/pajgps');
 const payslip = require('./lib/erp/payslip');
+const fuelimport = require('./lib/erp/fuelimport');
 const { ensureErp } = require('./lib/erp');
 
 const ROLES = ['admin', 'responsable', 'employee'];
@@ -3163,6 +3164,86 @@ app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) 
 });
 
 function pubCfg(g) { return { speedLimit: g.speedLimit || 115, dayStart: g.dayStart || '05:00', dayEnd: g.dayEnd || '18:00' }; }
+
+/* =========================================================================
+   CARBURANT (Exploitation & Transport) — import des transactions AS 24
+   ========================================================================= */
+function fuelMatchVehicle(db, t) {
+  const map = db.settings.fuelCardMap || {};
+  if (t.card && map[t.card]) { const v = db.vehicles.find((x) => x.id === map[t.card]); if (v) return v; }
+  const norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const vn = norm(t.vehicleName);
+  if (vn) {
+    for (const v of db.vehicles) {
+      const cand = [v.name, v.plate, v.tournee].map(norm).filter(Boolean);
+      if (cand.some((c) => c && (c.indexOf(vn) !== -1 || vn.indexOf(c) !== -1))) return v;
+    }
+  }
+  return null;
+}
+
+// Liste des transactions + synthèse (litres, montants, par véhicule).
+app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
+  const db = getData(); ensureErp(db);
+  const list = db.fuel.slice().sort((a, b) => String(b.date + (b.time || '')).localeCompare(String(a.date + (a.time || ''))));
+  const sum = { count: list.length, liters: 0, ht: 0, ttc: 0 };
+  const byVeh = {};
+  for (const t of list) {
+    sum.liters += t.liters || 0; sum.ht += t.amountHT || 0; sum.ttc += t.amountTTC || 0;
+    const key = t.vehicleName || '—';
+    const b = byVeh[key] || (byVeh[key] = { vehicle: key, liters: 0, ttc: 0, count: 0 });
+    b.liters += t.liters || 0; b.ttc += t.amountTTC || 0; b.count += 1;
+  }
+  const round2 = (n) => Math.round((n || 0) * 100) / 100;
+  res.json({
+    transactions: list.slice(0, 500),
+    summary: { count: sum.count, liters: round2(sum.liters), ht: round2(sum.ht), ttc: round2(sum.ttc) },
+    byVehicle: Object.values(byVeh).map((b) => ({ ...b, liters: round2(b.liters), ttc: round2(b.ttc) })).sort((a, z) => z.ttc - a.ttc),
+    isAdmin: req.user.role === 'admin',
+    vehicles: db.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
+    available: fuelimport.available(),
+  });
+});
+
+// Import d'un export AS 24 (Excel/CSV, base64). Déduplique par n° de transaction.
+app.post('/api/staff/fuel/import', authRequired, adminRequired, async (req, res) => {
+  const db = getData(); ensureErp(db);
+  const b64 = String((req.body && req.body.fileBase64) || '').replace(/^data:[^,]*,/, '');
+  if (!b64) return res.status(400).json({ error: 'Aucun fichier fourni.' });
+  let rows;
+  try { rows = fuelimport.parseWorkbook(Buffer.from(b64, 'base64')); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  const seen = new Set(db.fuel.map((t) => t.txnId));
+  let added = 0, skipped = 0;
+  for (const r of rows) {
+    if (seen.has(r.txnId)) { skipped++; continue; }
+    const veh = fuelMatchVehicle(db, r);
+    db.fuel.push({ id: nextId('fuel'), ...r, vehicleId: veh ? veh.id : null, importedAt: new Date().toISOString() });
+    seen.add(r.txnId); added++;
+  }
+  await save();
+  res.json({ added, skipped, total: db.fuel.length });
+});
+
+// Associe une carte AS 24 à un véhicule (rapprochement automatique des imports).
+app.post('/api/staff/fuel/card-map', authRequired, adminRequired, async (req, res) => {
+  const db = getData(); ensureErp(db);
+  const { card, vehicleId } = req.body || {};
+  if (!card) return res.status(400).json({ error: 'Carte requise.' });
+  if (vehicleId) db.settings.fuelCardMap[String(card)] = String(vehicleId);
+  else delete db.settings.fuelCardMap[String(card)];
+  // Réapplique le mapping aux transactions existantes de cette carte.
+  db.fuel.forEach((t) => { if (t.card === String(card)) t.vehicleId = vehicleId || null; });
+  await save();
+  res.json({ fuelCardMap: db.settings.fuelCardMap });
+});
+
+app.delete('/api/staff/fuel/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData(); ensureErp(db);
+  db.fuel = db.fuel.filter((t) => t.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, getData, save });
