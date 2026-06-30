@@ -7496,6 +7496,8 @@ async function adminUsers(body) {
     return `<tr>
       <td>${esc(u.firstName)} ${esc(u.lastName)}${u.suspended?' <span class="tag rejected">suspendu</span>':''}
         <div class="help">${roleLabel(u.role)}${u.isParent?' • <strong style="color:var(--text)">Parent</strong>':''}</div>
+        <div class="help adm-pii">📍 ${u.address?esc(u.address):'<em>adresse non renseignée</em>'}</div>
+        <div class="help adm-pii">✉️ ${u.email?esc(u.email):'—'} &nbsp;·&nbsp; ☎️ ${u.phone?esc(u.phone):'—'}</div>
         <div class="help">Ancienneté : ${u.hireDate?ancienneteText(u.hireDate):'—'}</div>
         ${u.taken?`<div class="help" style="color:var(--brand)">Total déjà pris : CP ${u.taken.cp} j · RCC ${u.taken.rcc} h · Récup ${u.taken.rcp} h</div>`:''}
         <div class="taken-base"><span class="help">Déjà pris (saisi) :</span>
@@ -7727,9 +7729,11 @@ function userModal(u, body) {
         <div><label>Téléphone</label><input id="eu-phone" type="tel" value="${u&&u.phone?esc(u.phone):''}" placeholder="06 12 34 56 78"></div>
         <div><label>Parent</label><select id="eu-parent"><option value="">Non</option><option value="1" ${u&&u.isParent?'selected':''}>Oui</option></select></div>
       </div>
+      <label>Adresse postale <span class="help">(donnée personnelle — chiffrée, visible administrateur uniquement)</span></label>
+      <input id="eu-address" value="${u&&u.address?esc(u.address):''}" placeholder="N° rue, code postal ville">
       <div class="row">
         <div><label>Date d'entrée dans l'entreprise</label><input id="eu-hire" type="date" value="${u&&u.hireDate?esc(u.hireDate):''}"></div>
-        <div></div>
+        <div><label>Date de naissance</label><input id="eu-birth" type="date" value="${u&&u.birthDate?esc(u.birthDate):''}"></div>
       </div>
       <label>${isNew?'Mot de passe':'Nouveau mot de passe (laisser vide pour ne pas changer)'}</label>
       <input id="eu-password" type="password" autocomplete="new-password" placeholder="6 caractères minimum">
@@ -7753,6 +7757,7 @@ function userModal(u, body) {
         const payload = {
           firstName: val('#eu-firstName'), lastName: val('#eu-lastName'),
           username: val('#eu-username'), email: val('#eu-email'), phone: val('#eu-phone'), hireDate: val('#eu-hire'),
+          address: val('#eu-address'), birthDate: val('#eu-birth'),
           isParent: !!val('#eu-parent'),
           password: val('#eu-password'),
           groupId: val('#eu-groupId'), role: val('#eu-role'),

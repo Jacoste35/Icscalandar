@@ -789,7 +789,7 @@ function loginTaken(db, { email, username }, exceptId) {
 // Créer directement un utilisateur (actif) avec toutes ses données.
 app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone, hireDate } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone, hireDate, address, birthDate } = req.body || {};
   if (!firstName || !lastName) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
   let uname = String(username || '').trim().toLowerCase();
   const mailAddr = String(email || '').trim().toLowerCase();
@@ -807,6 +807,8 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     username: uname || null,
     email: mailAddr || null,
     phone: String(phone || '').trim() || null,
+    address: String(address || '').trim() || null,
+    birthDate: validDate(birthDate) ? birthDate : null,
     hireDate: validDate(hireDate) ? hireDate : null,
     suspended: false,
     cguAccepted: false,
@@ -877,7 +879,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate, takenBaseline } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate, address, birthDate, takenBaseline } = req.body || {};
   // Compteur « déjà pris » de base (historique hors application), éditable.
   if (takenBaseline && typeof takenBaseline === 'object') {
     user.takenBaseline = user.takenBaseline || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
@@ -890,6 +892,8 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   if (firstName !== undefined && String(firstName).trim()) user.firstName = capitalizeName(firstName);
   if (lastName !== undefined && String(lastName).trim()) user.lastName = capitalizeName(lastName);
   if (phone !== undefined) user.phone = String(phone || '').trim() || null;
+  if (address !== undefined) user.address = String(address || '').trim() || null;
+  if (birthDate !== undefined) user.birthDate = validDate(birthDate) ? birthDate : null;
   if (hireDate !== undefined) user.hireDate = validDate(hireDate) ? hireDate : null;
   if (username !== undefined || email !== undefined) {
     const uname = username !== undefined ? String(username).trim().toLowerCase() : (user.username || '');
