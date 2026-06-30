@@ -1027,6 +1027,18 @@ body {
 }
 .card:hover { box-shadow: var(--shadow-md); }
 
+/* CORRECTIFS DE MISE EN PAGE -------------------------------------------------
+   1) .main est un élément de grille : sans min-width:0 il refuse de rétrécir
+      sous la largeur intrinsèque de son contenu (longues options de <select>,
+      tableaux), ce qui forçait un débordement horizontal → dézoom sur mobile.
+   2) La barre latérale fait 100vh ; sur une page longue, sa colonne de grille
+      restait blanche en dessous. On peint la colonne gauche en couleur marque
+      (desktop uniquement) pour éviter le « blanc » sous le menu. */
+.main { min-width: 0; overflow-x: clip; }
+@media (min-width: 861px) {
+  .layout { background: linear-gradient(90deg, var(--brand) 0 var(--sidebar-w), var(--bg) var(--sidebar-w)); }
+}
+
 /* Boutons : dégradés discrets, ombre, animation d'appui */
 .btn {
   border-radius: 11px;
@@ -1057,8 +1069,11 @@ body {
 .stat .value { letter-spacing: -.02em; }
 
 /* Onglets / sélecteur de vue : contrôle segmenté façon "pill" */
-.view-switch { border-radius: 999px; padding: 3px; gap: 2px; background: var(--surface-2); border-color: var(--border); box-shadow: inset 0 1px 2px rgba(15,23,42,.04); }
-.view-switch button { border-radius: 999px; transition: background .18s var(--ease), color .18s var(--ease); }
+/* Onglets : coins modérément arrondis (PAS 999px : sur plusieurs lignes le
+   rayon « pilule » déformait la barre en ovale). overflow visible pour que les
+   onglets repliés restent nets. */
+.view-switch { border-radius: 12px; padding: 3px; gap: 2px; background: var(--surface-2); border-color: var(--border); box-shadow: inset 0 1px 2px rgba(15,23,42,.04); overflow: visible; max-width: 100%; }
+.view-switch button { border-radius: 9px; transition: background .18s var(--ease), color .18s var(--ease); }
 .view-switch button.active { background: var(--grad-brand); color: #fff; box-shadow: 0 4px 12px -6px rgba(20,66,126,.7); }
 
 /* Navigation latérale : indicateur actif + survol fluide */
