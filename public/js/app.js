@@ -799,7 +799,21 @@ function fuelAnalyseTab(body, d) {
       ${d.isAdmin ? `<td><button class="btn ghost sm" data-fueldel="${t.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div></details>`
     : '<div class="alert info">Aucune transaction. Importez un export AS 24 dans l\'onglet Paramètres.</div>';
 
-  body.innerHTML = cards + alertsBlock + driverBlock + vehBlock + txns;
+  // --- Calibration : conso estimée (GPS archivée) vs pleins réels (AS 24) ---
+  const cal = d.calibration || { vehicles: [] };
+  const calibBlock = cal.vehicles && cal.vehicles.length ? `<details class="card"><summary><strong>🎯 Calibration : conso estimée (GPS) vs pleins réels</strong> <span class="help">${esc(cal.from || '')} → ${esc(cal.to || '')}</span></summary>
+      <p class="help" style="margin-top:.6rem">La consommation estimée par GPS est archivée chaque jour. On la confronte aux litres réellement achetés (AS 24) sur la période : un écart régulier indique qu'il faut ajuster la consommation de référence du modèle.</p>
+      <div class="table-wrap"><table class="report-table"><thead><tr><th>Véhicule</th><th style="text-align:right">Conso estimée (GPS)</th><th style="text-align:right">Pleins réels (AS 24)</th><th style="text-align:right">Écart</th></tr></thead>
+      <tbody>${cal.vehicles.map((v) => { const col = Math.abs(v.deviationPct) > 15 ? '#b91c1c' : Math.abs(v.deviationPct) > 8 ? '#b45309' : '#166534'; return `<tr>
+        <td><strong>${esc(v.vehicleName)}</strong>${v.plate ? `<div class="help">${esc(v.plate)}</div>` : ''}</td>
+        <td style="text-align:right">${v.estLiters.toLocaleString('fr-FR')} L</td>
+        <td style="text-align:right">${v.realLiters.toLocaleString('fr-FR')} L</td>
+        <td style="text-align:right"><strong style="color:${col}">${v.deviationPct >= 0 ? '+' : ''}${v.deviationPct}%</strong></td>
+      </tr>`; }).join('')}</tbody></table></div>
+      <p class="help">Écart = (pleins réels ÷ conso estimée − 1). Positif : le véhicule consomme plus que l'estimation GPS (relevez la conso de référence). Négatif : l'estimation est trop haute.</p>
+    </details>` : '';
+
+  body.innerHTML = cards + alertsBlock + driverBlock + vehBlock + calibBlock + txns;
   if (d.isAdmin) {
     const decide = async (key, status) => { try { await api('POST', '/staff/fuel/alert-decision', { key, status }); toast(status === 'fraud' ? 'Fraude confirmée.' : status === 'false_positive' ? 'Marquée faux positif.' : 'Décision annulée.', 'ok'); loadCarburant(); } catch (e) { toast(e.message, 'err'); } };
     body.querySelectorAll('[data-afraud]').forEach((b) => b.onclick = () => decide(b.dataset.afraud, 'fraud'));
