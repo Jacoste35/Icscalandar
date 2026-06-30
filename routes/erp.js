@@ -207,11 +207,15 @@ function mount(app, deps) {
     const sanctions = (data.sanctions || []).filter((s) => s.userId === userId);
     const warnings = sanctions.filter((s) => /avertissement/i.test(s.type || ''));
     const miseAPied = motif ? discipline.computeMiseAPied({ warningCount: warnings.length, motif }) : null;
+    // Véhicule attribué au salarié (pour pré-remplir [matériel / véhicule]).
+    const av = (data.vehicles || []).find((v) => v.assignedUserId === userId);
+    const vehicle = av ? (av.name ? `${av.name}${av.plate ? ' (' + av.plate + ')' : ''}` : (av.plate || '')) : '';
     res.json({
       userId,
       userName: u ? `${u.firstName} ${u.lastName}` : '',
       retardDates,
       retardCount: retardDates.length,
+      vehicle,
       warningCount: warnings.length,
       sanctionCount: sanctions.length,
       sanctions: sanctions

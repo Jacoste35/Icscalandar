@@ -3067,6 +3067,7 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       vehicleMonthlyInsurance: g.vehicleMonthlyInsurance != null ? g.vehicleMonthlyInsurance : 220,
       vehicleFixedDays: g.vehicleFixedDays != null ? g.vehicleFixedDays : 21.5,
       priseDePoste: g.priseDePoste || '', priseDePosteByUser: g.priseDePosteByUser || {},
+      priseDePosteByGroup: g.priseDePosteByGroup || {}, deviceUserMap: g.deviceUserMap || {},
     },
     isAdmin: req.user.role === 'admin',
     vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
@@ -3075,6 +3076,13 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       if (v.assignedUserId) acc[v.assignedUserId] = { id: v.assignedUserId, name: v.assignedUserName || '—' };
       return acc;
     }, {})),
+    // Tous les chauffeurs inscrits (pour attribuer un traceur à un chauffeur).
+    users: (data.users || []).filter((u) => u.status === 'active').map((u) => {
+      const grp = (data.groups || []).find((gr) => gr.id === u.groupId);
+      return { id: u.id, name: `${u.firstName} ${u.lastName}`, groupId: u.groupId || null, groupName: grp ? grp.name : 'Sans groupe' };
+    }),
+    // Groupes (pour définir une heure de prise de poste par groupe).
+    groups: (data.groups || []).map((gr) => ({ id: gr.id, name: gr.name })),
   });
 });
 
@@ -3112,6 +3120,16 @@ app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, re
     const clean = {};
     for (const k of Object.keys(b.deviceMap)) { const v = b.deviceMap[k]; if (v) clean[String(k)] = String(v); }
     g.deviceMap = clean;
+  }
+  if (b.priseDePosteByGroup && typeof b.priseDePosteByGroup === 'object') {
+    const clean = {};
+    for (const k of Object.keys(b.priseDePosteByGroup)) { const t = b.priseDePosteByGroup[k]; if (/^\d{1,2}:\d{2}$/.test(t || '')) clean[String(k)] = t; }
+    g.priseDePosteByGroup = clean;
+  }
+  if (b.deviceUserMap && typeof b.deviceUserMap === 'object') {
+    const clean = {};
+    for (const k of Object.keys(b.deviceUserMap)) { const v = b.deviceUserMap[k]; if (v) clean[String(k)] = String(v); }
+    g.deviceUserMap = clean;
   }
   pajgps.resetToken();
   await save();
