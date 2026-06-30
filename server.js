@@ -2969,14 +2969,20 @@ app.post('/api/staff/payslips/parse', authRequired, adminRequired, async (req, r
   const balById = {}; db.users.forEach((u) => { balById[u.id] = u.balances || {}; });
   const results = [];
   for (const f of files.slice(0, 40)) {
-    const r = { fileName: String((f && f.name) || 'bulletin.pdf'), error: '', matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] };
+    const fileName = String((f && f.name) || 'bulletin.pdf');
     try {
       const b64 = String((f && f.data) || '').replace(/^data:[^,]*,/, '');
       if (!b64) throw new Error('Fichier vide.');
-      const text = await payslip.pdfToText(Buffer.from(b64, 'base64'));
-      Object.assign(r, payslip.extractFromText(text, usersMin));
-    } catch (e) { r.error = e.message; }
-    results.push(r);
+      const buf = Buffer.from(b64, 'base64');
+      // PDF multi-bulletins (un par salarié, séparés par « ##BULLETIN## ») :
+      // lecture par coordonnées de chaque grille de soldes.
+      let many = null;
+      try { const pages = await payslip.pdfToItems(buf); many = payslip.extractMany(pages, usersMin); } catch (e) { many = null; }
+      if (many && many.length) { results.push(...many.slice(0, 80)); continue; }
+      // Sinon : un seul bulletin (autre format) — extraction ligne par ligne.
+      const text = await payslip.pdfToText(buf);
+      results.push(Object.assign({ fileName, error: '', matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] }, payslip.extractFromText(text, usersMin)));
+    } catch (e) { results.push({ fileName, error: e.message, matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] }); }
   }
   res.json({
     results,

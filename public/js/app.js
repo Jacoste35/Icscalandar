@@ -5861,9 +5861,13 @@ function bullConfBadge(c) {
 
 function bullRenderReview(results) {
   const wrap = document.getElementById('bull-review');
+  // Associés (et plus sûrs) d'abord ; non rapprochés en dernier.
+  results = results.slice().sort((a, b) => (((a.matchedUserId ? 0 : 1) - (b.matchedUserId ? 0 : 1)) || ((b.confidence || 0) - (a.confidence || 0)) || String(a.fileName).localeCompare(String(b.fileName))));
+  const nMatched = results.filter((r) => r.matchedUserId).length;
   const userOpts = (sel) => '<option value="">— choisir un salarié —</option>'
     + _bullUsers.map((u) => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
-  wrap.innerHTML = results.map((r, i) => {
+  const summary = `<div class="alert info"><strong>${results.length} bulletin(s) lu(s)</strong> — ${nMatched} rapproché(s) automatiquement à un salarié${results.length - nMatched ? `, ${results.length - nMatched} à associer manuellement` : ''}. Vérifiez chaque proposition (soldes de congés / repos) puis appliquez.</div>`;
+  wrap.innerHTML = summary + results.map((r, i) => {
     const cur = (_bullUsers.find((u) => u.id === r.matchedUserId) || {}).balances || {};
     const rows = BULL_CATS.map(([k, lbl]) => {
       const proposed = r.values && r.values[k] != null ? r.values[k] : (cur[k] != null ? cur[k] : '');
