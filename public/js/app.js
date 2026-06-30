@@ -633,10 +633,10 @@ function renderApp() {
   </div>
   <div class="nav-backdrop" id="nav-backdrop"></div>
   <nav class="bottom-nav" id="bottom-nav">
+    <button id="bn-menu"><span class="bn-ico">☰</span>Menu</button>
     <button data-view="dashboard" class="${State.view === 'dashboard' ? 'active' : ''}"><span class="bn-ico">🏠</span>Accueil</button>
     <button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
     <button data-view="mydata" class="${State.view === 'mydata' ? 'active' : ''}"><span class="bn-ico">👤</span>Profil</button>
-    <button id="bn-menu"><span class="bn-ico">☰</span>Menu</button>
   </nav>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   // Dépliage/repliage des groupes de menu (sans recharger la vue).
@@ -1127,6 +1127,9 @@ async function renderDashboard(main) {
       ${dashGroup('⚙️ Réglages &amp; infos', calSyncPanel, pushDiv, philo)}`;
     // Rend chaque section de l'accueil repliable (ouvrir/masquer à la demande).
     makeDashCollapsible(dashBody);
+    // Tableaux lisibles sur téléphone : empilés « libellé : valeur », sans
+    // défilement horizontal.
+    tablesResponsive(dashBody);
     // Notifications push : remplit le panneau dédié (selon l'état d'abonnement).
     if (!_previewMode) renderPushPanel();
     // Sélecteur d'aperçu (toujours actif pour l'admin).
@@ -1182,6 +1185,30 @@ function makeDashCollapsible(scope) {
     det.appendChild(sum);
     det.appendChild(el);
     det.addEventListener('toggle', () => { const s = dashAccState(); s[key] = det.open; dashAccSave(s); });
+  });
+}
+
+// Tableaux adaptés au format mobile : sur petit écran, chaque ligne se
+// transforme en bloc « libellé : valeur » empilé (plus de défilement
+// horizontal). On reporte sur chaque cellule l'intitulé de sa colonne
+// (data-label) à partir de l'en-tête, puis la mise en page bascule en CSS.
+function tablesResponsive(scope) {
+  if (!scope) return;
+  scope.querySelectorAll('table').forEach((tbl) => {
+    if (tbl.dataset.noresp !== undefined) return;          // tableaux exclus explicitement
+    if (tbl.classList.contains('rtable')) return;          // déjà traité
+    const heads = [...tbl.querySelectorAll('thead th')].map((th) => th.textContent.replace(/\s+/g, ' ').trim());
+    if (!heads.length) return;                              // sans en-tête : on laisse tel quel
+    tbl.classList.add('rtable');
+    tbl.querySelectorAll('tbody tr').forEach((tr) => {
+      [...tr.children].forEach((td, i) => {
+        if (td.tagName !== 'TD') return;
+        const span = td.getAttribute('colspan');
+        if (span && Number(span) > 1) return;              // cellules fusionnées (sous-titres) intactes
+        const label = heads[i] || '';
+        if (label && !td.hasAttribute('data-label')) td.setAttribute('data-label', label);
+      });
+    });
   });
 }
 
