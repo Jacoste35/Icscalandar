@@ -981,13 +981,15 @@ async function renderDashboard(main) {
     // semaine À VENIR (on prépare la semaine suivante).
     const _dow = today.getDay(); // 0 dim … 6 sam
     const _focusNext = (_dow === 5 || _dow === 6 || _dow === 0);
-    const cardCur = dashWeekCard('Semaine en cours', curStart, events, true);
-    const cardNext1 = dashWeekCard('Semaine à venir (+1)', next1, events);
-    const cardNext2 = dashWeekCard('Dans deux semaines (+2)', next2, events);
-    const cardPrev = dashWeekCard('Semaine précédente', prevStart, events, false, true);
-    const weekCards = _focusNext
-      ? `${cardNext1}${cardCur}${cardNext2}${cardPrev}`
-      : `${cardCur}${cardNext1}${cardNext2}${cardPrev}`;
+    // Sélecteur de semaines (ordre chronologique). La semaine mise en avant par
+    // défaut suit la priorité : « en cours » du lundi au jeudi, « +1 » dès le vendredi.
+    const planWeeks = [
+      { shortTitle: 'Précédente', title: 'Semaine précédente', start: prevStart, isPast: true },
+      { shortTitle: 'En cours', title: 'Semaine en cours', start: curStart, isCurrent: true },
+      { shortTitle: '+1', title: 'Semaine à venir (+1)', start: next1 },
+      { shortTitle: '+2', title: 'Dans deux semaines (+2)', start: next2 },
+    ];
+    const weekCards = dashPlanningCard(planWeeks, events, _focusNext ? 2 : 1);
 
     const realAdmin = user.role === 'admin';
     const isAdmin = viewUser.role === 'admin';
@@ -1172,6 +1174,7 @@ function makeDashCollapsible(scope) {
   const isMobile = window.matchMedia('(max-width: 768px)').matches;
   [...scope.children].forEach((el) => {
     if (!el.classList || !el.classList.contains('card')) return;        // seulement les cartes
+    if (el.classList.contains('dash-planning')) return;                  // widget planning : affiché directement (onglets)
     if (el.querySelector('#dash-preview')) return;                       // garde l'aperçu admin visible
     const h = el.querySelector('h1, h2, h3, h4');
     if (!h) return;                                                      // sans titre : on laisse tel quel
@@ -1255,6 +1258,13 @@ function bindDashboardActions(scope) {
     if (reason === null) return;
     try { await api('POST', '/admin/erp/documents/' + b.dataset.docreject + '/reject', { reason }); toast('Document refusé.', 'ok'); renderDashboard(document.getElementById('main')); }
     catch (e) { toast(e.message, 'err'); }
+  });
+  // Sélecteur de semaines du widget « Mon planning » (Précédente · En cours · +1 · +2).
+  scope.querySelectorAll('.dash-planning .dash-wk-tab').forEach((btn) => btn.onclick = () => {
+    const card = btn.closest('.dash-planning'); if (!card) return;
+    const wk = btn.dataset.wk;
+    card.querySelectorAll('.dash-wk-tab').forEach((b) => b.classList.toggle('active', b.dataset.wk === wk));
+    card.querySelectorAll('.dash-wk-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.wk !== wk));
   });
   // Ajouter / modifier le remplaçant directement depuis le planning d'accueil.
   scope.querySelectorAll('[data-repl-cal]').forEach((b) => b.onclick = () => {
@@ -1789,7 +1799,31 @@ async function pushDisable() {
   renderPushPanel();
 }
 
-function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
+// Widget « Mon planning » d'accueil : un seul bloc avec un sélecteur de semaines
+// (Précédente · En cours · +1 · +2) façon application, au lieu de 4 cartes
+// déroulantes empilées. Chaque onglet affiche un compteur d'absences ; on ne
+// voit qu'une semaine à la fois (les 4 sont pré-rendues pour fonctionner
+// instantanément, y compris hors-ligne).
+function dashPlanningCard(weeks, events, defaultIdx) {
+  const info = weeks.map((w, i) => {
+    const weekEnd = addDays(w.start, 5);
+    const n = events.filter((ev) => ev.startDate <= iso(weekEnd) && ev.endDate >= iso(w.start)).length;
+    return Object.assign({}, w, { i, n });
+  });
+  const tabs = info.map((t) => `
+    <button class="dash-wk-tab ${t.i === defaultIdx ? 'active' : ''}" data-wk="${t.i}" type="button">
+      <span class="dash-wk-tab-lbl">${esc(t.shortTitle)}</span>
+      <span class="dash-wk-badge ${t.n ? '' : 'zero'}">${t.n}</span>
+    </button>`).join('');
+  const panes = info.map((t) => `<div class="dash-wk-pane ${t.i === defaultIdx ? '' : 'hidden'}" data-wk="${t.i}">${dashWeekInner(t.title, t.start, events, t.isCurrent, t.isPast)}</div>`).join('');
+  return `<div class="card dash-planning">
+    <div class="dash-wk-tabs">${tabs}</div>
+    <div class="dash-wk-panes">${panes}</div>
+  </div>`;
+}
+
+// Contenu d'une semaine (en-tête + vue grille + détail). Utilisé dans les onglets.
+function dashWeekInner(title, weekStart, events, isCurrent, isPast) {
   const isAdmin = State.user && State.user.role === 'admin' && !_previewMode;
   const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
   const weekEnd = addDays(weekStart, 5);
@@ -1804,9 +1838,8 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
     return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td>${replCell}</tr>`;
   }).join('')).join('');
   return `
-    <div class="card" style="${isCurrent?'border-left:5px solid var(--brand-2)':''}">
-      <div class="cal-toolbar"><h3 style="margin:0">${isCurrent?'📍 ':''}${esc(title)} — ${label}</h3></div>
-      <p class="help" style="margin-top:-.4rem;margin-bottom:1rem">${isPast?'Qui était absent ?':(isCurrent?'Qui est absent ?':'Qui sera absent ?')}</p>
+      <div class="dash-wk-head"><h3>${isCurrent ? '📍 ' : ''}${esc(title)}</h3><span class="dash-wk-period">${label}</span></div>
+      <p class="help" style="margin:.1rem 0 .9rem">${isPast ? 'Qui était absent ?' : (isCurrent ? 'Qui est absent ?' : 'Qui sera absent ?')}</p>
       <div class="week-grid">
         <div class="wrow whead">
           <div class="wcell namecol">Salarié</div>
@@ -1818,8 +1851,7 @@ function dashWeekCard(title, weekStart, events, isCurrent, isPast) {
         </div>
         ${renderDashWeekRows(weekAbs, weekDays)}
       </div>
-      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th>${isAdmin ? '<th>Remplaçant</th>' : ''}</tr></thead><tbody>${detail}</tbody></table></div>` : ''}
-    </div>`;
+      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th>${isAdmin ? '<th>Remplaçant</th>' : ''}</tr></thead><tbody>${detail}</tbody></table></div>` : ''}`;
 }
 
 function renderDashWeekRows(weekAbs, weekDays) {
