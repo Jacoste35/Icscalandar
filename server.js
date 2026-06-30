@@ -3342,6 +3342,37 @@ function updateFuelProjections(db) {
   db.settings.fuelProjections = next;
 }
 
+// Croisement consommation ESTIMÉE (GPS, archivée) vs pleins RÉELS (AS 24) sur
+// 30 jours glissants — pour calibrer le modèle de consommation.
+function fuelCalibration(db) {
+  const round1 = (n) => Math.round((n || 0) * 10) / 10;
+  const est = db.fuelEstimates || [], fills = db.fuel || [];
+  const allDates = fills.map((t) => t.date).concat(est.map((e) => e.date)).filter(Boolean).sort();
+  if (!allDates.length) return { from: '', to: '', vehicles: [] };
+  const lastDate = allDates[allDates.length - 1];
+  const cutoff = new Date(new Date(lastDate + 'T00:00:00Z').getTime() - 29 * 86400000).toISOString().slice(0, 10);
+  const norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const keyFor = (vehicleId, vehicleName) => vehicleId || ('n:' + norm(vehicleName));
+  const rows = {};
+  est.forEach((e) => {
+    if (!e.date || e.date < cutoff) return;
+    const k = keyFor(e.vehicleId, e.vehicleName);
+    const r = rows[k] || (rows[k] = { vehicleName: e.vehicleName || '', plate: e.plate || '', estLiters: 0, estKm: 0, realLiters: 0 });
+    r.estLiters += e.liters || 0; r.estKm += e.km || 0; if (!r.vehicleName && e.vehicleName) r.vehicleName = e.vehicleName; if (!r.plate && e.plate) r.plate = e.plate;
+  });
+  fills.forEach((t) => {
+    if (!t.date || t.date < cutoff) return;
+    const k = keyFor(t.vehicleId, t.vehicleName);
+    const r = rows[k] || (rows[k] = { vehicleName: t.vehicleName || '', plate: '', estLiters: 0, estKm: 0, realLiters: 0 });
+    r.realLiters += t.liters || 0; if (!r.vehicleName && t.vehicleName) r.vehicleName = t.vehicleName;
+  });
+  const vehicles = Object.values(rows).filter((r) => r.estLiters > 0 && r.realLiters > 0).map((r) => {
+    const ratio = r.realLiters / r.estLiters; // pleins réels / conso estimée
+    return { vehicleName: r.vehicleName || '—', plate: r.plate, estLiters: round1(r.estLiters), realLiters: round1(r.realLiters), estKm: round1(r.estKm), ratio: Math.round(ratio * 100) / 100, deviationPct: Math.round((ratio - 1) * 100) };
+  }).sort((a, b) => Math.abs(b.deviationPct) - Math.abs(a.deviationPct));
+  return { from: cutoff, to: lastDate, vehicles };
+}
+
 // Cartes AS 24 distinctes (pour l'association carte → chauffeur).
 function fuelCards(db) {
   const info = {};
@@ -3368,6 +3399,7 @@ app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
     byVehicle: Object.values(byVeh).map((b) => ({ ...b, liters: round2(b.liters), ttc: round2(b.ttc) })).sort((a, z) => z.ttc - a.ttc),
     analysis: fuelAnalysis(db),
     driverAnalysis: fuelDriverAnalysis(db),
+    calibration: fuelCalibration(db),
     isAdmin: req.user.role === 'admin',
     vehicles: db.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
     users: (db.users || []).filter((u) => u.status === 'active').map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}` })),
