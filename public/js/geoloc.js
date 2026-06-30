@@ -109,40 +109,36 @@ function geoVehCardHTML(p) {
   const addr = depot ? 'Disponible au dépôt'
     : (p.address || (p.lat != null ? `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}` : 'Position inconnue'));
   const maps = (p.lat != null && !depot) ? `<a class="geo-maps" href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Voir ↗</a>` : '';
-  const meta = [];
-  if (p.activeSince) meta.push(`actif depuis ${gTime(p.activeSince)}`);
-  if (p.moving) meta.push('en tournée');
-  else if (depot) meta.push(`immobilisé depuis ${gStopSince(p.finalStopAt)}`);
-  else if (p.finalStopAt) meta.push(`arrêté depuis ${gStopSince(p.finalStopAt)}`);
-  meta.push(`maj ${gTime(p.ts)}`);
+  const label = geoVehLabel(p);
   // À l'arrêt prolongé ou au dépôt : gasoil consommé dans la journée (estimation).
   const fuelLine = ((st === 'orange' || st === 'depot') && p.stats && p.stats.litersDay != null)
-    ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil consommés aujourd'hui (estimé)</div>` : '';
+    ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil estimés aujourd'hui</div>` : '';
   const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
-  // Premier et dernier mouvement de la journée + groupe du véhicule.
+  // Ligne d'activité unique (sans doublon) : 1er départ → dernier mouvement, ou
+  // état d'immobilisation / de tournée selon le cas.
   const lastMove = p.moving ? null : (p.finalStopAt || p.lastMovingAt);
-  const moveLine = (p.activeSince || lastMove) ? `<div class="geo-moves">🕒 1ᵉʳ départ <strong>${p.activeSince ? gTime(p.activeSince) : '—'}</strong> · dernier mouvement <strong>${p.moving ? 'en cours' : (lastMove ? gTime(lastMove) : '—')}</strong></div>` : '';
-  const groupLine = p.groupName ? `<div class="geo-group">👥 Groupe : <strong>${esc(p.groupName)}</strong>${p.driverName ? ` · 👤 ${esc(p.driverName)}` : ''}</div>` : (p.driverName ? `<div class="geo-group">👤 ${esc(p.driverName)}</div>` : '');
-  // Odomètre : réel (remonté par le traceur) sinon relevé de la flotte (mis à
-  // jour par l'import des rapports d'activité / Mobilic). Rien si aucun des deux.
-  const odo = p.odometer || {};
-  const odoKm = (odo.real != null) ? odo.real : (odo.fleet != null && odo.fleet > 0 ? odo.fleet : null);
-  const odoSrc = (odo.real != null) ? (odo.realAt ? `(maj ${gTime(odo.realAt)})` : '') : (odo.fleet != null ? '(relevé activité / Mobilic)' : '');
-  const odoHtml = (odoKm != null) ? `<div class="geo-odo">🧭 Odomètre : <strong>${Math.round(odoKm).toLocaleString('fr-FR')} km</strong>${odoSrc ? ` <span class="help">${odoSrc}</span>` : ''}</div>` : '';
+  let activity = '';
+  if (depot) activity = p.finalStopAt ? `🚏 Immobilisé depuis <strong>${gStopSince(p.finalStopAt)}</strong>` : '';
+  else if (p.moving) activity = `🕒 1ᵉʳ départ <strong>${p.activeSince ? gTime(p.activeSince) : '—'}</strong> · <strong>en tournée</strong>`;
+  else if (p.activeSince || lastMove) activity = `🕒 1ᵉʳ départ <strong>${p.activeSince ? gTime(p.activeSince) : '—'}</strong> · arrêt <strong>${lastMove ? gTime(lastMove) : '—'}</strong>`;
+  const activityLine = activity ? `<div class="geo-moves">${activity}</div>` : '';
+  // Groupe + conducteur (le conducteur n'est répété que s'il n'est pas déjà dans le nom du véhicule).
+  const driverDup = p.driverName && label.toLowerCase().includes(String(p.driverName).toLowerCase());
+  const driverPart = (p.driverName && !driverDup) ? `${p.groupName ? ' · ' : ''}👤 ${esc(p.driverName)}` : '';
+  const groupLine = (p.groupName || (p.driverName && !driverDup)) ? `<div class="geo-group">${p.groupName ? `👥 ${esc(p.groupName)}` : ''}${driverPart}</div>` : '';
   return `<div class="geo-card geo-${st}">
     <div class="geo-card-top">
-      <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(geoVehLabel(p))}</span>
+      <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(label)}</span>
       <span class="geo-speed ${speed > 0 ? 'on' : ''}">${speed} km/h</span>
     </div>
     ${p.plate && p.vehicleName ? `<div class="geo-sub">${esc(p.plate)}</div>` : ''}
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
-    <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
+    <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">maj ${esc(gTime(p.ts))}</span></div>
+    ${activityLine}
     ${groupLine}
-    ${moveLine}
     ${fuelLine}
-    ${odoHtml}
-    ${lateHtml}
     ${geoStatsHTML(p.stats)}
+    ${lateHtml}
   </div>`;
 }
 

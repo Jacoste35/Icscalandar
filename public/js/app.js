@@ -741,8 +741,8 @@ function fuelAnalyseTab(body, d) {
     <div class="fuel-kpi ${kpiTone}"><div class="fk-val">${an.alertCount}</div><div class="fk-lbl">Alertes surconso / vol</div><div class="fk-sub">${nAlert} véhicule(s) en alerte</div></div>
     <div class="fuel-kpi"><div class="fk-val">${(s30.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres — 30 jours</div><div class="fk-sub">${s30.count || 0} pleins</div></div>
     <div class="fuel-kpi"><div class="fk-val">${(sy.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres — année ${esc(String(year))}</div><div class="fk-sub">${sy.count || 0} pleins</div></div>
-    <div class="fuel-kpi"><div class="fk-val">${euro2(s30.ttc || 0)}</div><div class="fk-lbl">Dépense — 30 jours</div><div class="fk-sub">HT ${euro2(s30.ht || 0)}</div></div>
-    <div class="fuel-kpi"><div class="fk-val">${euro2(sy.ttc || 0)}</div><div class="fk-lbl">Dépense — année ${esc(String(year))}</div><div class="fk-sub">HT ${euro2(sy.ht || 0)}</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${euro2(s30.ht || 0)} <small>HT</small></div><div class="fk-lbl">Dépense — 30 jours</div><div class="fk-sub">TTC ${euro2(s30.ttc || 0)}</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${euro2(sy.ht || 0)} <small>HT</small></div><div class="fk-lbl">Dépense — année ${esc(String(year))}</div><div class="fk-sub">TTC ${euro2(sy.ttc || 0)}</div></div>
   </div>`;
   const alertRow = (a) => {
     const head = `<div class="al-main"><span class="al-veh">${esc(a.vehicle)}</span> ${a.date ? `<span class="help">${esc(a.date)}</span> ` : ''}${esc(a.text)}${a.driver ? ` <span class="al-drv">👤 ${esc(a.driver)}</span>` : ''}</div>`;
@@ -813,10 +813,10 @@ function fuelAnalyseTab(body, d) {
       </tr>`).join('')}</tbody></table></div></details>` : '';
   // --- Transactions (repliable) ---
   const txns = (d.transactions || []).length ? `<details class="card"><summary><strong>🧾 Transactions (${(d.transactions || []).length})</strong> <span class="help">détail des pleins AS 24</span></summary>
-    <div class="table-wrap" style="margin-top:.6rem"><table class="report-table"><thead><tr><th>Date</th><th>Station</th><th>Véhicule</th><th>Chauffeur</th><th style="text-align:right">Litres</th><th style="text-align:right">TTC</th><th>État</th>${d.isAdmin ? '<th></th>' : ''}</tr></thead>
+    <div class="table-wrap" style="margin-top:.6rem"><table class="report-table"><thead><tr><th>Date</th><th>Station</th><th>Véhicule</th><th>Chauffeur</th><th style="text-align:right">Litres</th><th style="text-align:right">HT</th><th style="text-align:right">TTC</th><th>État</th>${d.isAdmin ? '<th></th>' : ''}</tr></thead>
     <tbody>${d.transactions.map((t) => `<tr>
       <td>${esc(t.date)}${t.time ? ' ' + esc(t.time) : ''}</td><td>${esc(t.place)}</td><td>${esc(t.vehicleName)}</td><td>${esc(t.driver)}</td>
-      <td style="text-align:right">${(t.liters || 0).toLocaleString('fr-FR')}</td><td style="text-align:right">${euro2(t.amountTTC)}</td>
+      <td style="text-align:right">${(t.liters || 0).toLocaleString('fr-FR')}</td><td style="text-align:right">${euro2(t.amountHT || 0)}</td><td style="text-align:right">${euro2(t.amountTTC)}</td>
       <td><span class="pill ${t.state && t.state.toLowerCase().indexOf('non') === -1 ? 'paid' : 'draft'}">${esc(t.state || '')}</span></td>
       ${d.isAdmin ? `<td><button class="btn ghost sm" data-fueldel="${t.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div></details>`
     : '<div class="alert info">Aucune transaction. Importez un export AS 24 dans l\'onglet Paramètres.</div>';
