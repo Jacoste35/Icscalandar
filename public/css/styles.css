@@ -1274,3 +1274,50 @@ td { color: var(--ink); }
 }
 .dash-divider::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, #e2e9f3, transparent); }
 #dash-body > .dash-divider:first-child { margin-top: .1rem; }
+
+/* ======================================================================
+   « Mon planning » — vue mois facon Calendrier iPhone (lisible, épuré)
+   ====================================================================== */
+.ioscal { }
+.iosgrid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px 0; }
+.iosdow { text-align: center; font-size: .72rem; font-weight: 700; color: #8a98ad; text-transform: uppercase; letter-spacing: .03em; padding: .2rem 0 .55rem; }
+.ioscell {
+  -webkit-appearance: none; appearance: none; border: 0; background: transparent; cursor: pointer; font: inherit;
+  display: flex; flex-direction: column; align-items: center; gap: .28rem;
+  padding: .4rem .1rem .5rem; border-radius: 14px; min-height: 62px; transition: background .12s var(--ease);
+}
+.ioscell:hover { background: #f3f7fd; }
+.iosnum {
+  width: 31px; height: 31px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; font-size: .98rem; font-weight: 600; color: var(--ink); line-height: 1;
+}
+.ioscell.out .iosnum { color: #c5cedd; font-weight: 500; }
+/* Aujourd'hui : pastille rouge (signature « Calendrier iPhone », couleur ICS) */
+.ioscell.today .iosnum { background: var(--accent); color: #fff; font-weight: 800; box-shadow: 0 7px 16px -7px rgba(212,48,45,.75); }
+/* Jour sélectionné : pastille marine douce */
+.ioscell.sel:not(.today) .iosnum { background: #e7eefa; color: var(--brand); }
+.ioscell.sel { background: #eef3fc; }
+/* Repères discrets en haut de cellule (fermé / férié / vacances) */
+.ioscell.closed { box-shadow: inset 0 3px 0 -1px #fca5a5; }
+.ioscell.holiday { box-shadow: inset 0 3px 0 -1px #fcd34d; }
+.ioscell.school { box-shadow: inset 0 3px 0 -1px #93c5fd; }
+.iosdots { display: flex; gap: 3px; align-items: center; justify-content: center; flex-wrap: wrap; min-height: 7px; max-width: 90%; }
+.iosdot { width: 6px; height: 6px; border-radius: 999px; display: inline-block; }
+.iosmore { font-size: .58rem; font-weight: 800; color: #8a98ad; line-height: 1; }
+
+/* Détail du jour sélectionné, sous la grille */
+.iosday { margin-top: 1.1rem; border-top: 1px solid #eef1f6; padding-top: 1.1rem; }
+.iosday-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .8rem; }
+.iosday-date { font-size: 1.08rem; font-weight: 800; letter-spacing: -.01em; text-transform: capitalize; }
+.iosday-empty { color: var(--muted); padding: .4rem 0 .6rem; }
+.iosday-list { display: flex; flex-direction: column; gap: .5rem; }
+.iosev { display: flex; align-items: stretch; gap: .7rem; background: #fff; border: 1px solid #eef1f6; border-radius: 14px; padding: .6rem .75rem; box-shadow: var(--shadow); }
+.iosev-bar { width: 4px; border-radius: 999px; background: var(--c, var(--brand)); flex: 0 0 4px; }
+.iosev-body { flex: 1; display: flex; flex-direction: column; gap: .12rem; min-width: 0; }
+.iosev-name { font-weight: 650; }
+.iosev .btn { align-self: center; }
+@media (max-width: 560px) {
+  .ioscell { min-height: 54px; border-radius: 11px; padding-top: .35rem; }
+  .iosnum { width: 28px; height: 28px; font-size: .9rem; }
+  .iosdot { width: 5px; height: 5px; }
+}

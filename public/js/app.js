@@ -2100,12 +2100,29 @@ function drawCalendar() {
   else if (mode === 'month') grid.innerHTML = viewMonth(cursor);
   else grid.innerHTML = viewYear(cursor);
 
-  // Mois compact (téléphone) : toucher un jour ouvre le détail de ce jour.
+  // Autres vues (jour/semaine/année) : toucher un jour ouvre le détail de ce jour.
   grid.querySelectorAll('[data-day]').forEach((cell) => cell.onclick = () => {
     State.cal.cursor = parseISO(cell.dataset.day); State.cal.mode = 'day'; drawCalendar();
   });
-  // Suppression d'une absence par l'administrateur (vue jour).
-  grid.querySelectorAll('[data-del-ev]').forEach((btn) => btn.onclick = async () => {
+  // Vue mois « iPhone » : sélectionner un jour met à jour la liste sous la grille
+  // (sans quitter le mois), façon application Calendrier.
+  grid.querySelectorAll('[data-iosday]').forEach((cell) => cell.onclick = () => {
+    const ds = cell.dataset.iosday;
+    // Jour d'un mois adjacent : on bascule sur ce mois (comme l'app iPhone).
+    if (cell.classList.contains('out')) { State.cal.selDay = ds; State.cal.cursor = parseISO(ds); refreshCalForYear(); return; }
+    State.cal.selDay = ds;
+    grid.querySelectorAll('.ioscell.sel').forEach((c) => c.classList.remove('sel'));
+    cell.classList.add('sel');
+    const box = document.getElementById('iosday');
+    if (box) { box.innerHTML = iosDayDetail(ds); bindCalDelete(box); }
+  });
+  // Suppression d'une absence par l'administrateur (toutes vues).
+  bindCalDelete(grid);
+}
+
+// Boutons de suppression d'absence (admin) dans un conteneur donné du calendrier.
+function bindCalDelete(scope) {
+  scope.querySelectorAll('[data-del-ev]').forEach((btn) => btn.onclick = async () => {
     if (!confirm('Supprimer cette absence du calendrier ?')) return;
     try {
       await api('DELETE', '/admin/requests/' + btn.dataset.delEv);
@@ -2207,51 +2224,68 @@ function viewWeek(cursor) {
 // Écran étroit (téléphone) : on bascule sur un mois compact (pastilles).
 function isNarrowScreen() { return !!(window.matchMedia && window.matchMedia('(max-width: 700px)').matches); }
 
+// Vue mois façon « Calendrier iPhone » : grille épurée à pastilles, aujourd'hui
+// en pastille rouge, et la liste des absences du jour sélectionné en dessous.
 function viewMonth(cursor) {
   const year = cursor.getFullYear(), month = cursor.getMonth();
   const first = new Date(year, month, 1);
   const startOffset = (first.getDay() + 6) % 7; // 0 = lundi
   const gridStart = addDays(first, -startOffset);
   const today = new Date();
-  const compact = isNarrowScreen();
-
-  let html = `<div class="month-grid${compact ? ' compact' : ''}">`;
-  (compact ? ['L','M','M','J','V','S','D'] : ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim']).forEach((d) => html += `<div class="dow">${d}</div>`);
+  // Jour sélectionné : aujourd'hui s'il est dans le mois affiché, sinon le 1er.
+  const selOk = State.cal.selDay && parseISO(State.cal.selDay).getMonth() === month && parseISO(State.cal.selDay).getFullYear() === year;
+  if (!selOk) State.cal.selDay = (today.getFullYear() === year && today.getMonth() === month) ? iso(today) : iso(first);
+  const sel = State.cal.selDay;
+  let cells = '';
   for (let i = 0; i < 42; i++) {
     const d = addDays(gridStart, i);
     const ds = iso(d);
     const out = d.getMonth() !== month;
-    const isSun = d.getDay() === 0;
     const hol = State.holidays[ds];
     const vac = schoolHolidayFor(ds);
     const closed = closedPeriodFor(ds);
     const evs = eventsOnDay(ds);
-    let cls = 'cell';
+    let cls = 'ioscell';
     if (out) cls += ' out';
-    if (isSun) cls += ' sunday';
-    if (hol) cls += ' holiday';
-    if (vac && !hol) cls += ' school';
-    if (closed) cls += ' closed';
     if (sameDay(d, today)) cls += ' today';
-    if (compact) {
-      // Téléphone : numéro + pastilles colorées ; on touche un jour pour le détail.
-      const title = closed ? 'Fermé : ' + esc(closed.label) : (hol ? esc(hol) : (vac ? esc(vac.label) : (evs.length ? evs.length + ' absence(s)' : '')));
-      html += `<div class="${cls}" data-day="${ds}" title="${title}">
-        <span class="num">${d.getDate()}</span>
-        ${(closed && !out) ? '<span class="day-flag">🔒</span>' : ''}
-        <span class="ev-dots">${evs.slice(0, 4).map((ev) => `<span class="ev-dot" style="background:${evColor(ev)}"></span>`).join('')}${evs.length > 4 ? `<span class="ev-more">+${evs.length - 4}</span>` : ''}</span>
-      </div>`;
-    } else {
-      html += `<div class="${cls}" title="${closed ? 'Fermé : ' + esc(closed.label) : (vac ? esc(vac.label) : '')}">
-        <span class="num">${d.getDate()}</span>
-        ${closed && !out ? `<span class="hol-label" style="color:#b91c1c">🔒 ${esc(closed.label)}</span>` : (hol && !out ? `<span class="hol-label">${esc(hol)}</span>` : (vac && !out ? `<span class="hol-label" style="color:#2563eb">${esc(vac.label)}</span>` : ''))}
-        ${evs.slice(0,6).map((ev) => `<span class="ev ${ev.status==='pending'?'is-pending':''}" style="background:${evColor(ev)}" title="${esc(calTooltip(ev))}">${esc(ev.code)} · ${esc(ev.userName)} (${esc(ev.groupName)})${ev.replacedByName?` ↪ ${esc(ev.replacedByName.split(' ')[0])}`:''}</span>`).join('')}
-        ${evs.length > 6 ? `<span class="ev" style="background:#64748b">+${evs.length-6} autres</span>` : ''}
-      </div>`;
-    }
+    if (ds === sel) cls += ' sel';
+    if (closed) cls += ' closed'; else if (hol) cls += ' holiday'; else if (vac) cls += ' school';
+    const dots = evs.slice(0, 4).map((ev) => `<i class="iosdot" style="background:${evColor(ev)}"></i>`).join('');
+    cells += `<button class="${cls}" data-iosday="${ds}">
+      <span class="iosnum">${d.getDate()}</span>
+      <span class="iosdots">${dots}${evs.length > 4 ? `<i class="iosmore">+${evs.length - 4}</i>` : ''}</span>
+    </button>`;
   }
-  html += `</div>`;
-  return html;
+  return `<div class="ioscal">
+    <div class="iosgrid">
+      ${['lun','mar','mer','jeu','ven','sam','dim'].map((d) => `<div class="iosdow">${d}</div>`).join('')}
+      ${cells}
+    </div>
+    <div class="iosday" id="iosday">${iosDayDetail(sel)}</div>
+  </div>`;
+}
+
+// Détail (liste lisible) des absences d'un jour donné, affiché sous la grille.
+function iosDayDetail(ds) {
+  const d = parseISO(ds);
+  const evs = eventsOnDay(ds).slice().sort((a, b) => String(a.userName).localeCompare(String(b.userName)));
+  const hol = State.holidays[ds], vac = schoolHolidayFor(ds), closed = closedPeriodFor(ds);
+  const isAdmin = State.user.role === 'admin';
+  const tags = `${closed ? `<span class="pill danger">🔒 ${esc(closed.label)}</span>` : ''}${hol ? `<span class="pill warn">${esc(hol)}</span>` : ''}${vac && !hol ? `<span class="pill">${esc(vac.label)}</span>` : ''}`;
+  const head = `<div class="iosday-head"><span class="iosday-date">${DOW[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS[d.getMonth()]}</span>${tags}</div>`;
+  if (!evs.length) return `${head}<div class="iosday-empty">Aucune absence ce jour. ✨</div>`;
+  const range = (ev) => ev.startDate === ev.endDate ? '' : ` · ${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
+  const rows = evs.map((ev) => {
+    const c = evColor(ev);
+    return `<div class="iosev" style="--c:${c}"><span class="iosev-bar"></span>
+      <span class="iosev-body">
+        <span class="iosev-name">${esc(ev.userName)} <span class="help">(${esc(ev.groupName)})</span></span>
+        <span class="help">${esc(ev.code)} · ${esc(ev.categoryLabel)}${ev.category === 'RET' ? ` · retard ${ev.retardMinutes || '?'} min` : ''}${range(ev)}${ev.status === 'pending' ? ' · <em>en attente</em>' : ''}${ev.replacedByName ? ` · ↪ ${esc(ev.replacedByName)}` : ''}</span>
+      </span>
+      ${isAdmin ? `<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer / recréditer">✕</button>` : ''}
+    </div>`;
+  }).join('');
+  return `${head}<div class="iosday-list">${rows}</div>`;
 }
 
 // Vue Agenda : liste chronologique et lisible des absences du mois (idéale mobile).
