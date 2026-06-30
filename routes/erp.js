@@ -225,6 +225,50 @@ function mount(app, deps) {
     });
   }));
 
+  // Dossiers disciplinaires de tous les salariés (état, seuils, progression,
+  // éligibilité mise à pied / licenciement pour faute grave).
+  function disciplinaryFiles(data) {
+    const users = (data.users || []).filter((u) => u.status === 'active');
+    const groupsById = Object.fromEntries((data.groups || []).map((g) => [g.id, g]));
+    const sanctions = data.sanctions || [];
+    const isMise = (s) => /mise (à|a) pied/i.test(s.type || '');
+    const isWarn = (s) => /avertissement/i.test(s.type || '');
+    return users.map((u) => {
+      const list = sanctions.filter((s) => s.userId === u.id).slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+      const warnings = list.filter(isWarn);
+      const mises = list.filter(isMise);
+      const byMotif = {};
+      warnings.forEach((s) => { const m = s.motif || '(non précisé)'; const sev = discipline.severityOf(m); (byMotif[m] = byMotif[m] || { motif: m, count: 0, gravite: sev.gravite, seuil: sev.seuil }).count++; });
+      const motifs = Object.values(byMotif).map((m) => ({ ...m, eligible: m.count >= m.seuil, remaining: Math.max(0, m.seuil - m.count) }));
+      motifs.sort((a, b) => (b.gravite - a.gravite) || ((b.count - b.seuil) - (a.count - a.seuil)) || (b.count - a.count));
+      const dom = motifs[0] || null;
+      let level = 'vierge', nextStep = '—', reason = 'Dossier vierge : aucune sanction.';
+      if (list.length) {
+        const hasG4 = warnings.some((s) => (s.gravite || discipline.severityOf(s.motif).gravite) >= 4) || motifs.some((m) => m.gravite >= 4);
+        if (hasG4) { level = 'licenciement'; nextStep = 'Licenciement pour faute grave'; reason = "Faute d'une gravité (très grave) justifiant une mise à pied conservatoire immédiate et l'engagement d'une procédure de licenciement."; }
+        else if (dom && dom.eligible) {
+          const lastMise = mises.filter((s) => (s.motif || '') === dom.motif).slice(-1)[0];
+          const warnAfter = lastMise && warnings.some((s) => s.motif === dom.motif && String(s.date || '') > String(lastMise.date || ''));
+          if (lastMise && warnAfter) { level = 'licenciement'; nextStep = 'Licenciement pour faute grave (récidive)'; reason = `Réitération de « ${dom.motif} » après une mise à pied disciplinaire déjà notifiée.`; }
+          else { const mp = discipline.computeMiseAPied({ warningCount: dom.count, motif: dom.motif }); level = 'mise_a_pied'; nextStep = 'Mise à pied disciplinaire' + (mp.jours ? ` (${mp.jours} j)` : ''); reason = `${dom.count} avertissement(s) pour « ${dom.motif} » : le seuil de ${dom.seuil} est atteint — une mise à pied est désormais proportionnée.`; }
+        } else {
+          level = 'avertissement'; nextStep = 'Avertissement'; reason = dom ? `${dom.count}/${dom.seuil} avertissement(s) pour « ${dom.motif} » avant qu'une mise à pied soit proportionnée.` : 'Sanction(s) au dossier.';
+        }
+      }
+      return {
+        userId: u.id, userName: `${u.firstName} ${u.lastName}`, groupName: (groupsById[u.groupId] || {}).name || 'Sans groupe',
+        warningCount: warnings.length, miseCount: mises.length, total: list.length,
+        sanctions: list.map((s) => ({ type: s.type, motif: s.motif || '', gravite: s.gravite || discipline.severityOf(s.motif).gravite, date: s.date })),
+        motifs: motifs.map((m) => ({ motif: m.motif, gravite: m.gravite, seuil: m.seuil, count: m.count, eligible: m.eligible })),
+        dominant: dom ? { motif: dom.motif, count: dom.count, seuil: dom.seuil, gravite: dom.gravite } : null,
+        level, nextStep, reason,
+      };
+    }).sort((a, b) => { const order = { licenciement: 0, mise_a_pied: 1, avertissement: 2, vierge: 3 }; return (order[a.level] - order[b.level]) || (b.total - a.total) || a.userName.localeCompare(b.userName); });
+  }
+  r.get('/documents/disciplinary-files', guard, withData(async (req, res, data) => {
+    res.json({ files: disciplinaryFiles(data), severity: discipline.MOTIF_SEVERITY, graviteLabels: discipline.GRAVITE_LABEL });
+  }));
+
   // Génère un brouillon de document rempli (pas encore enregistré).
   r.post('/documents/render', guard, withData(async (req, res, data) => {
     const { type, vars } = req.body || {};
@@ -505,6 +549,20 @@ function mount(app, deps) {
       status: 'sent', viewedAt: null, ackedAt: null, ackBy: null, ackName: null, ackRef: null,
     };
     data.erp.documents.push(doc);
+    // Document disciplinaire adressé → consigné automatiquement au dossier
+    // disciplinaire du salarié (compteur d'avertissements, escalade).
+    const DISC = { avertissement: 'Avertissement disciplinaire', mise_a_pied_disciplinaire: 'Mise à pied disciplinaire', mise_a_pied_conservatoire: 'Mise à pied conservatoire' };
+    if (DISC[type]) {
+      const motif = (vars && vars.motif) || '';
+      const sev = discipline.severityOf(motif);
+      if (!Array.isArray(data.sanctions)) data.sanctions = [];
+      data.sanctions.push({
+        id: erp.eid('san'), userId, userName: doc.userName, type: DISC[type], motif,
+        gravite: sev.gravite, date: new Date().toISOString().slice(0, 10),
+        docId: doc.id, createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`,
+        createdAt: new Date().toISOString(),
+      });
+    }
     audit.logAction(data, { ...actor(req), action: 'document.issue', entity: doc.label, detail: doc.userName });
     await save();
     res.json({ document: { id: doc.id, label: doc.label, userName: doc.userName, status: doc.status } });
@@ -525,6 +583,8 @@ function mount(app, deps) {
     if (!doc) return res.status(404).json({ error: 'Document introuvable' });
     data.erp.documents = data.erp.documents.filter((d) => d.id !== req.params.id);
     if (doc.ackRef) data.erp.acknowledgements = data.erp.acknowledgements.filter((a) => a.id !== doc.ackRef);
+    // Retire la sanction consignée au dossier lors de l'envoi (si annulation).
+    if (Array.isArray(data.sanctions)) data.sanctions = data.sanctions.filter((s) => s.docId !== doc.id);
     audit.logAction(data, { ...actor(req), action: 'document.cancel', entity: doc.label, detail: doc.userName });
     await save();
     res.json({ ok: true });

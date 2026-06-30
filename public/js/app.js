@@ -436,10 +436,9 @@ function navSections() {
   ] });
   // Ressources Humaines
   const rh = [];
-  if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Absences' });
-  if (admin) rh.push({ id: 'hours', icon: '⏱️', label: 'Temps de travail' });
-  if (admin) rh.push({ id: 'justif', icon: '🧾', label: 'Notes de frais' });
-  if (admin) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des documents' });
+  if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' });
+  if (admin) rh.push({ id: 'hours', icon: '⏱️', label: 'Gestion des heures' });
+  if (admin) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des procédures' });
   if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
   // Exploitation & Transport
   const exp = [];
@@ -454,6 +453,7 @@ function navSections() {
   if (admin) {
     groups.push({ id: 'fin', icon: '💰', title: 'Finance & Facturation', items: [
       { id: 'billing', icon: '🧾', label: 'Facturation' },
+      { id: 'justif', icon: '🧾', label: 'Notes de frais' },
       { id: 'finance', icon: '💶', label: 'Contrôle financier' },
       { id: 'tender', icon: '📐', label: 'Devis, Appel d\'offres' },
     ] });
@@ -976,10 +976,11 @@ async function renderDashboard(main) {
       geolocPanel = '<div id="dash-geoloc"><div class="card" style="padding:0;overflow:hidden;border:2px solid #14427e;border-radius:14px">'
         + '<div style="padding:.85rem 1rem;background:linear-gradient(135deg,#14427e,#2563eb);color:#fff;font-weight:800;font-size:1.05rem">🛰️ Géolocalisation des chauffeurs <span style="font-weight:400;opacity:.85;font-size:.85rem">— chargement…</span></div></div></div>';
     }
-    let kmAnomalyPanel = '';
+    let kmAnomalyPanel = '', licenciementPanel = '';
     if (isAdmin) {
       try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
       try { const { anomalies } = await api('GET', '/staff/km-anomalies'); kmAnomalyPanel = kmAnomalyHTML(anomalies); } catch (e) {}
+      try { const { files } = await api('GET', '/admin/erp/documents/disciplinary-files'); licenciementPanel = licenciementHTML((files || []).filter((f) => f.level === 'licenciement')); } catch (e) {}
     }
 
     // Documents adressés au salarié (à accuser réception) — visible de tous.
@@ -1012,6 +1013,7 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${previewBar}
+      ${licenciementPanel}
       ${geolocPanel}
       ${anc}
       ${isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">📊 Mes compteurs</h3><div class="grid cols-4">
@@ -1425,6 +1427,19 @@ function kmAnomalyHTML(anomalies) {
     <p class="help" style="margin-top:0">Relevés suspects (erreur de saisie possible). <strong>Validez</strong> pour mettre à jour l'odomètre du véhicule, ou <strong>écartez</strong>.</p>
     <div class="table-wrap"><table><thead><tr><th>Véhicule</th><th>Date</th><th>Km relevé</th><th>Chauffeur</th><th>Anomalie</th><th></th></tr></thead>
       <tbody>${anomalies.map((a) => `<tr><td><strong>${esc(a.vehicleName)}</strong>${a.plate ? ` (${esc(a.plate)})` : ''}</td><td>${fmtDate(a.date)}</td><td>${kmFmt(a.km)}</td><td>${esc(a.userName)}</td><td class="help">${esc(a.reason)}</td><td style="white-space:nowrap"><button class="btn ok sm" data-kmano-apply="${a.id}">Valider</button> <button class="btn ghost sm" data-kmano-reject="${a.id}">Écarter</button></td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+
+// Accueil (admin) : salariés au niveau « licenciement pour faute grave » —
+// la Direction doit engager la procédure (convocation à entretien préalable).
+function licenciementHTML(list) {
+  if (!list || !list.length) return '';
+  return `<div class="card" style="border-left:5px solid var(--danger)">
+    <h3 style="margin:0 0 .3rem">⚖️ Procédure de licenciement à engager (${list.length})</h3>
+    <p class="help" style="margin-top:0">Dossier disciplinaire au niveau « faute grave » : convoquez le salarié à un entretien préalable. Ouvrez son dossier dans <strong>Gestion des procédures → Dossiers disciplinaires</strong>.</p>
+    <div class="table-wrap"><table><thead><tr><th>Salarié</th><th>Groupe</th><th style="text-align:center">Avert.</th><th>Motif / raison</th></tr></thead>
+      <tbody>${list.map((f) => `<tr><td><strong>${esc(f.userName)}</strong></td><td class="help">${esc(f.groupName)}</td><td style="text-align:center">${f.warningCount}${f.miseCount ? ` +${f.miseCount} MAP` : ''}</td><td class="help">${esc(f.reason)}</td></tr>`).join('')}</tbody></table></div>
+    <div style="margin-top:.5rem"><button class="btn accent sm" data-view="docmgmt">Ouvrir les dossiers disciplinaires →</button></div>
   </div>`;
 }
 
@@ -3940,40 +3955,111 @@ async function erpOpenHtml(method, path, body) {
 let _docMgmtTab = 'gen';
 async function renderDocMgmt(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>Gestion des documents</h1>
-    <p>Générez vos courriers et contrats (publipostage), exportez-les en PDF et suivez les envois.</p></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Gestion des procédures</h1>
+    <p>Générez vos procédures disciplinaires, suivez les envois et l'état du dossier disciplinaire de chaque salarié.</p></div></div>
     <div class="view-switch" id="dm-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-dtab="gen">Générer un document</button>
+      <button data-dtab="gen">Générer une procédure</button>
+      <button data-dtab="dossiers">Dossiers disciplinaires</button>
       <button data-dtab="sent">Documents envoyés</button>
     </div>
     <div id="dm-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#dm-tabs');
+  const route = () => { if (_docMgmtTab === 'sent') return docMgmtSent(main); if (_docMgmtTab === 'dossiers') return docMgmtDossiers(main); return docMgmtGen(main); };
   const setActive = () => tabs.querySelectorAll('[data-dtab]').forEach((b) => b.classList.toggle('active', b.dataset.dtab === _docMgmtTab));
-  tabs.querySelectorAll('[data-dtab]').forEach((b) => b.onclick = () => { _docMgmtTab = b.dataset.dtab; setActive(); _docMgmtTab === 'sent' ? docMgmtSent(main) : docMgmtGen(main); });
+  tabs.querySelectorAll('[data-dtab]').forEach((b) => b.onclick = () => { _docMgmtTab = b.dataset.dtab; setActive(); route(); });
   setActive();
-  _docMgmtTab === 'sent' ? docMgmtSent(main) : docMgmtGen(main);
+  route();
 }
 
-// Onglet « Documents envoyés » : suivi + annulation/suppression d'un envoi.
+// Onglet « Documents envoyés » : un tableau par salarié.
 async function docMgmtSent(main) {
   const body = document.getElementById('dm-body'); if (!body) return; body.className = '';
   let docs;
   try { docs = (await api('GET', '/admin/erp/documents')).documents; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
-  body.innerHTML = `<div class="card"><h3>Documents adressés aux salariés</h3>
-    <p class="help">Suivez l'état de chaque document. Vous pouvez <strong>annuler / supprimer un envoi</strong> (le document et la signature éventuelle sont retirés).</p>
-    ${docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Salarié</th><th>Émis le</th><th>Statut</th><th>Lu le</th><th>Signé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr>
-      <td>${esc(d.label)}</td><td>${esc(d.userName)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
+  if (!docs.length) { body.innerHTML = '<div class="alert info">Aucun document envoyé pour le moment.</div>'; return; }
+  // Regroupement par salarié (un tableau individuel chacun).
+  const byUser = {};
+  docs.forEach((d) => { (byUser[d.userName || '—'] = byUser[d.userName || '—'] || []).push(d); });
+  const names = Object.keys(byUser).sort();
+  const docRow = (d) => `<tr>
+      <td>${esc(d.label)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
       <td>${d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : (d.viewedAt || d.status === 'read') ? '<span class="pill warn">lu, non signé</span>' : '<span class="pill danger">non ouvert</span>'}</td>
       <td>${d.viewedAt ? fmtDateTime(d.viewedAt) : '—'}</td><td>${d.ackedAt ? fmtDateTime(d.ackedAt) : '—'}</td>
-      <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation</button>` : ''} <button class="btn danger sm" data-doccancel="${d.id}" data-lbl="${esc(d.label)}">✕ Annuler l'envoi</button></td>
-    </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun document envoyé pour le moment.</p>'}
-  </div>`;
+      <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation</button>` : ''} <button class="btn danger sm" data-doccancel="${d.id}" data-lbl="${esc(d.label)}">✕</button></td>
+    </tr>`;
+  body.innerHTML = `<p class="help" style="margin-top:0">Documents adressés, classés par salarié. Vous pouvez annuler un envoi (✕) : le document et la signature éventuelle sont retirés.</p>` + names.map((n) => {
+    const list = byUser[n].slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return `<details class="card" open><summary><strong>${esc(n)}</strong> <span class="help">${list.length} document(s)</span></summary>
+      <div class="table-wrap" style="margin-top:.6rem"><table class="veh-table"><thead><tr><th>Document</th><th>Émis le</th><th>Statut</th><th>Lu le</th><th>Signé le</th><th></th></tr></thead>
+      <tbody>${list.map(docRow).join('')}</tbody></table></div></details>`;
+  }).join('');
   body.querySelectorAll('[data-docview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.docview + '/view'));
   body.querySelectorAll('[data-att]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.att + '/attestation'));
   body.querySelectorAll('[data-doccancel]').forEach((b) => b.onclick = async () => {
     if (!confirm(`Annuler et supprimer l'envoi de « ${b.dataset.lbl} » ? Cette action est irréversible.`)) return;
     try { await api('DELETE', '/admin/erp/documents/' + b.dataset.doccancel); toast('Envoi annulé.', 'ok'); docMgmtSent(main); }
     catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+// Onglet « Dossiers disciplinaires » : état par salarié + seuils + progression.
+const DISC_LEVEL = {
+  licenciement: { lbl: 'Licenciement (faute grave)', cls: 'danger', color: '#b91c1c' },
+  mise_a_pied: { lbl: 'Mise à pied éligible', cls: 'warn', color: '#b45309' },
+  avertissement: { lbl: 'Avertissement(s)', cls: 'draft', color: '#2563eb' },
+  vierge: { lbl: 'Dossier vierge', cls: 'ok', color: '#16a34a' },
+};
+async function docMgmtDossiers(main) {
+  const body = document.getElementById('dm-body'); if (!body) return; body.className = '';
+  let d;
+  try { d = await api('GET', '/admin/erp/documents/disciplinary-files'); } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const files = d.files || [], sev = d.severity || {}, gl = d.graviteLabels || {};
+  const counts = { licenciement: 0, mise_a_pied: 0, avertissement: 0, vierge: 0 };
+  files.forEach((f) => { counts[f.level] = (counts[f.level] || 0) + 1; });
+  const sevRows = Object.entries(sev).sort((a, b) => a[1].gravite - b[1].gravite || a[1].seuil - b[1].seuil)
+    .map(([m, s]) => `<tr><td>${esc(m)}</td><td style="text-align:center">${esc(gl[s.gravite] || s.gravite)}</td><td style="text-align:center">${s.seuil}</td><td style="text-align:center">${s.seuil + 1}ᵉ manquement</td></tr>`).join('');
+  const progBar = (f) => {
+    if (!f.dominant) return f.level === 'vierge' ? '<span class="help">—</span>' : '';
+    const { count, seuil, gravite } = f.dominant;
+    const pct = seuil > 0 ? Math.min(100, Math.round(count / seuil * 100)) : 100;
+    return `<div class="disc-bar"><span style="width:${pct}%;background:${DISC_LEVEL[f.level].color}"></span></div><span class="help">${count}/${seuil}${gravite >= 4 ? ' · très grave' : ''} — ${esc(f.dominant.motif)}</span>`;
+  };
+  body.innerHTML = `
+    <div class="grid cols-4">
+      ${['licenciement', 'mise_a_pied', 'avertissement', 'vierge'].map((l) => `<div class="stat ${l === 'licenciement' && counts[l] ? 'alt' : ''}"><div class="value" style="font-size:1.5rem">${counts[l] || 0}</div><div class="label">${DISC_LEVEL[l].lbl}</div></div>`).join('')}
+    </div>
+    ${counts.licenciement ? `<div class="alert warn">⚠️ <strong>${counts.licenciement} salarié(s)</strong> au niveau « licenciement pour faute grave » : engagez la procédure (convocation à entretien préalable).</div>` : ''}
+    <div class="card"><h3 style="margin-top:0">Dossiers disciplinaires des salariés</h3>
+      <p class="help">État du dossier de chaque salarié (vierge ou entamé), progression vers une mise à pied et prochaine étape proportionnée. Chaque avertissement adressé est compté automatiquement.</p>
+      <div class="table-wrap"><table class="report-table"><thead><tr><th>Salarié</th><th>Groupe</th><th style="text-align:center">Avert.</th><th>Progression → mise à pied</th><th>État / prochaine étape</th><th></th></tr></thead>
+      <tbody>${files.map((f) => `<tr>
+        <td><strong>${esc(f.userName)}</strong></td>
+        <td><span class="help">${esc(f.groupName)}</span></td>
+        <td style="text-align:center">${f.warningCount}${f.miseCount ? ` <span class="help">+${f.miseCount} MAP</span>` : ''}</td>
+        <td style="min-width:170px">${progBar(f)}</td>
+        <td><span class="pill ${DISC_LEVEL[f.level].cls}">${DISC_LEVEL[f.level].lbl}</span><div class="help">${esc(f.nextStep)}</div></td>
+        <td><button class="btn ghost sm" data-discview="${f.userId}">Détail</button></td>
+      </tr>`).join('')}</tbody></table></div>
+    </div>
+    <div class="card"><h3 style="margin-top:0">Barème : seuils par motif</h3>
+      <p class="help">Plus un motif est grave, plus le seuil (nombre d'avertissements avant qu'une mise à pied soit proportionnée) est bas.</p>
+      <div class="table-wrap"><table class="report-table"><thead><tr><th>Motif</th><th style="text-align:center">Gravité</th><th style="text-align:center">Seuil (avert.)</th><th style="text-align:center">Mise à pied dès</th></tr></thead><tbody>${sevRows}</tbody></table></div>
+    </div>`;
+  body.querySelectorAll('[data-discview]').forEach((b) => b.onclick = () => discFileModal(files.find((f) => f.userId === b.dataset.discview), gl));
+}
+function discFileModal(f, gl) {
+  if (!f) return;
+  gl = gl || {};
+  const sanc = f.sanctions.length ? f.sanctions.slice().reverse().map((s) => `<tr><td>${esc(s.date || '')}</td><td>${esc(s.type)}</td><td>${esc(s.motif || '—')}</td></tr>`).join('') : '<tr><td colspan="3"><span class="help">Aucune sanction au dossier.</span></td></tr>';
+  const motifRows = f.motifs.map((m) => `<tr><td>${esc(m.motif)}</td><td style="text-align:center">${esc(gl[m.gravite] || m.gravite)}</td><td style="text-align:center">${m.count}/${m.seuil}</td><td style="text-align:center">${m.eligible ? '✅ éligible' : '—'}</td></tr>`).join('');
+  modal({
+    title: 'Dossier disciplinaire — ' + f.userName,
+    bodyHTML: `
+      <div class="alert ${f.level === 'licenciement' ? 'warn' : 'info'}"><strong>${esc(f.nextStep)}</strong> — ${esc(f.reason)}</div>
+      <h4 style="margin:.6rem 0 .3rem">Historique des sanctions</h4>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Type</th><th>Motif</th></tr></thead><tbody>${sanc}</tbody></table></div>
+      ${f.motifs.length ? `<h4 style="margin:.7rem 0 .3rem">Progression par motif</h4><div class="table-wrap"><table class="veh-table"><thead><tr><th>Motif</th><th style="text-align:center">Gravité</th><th style="text-align:center">Avert./seuil</th><th style="text-align:center">Mise à pied</th></tr></thead><tbody>${motifRows}</tbody></table></div>` : ''}`,
+    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
   });
 }
 
@@ -4017,14 +4103,8 @@ async function docMgmtGen(main) {
         <button class="btn accent" id="dm-gen">Aperçu</button>
         <button class="btn" id="dm-pdf">⬇️ Exporter en PDF</button>
         <button class="btn ok" id="dm-issue" style="display:none">✅ Valider & adresser au salarié</button>
-        <button class="btn ghost" id="dm-sanction" style="display:none">Enregistrer au dossier du salarié</button>
       </div>
       <p class="help">Les faits sont rédigés automatiquement à partir du motif ; un encart vous demande de compléter les éléments variables (dates, véhicule, description). Le brouillon reste éditable avant export. Cadre : CCN Transports routiers IDCC 16.</p>
-    </div>
-    <div class="card"><h3>Modèles de lettre</h3>
-      <p class="help">Enrichissez la base : créez un nouveau modèle ou importez le contenu d'une lettre type. Variables disponibles : <code>{{salarie.fullName}}</code>, <code>{{salarie.lastName}}</code>, <code>{{salarie.address}}</code>, <code>{{motif}}</code>, <code>{{faits}}</code>, <code>{{date}}</code>, <code>{{company.legal}}</code>, <code>{{company.address}}</code>.</p>
-      <button class="btn ghost sm" id="dm-newtpl">➕ Créer / importer un modèle</button>
-      ${customTpls.length ? `<div class="table-wrap" style="margin-top:.6rem"><table class="veh-table"><thead><tr><th>Modèle</th><th>Catégorie</th><th></th></tr></thead><tbody>${customTpls.map(([k, v]) => `<tr><td>${esc(v.label)}</td><td>${esc(v.category || '')}</td><td style="white-space:nowrap"><button class="btn ghost sm" data-tpledit="${k}">✎ Éditer</button> <button class="btn danger sm" data-tpldel="${k}">✕</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="help" style="margin-top:.4rem">Aucun modèle personnalisé pour le moment.</p>'}
     </div>
     <div id="dm-preview"></div>`;
   const effMotif = () => { const s = body.querySelector('#dm-motif-sel'); return s.value === '__free__' ? body.querySelector('#dm-motif-free').value.trim() : s.value; };
@@ -4107,15 +4187,7 @@ async function docMgmtGen(main) {
     try { await api('POST', '/admin/erp/doc-options/motif', { motif: m }); toast('Motif ajouté à la liste.', 'ok'); renderDocMgmt(main); }
     catch (e) { toast(e.message, 'err'); }
   };
-  // Modèles de lettre : créer/importer, éditer, supprimer.
-  body.querySelector('#dm-newtpl').onclick = () => templateEditModal(main, null, null);
-  body.querySelectorAll('[data-tpledit]').forEach((b) => b.onclick = () => templateEditModal(main, b.dataset.tpledit, templates[b.dataset.tpledit]));
-  body.querySelectorAll('[data-tpldel]').forEach((b) => b.onclick = async () => {
-    if (!confirm('Supprimer ce modèle personnalisé ?')) return;
-    try { await api('DELETE', '/admin/erp/templates/' + b.dataset.tpldel); toast('Modèle supprimé.', 'ok'); renderDocMgmt(main); }
-    catch (e) { toast(e.message, 'err'); }
-  });
-  const syncBtns = () => { const uid = body.querySelector('#dm-user').value; body.querySelector('#dm-issue').style.display = uid ? 'inline-block' : 'none'; body.querySelector('#dm-sanction').style.display = uid ? 'inline-block' : 'none'; };
+  const syncBtns = () => { const uid = body.querySelector('#dm-user').value; body.querySelector('#dm-issue').style.display = uid ? 'inline-block' : 'none'; };
   body.querySelector('#dm-user').addEventListener('change', () => { syncBtns(); refreshContext(); });
   body.querySelector('#dm-type').addEventListener('change', syncBtns);
   syncBtns();
@@ -4137,12 +4209,6 @@ async function docMgmtGen(main) {
     const faits = await buildFaits(); if (faits == null) return;
     if (!confirm('Adresser ce document au salarié ? Il devra en accuser réception dans l\'application.')) return;
     try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: body.querySelector('#dm-type').value, vars: collectVars(faits) }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  body.querySelector('#dm-sanction').onclick = async () => {
-    const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
-    const lbl = templates[body.querySelector('#dm-type').value] ? templates[body.querySelector('#dm-type').value].label : 'Avertissement';
-    try { await api('POST', '/admin/erp/documents/save-sanction', { userId: uid, type: lbl, motif: effMotif() }); toast('Enregistré au dossier du salarié.', 'ok'); refreshContext(); }
     catch (e) { toast(e.message, 'err'); }
   };
 }
