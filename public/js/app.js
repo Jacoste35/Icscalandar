@@ -6510,7 +6510,10 @@ function hoursHsup(body) {
 }
 
 // Paramètres de paie par défaut (calés sur un bulletin Chauffeur-Livreur réel).
-const SAL_DEFAULTS = { tauxHoraire: 12.09, baseMois: 151.67, cotisPct: 23.04, exoHsPct: 11.31, panierMidi: 16.36, panierSoir: 16.36, casseCroute: 0, nuitParH: 0, decoucher: 0, pasPct: 0 };
+// Paramètres calés sur les bulletins réels ICS (mai 2026) : base 151,67 h ×
+// 12,09 €/h = 1 833,69 € ; HSUP 25 % ; majoration nuit 2,486 €/h ; cotisations
+// salariales ≈ 23,04 % avec exonération HS ≈ 11,31 % (net avant IR à ≈ 1 €).
+const SAL_DEFAULTS = { tauxHoraire: 12.09, baseMois: 151.67, cotisPct: 23.04, exoHsPct: 11.31, panierMidi: 16.36, panierSoir: 16.36, casseCroute: 0, nuitParH: 2.49, decoucher: 0, pasPct: 0 };
 // Option « payer les HSUP 25% jusqu'à 32 h » (au lieu de 22 h), par salarié.
 let _hs25To32 = {};
 function getSalParams(id) { const o = (_hours.salaryParams || {})[id] || {}; return Object.assign({}, SAL_DEFAULTS, o); }
