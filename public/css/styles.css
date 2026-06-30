@@ -1000,3 +1000,115 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-odo { margin-top: .35rem; font-size: .82rem; background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; border-radius: 6px; padding: .25rem .5rem; }
 .geo-moves { margin-top: .35rem; font-size: .82rem; background: #eff6ff; color: #1e3a8a; border: 1px solid #dbeafe; border-radius: 6px; padding: .25rem .5rem; }
 .geo-group { margin-top: .35rem; font-size: .82rem; color: #475569; }
+
+/* ======================================================================
+   REFRESH UI/UX — modernisation générale (desktop + mobile) — v39
+   Surcouche purement visuelle (couleurs, ombres, rayons, transitions,
+   survols) appliquée en fin de feuille : n'altère aucune structure.
+   ====================================================================== */
+:root {
+  --radius: 16px;
+  --radius-sm: 11px;
+  --shadow: 0 1px 2px rgba(15,23,42,.05), 0 8px 24px -8px rgba(15,23,42,.10);
+  --shadow-md: 0 10px 30px -10px rgba(15,23,42,.22);
+  --ring: 0 0 0 3px rgba(31,94,168,.20);
+}
+body {
+  font-family: 'Inter', 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
+  background:
+    radial-gradient(1200px 600px at 110% -10%, rgba(31,94,168,.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(212,48,45,.05), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* Cartes : bord net, ombre douce en couches, léger relèvement au survol */
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transition: box-shadow .22s var(--ease), transform .22s var(--ease), border-color .22s var(--ease);
+}
+.card:hover { box-shadow: var(--shadow-md); }
+.main > .card, #dash-body > .card { animation: cardIn .3s var(--ease) both; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Boutons : dégradés discrets, ombre, animation d'appui */
+.btn {
+  border-radius: 11px;
+  background: var(--grad-brand);
+  box-shadow: 0 1px 1px rgba(15,23,42,.04), 0 6px 16px -8px rgba(20,66,126,.5);
+  transition: filter .18s var(--ease), transform .08s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease);
+}
+.btn:hover { filter: brightness(1.07); background: var(--grad-brand); }
+.btn:active { transform: translateY(1px); }
+.btn.accent { background: var(--grad-accent); }
+.btn.accent:hover { filter: brightness(1.06); background: var(--grad-accent); }
+.btn.ok { background: linear-gradient(135deg, #1fb155, #16a34a); }
+.btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
+.btn.ghost { background: #fff; box-shadow: none; }
+.btn.ghost:hover { background: var(--surface-2); filter: none; border-color: var(--brand-3); }
+.btn.sm { border-radius: 9px; }
+
+/* Statistiques : liseré dégradé en haut + relief au survol */
+.stat {
+  border-radius: var(--radius);
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow .2s var(--ease), transform .2s var(--ease);
+}
+.stat::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--grad-brand); opacity: .9; }
+.stat.alt::before { background: var(--grad-accent); }
+.stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.stat .value { letter-spacing: -.02em; }
+
+/* Onglets / sélecteur de vue : contrôle segmenté façon "pill" */
+.view-switch { border-radius: 999px; padding: 3px; gap: 2px; background: var(--surface-2); border-color: var(--border); box-shadow: inset 0 1px 2px rgba(15,23,42,.04); }
+.view-switch button { border-radius: 999px; transition: background .18s var(--ease), color .18s var(--ease); }
+.view-switch button.active { background: var(--grad-brand); color: #fff; box-shadow: 0 4px 12px -6px rgba(20,66,126,.7); }
+
+/* Navigation latérale : indicateur actif + survol fluide */
+.sidebar nav button { border-radius: 11px; transition: background .16s var(--ease), color .16s var(--ease); position: relative; }
+.sidebar nav button.active { background: rgba(255,255,255,.14); box-shadow: inset 3px 0 0 var(--accent-2); }
+
+/* Tableaux : conteneur arrondi, en-tête teinté, survol de ligne */
+.table-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-x: auto; overflow-y: hidden; box-shadow: var(--shadow); background: #fff; }
+.table-wrap thead th { background: linear-gradient(180deg, #f8fafc, #f1f5f9); }
+.table-wrap tbody tr { transition: background .14s var(--ease); }
+.table-wrap tbody tr:hover { background: #f6f9fe; }
+
+/* Champs : focus net et homogène */
+input, select, textarea { border-radius: 10px; transition: border-color .16s var(--ease), box-shadow .16s var(--ease); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--brand-3); box-shadow: var(--ring); }
+
+/* Pastilles / tags un peu plus doux */
+.pill, .tag { border-radius: 999px; }
+
+/* ---- Mon Planning (ordinateur) : grille plus moderne -------------------- */
+.month-grid { border-radius: var(--radius); box-shadow: var(--shadow); gap: 0; }
+.month-grid .dow { background: linear-gradient(180deg, #f8fafc, #eef2f7); letter-spacing: .6px; padding: .6rem .5rem; border-bottom: 1px solid var(--border); }
+.month-grid .cell { transition: background .15s var(--ease), box-shadow .15s var(--ease); }
+.month-grid:not(.compact) .cell:hover { background: #f6f9fe; box-shadow: inset 0 0 0 2px rgba(31,94,168,.18); z-index: 2; }
+.month-grid .cell.today { background: linear-gradient(180deg, rgba(31,94,168,.10), rgba(31,94,168,.02)); }
+.month-grid .cell.today .num { box-shadow: 0 4px 10px -4px rgba(20,66,126,.7); }
+.month-grid .cell .ev { border-radius: 7px; box-shadow: 0 1px 2px rgba(15,23,42,.10); }
+.cal-toolbar .title { letter-spacing: -.01em; }
+
+/* Cartes de semaine de l'accueil : entête plus marquée */
+.dash-week h3, .dweek-head { letter-spacing: -.01em; }
+
+/* Défilement plus fin (navigateurs Webkit) */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: #c5d0de; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: #aebdd0; background-clip: padding-box; }
+
+/* Réduction des animations si l'utilisateur le demande */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* Planning d'accueil (grille semaine) — touches modernes */
+.week-grid { border-radius: var(--radius); box-shadow: var(--shadow); }
+.week-grid .whead { background: linear-gradient(180deg, #f8fafc, #eef2f7); letter-spacing: .3px; }
+.week-grid .wrow:not(.whead) .wcell { transition: background .14s var(--ease); }
+.week-grid .wrow:not(.whead):hover { background: #f6f9fe; }
