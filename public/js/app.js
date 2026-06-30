@@ -922,9 +922,24 @@ let _calEvents = []; // évènements du calendrier (pour l'édition du remplaça
 let _previewUserId = null; // aperçu « en tant que » : id du salarié prévisualisé (admin)
 let _previewMode = false;  // vrai pendant le rendu d'un aperçu (lecture seule)
 async function renderDashboard(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>Bonjour ${esc(State.user.firstName)} 👋</h1>
-    <p>Voici un aperçu de votre situation et de l'équipe.</p></div></div>
+  const todayLong = frLongDate(iso(new Date()));
+  const heroDate = todayLong ? todayLong.charAt(0).toUpperCase() + todayLong.slice(1) : '';
+  const inPreview = State.user.role === 'admin' && _previewUserId;
+  main.innerHTML = `
+    <section class="dash-hero">
+      <div class="dash-hero-text">
+        <div class="dash-hello">Bonjour ${esc(State.user.firstName)} 👋</div>
+        <div class="dash-date">${esc(heroDate)}</div>
+      </div>
+      <div class="dash-hero-actions">
+        <button class="hero-chip" data-herov="calendar">📅 Mon planning</button>
+        ${inPreview ? '' : '<button class="hero-chip" id="hero-leave">🌴 Poser un congé</button>'}
+        <button class="hero-chip" data-herov="mydata">👤 Mon profil</button>
+      </div>
+    </section>
     <div id="dash-body" class="empty">Chargement…</div>`;
+  main.querySelectorAll('[data-herov]').forEach((b) => b.onclick = () => { State.view = b.dataset.herov; renderApp(); });
+  const heroLeave = main.querySelector('#hero-leave'); if (heroLeave) heroLeave.onclick = () => openRequestModal();
   try {
     const today = new Date();
     await ensureHolidays(today.getFullYear());
