@@ -1384,3 +1384,85 @@ td { color: var(--ink); }
   .geo-head { align-items: flex-start; }
   #geo-map { height: 48vh; min-height: 300px; }
 }
+
+/* ======================================================================
+   TABLEAUX RESPONSIVES (accueil) — lisibles sur téléphone sans défilement
+   horizontal. Chaque ligne devient un bloc « libellé : valeur » empilé.
+   ====================================================================== */
+@media (max-width: 600px) {
+  table.rtable { display: block; width: 100%; border-collapse: collapse; }
+  table.rtable thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } /* en-têtes lus par data-label */
+  table.rtable tbody { display: block; width: 100%; }
+  table.rtable tbody tr {
+    display: block; width: 100%; box-sizing: border-box;
+    margin: 0 0 .6rem; padding: .55rem .7rem;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: #fff; box-shadow: var(--shadow);
+  }
+  table.rtable tbody tr:last-child { margin-bottom: 0; }
+  table.rtable tbody td {
+    display: flex; align-items: baseline; justify-content: space-between; gap: .8rem;
+    width: 100%; box-sizing: border-box; padding: .3rem 0; border: 0;
+    text-align: right; white-space: normal; word-break: break-word;
+  }
+  table.rtable tbody td + td { border-top: 1px solid var(--border-soft, #eef1f6); }
+  table.rtable tbody td::before {
+    content: attr(data-label); flex: 0 0 auto; max-width: 50%;
+    text-align: left; font-weight: 700; color: var(--muted);
+    font-size: .82rem; letter-spacing: -.01em;
+  }
+  table.rtable tbody td[data-label=""]::before,
+  table.rtable tbody td:not([data-label])::before { content: none; }
+  /* Cellule fusionnée (sous-titre de groupe) : pleine largeur, centrée */
+  table.rtable tbody td[colspan] { justify-content: center; text-align: center; font-weight: 700; }
+  table.rtable tbody td[colspan]::before { content: none; }
+  table.rtable tbody td .btn,
+  table.rtable tbody td button { width: auto; }
+}
+
+/* ======================================================================
+   ACCUEIL « façon SumUp » — clarté & lisibilité maximales
+   Lignes aérées, surfaces douces, hiérarchie nette. Améliore le confort
+   de lecture sans toucher à la structure des sections.
+   ====================================================================== */
+/* Sections : intitulés plus calmes, davantage d'air autour */
+.dash-divider { color: #8190a8; margin-top: 1.9rem; }
+#dash-body > .dash-divider:first-child { margin-top: .35rem; }
+
+/* En-tête de section repliable : ligne haute et confortable (cible tactile) */
+.dash-acc { margin: 0 0 .7rem; }
+.dash-acc > summary {
+  min-height: 60px; padding: .85rem 1rem; border-radius: 16px;
+  border-color: #e7ecf4; gap: .8rem; font-weight: 700;
+  box-shadow: 0 1px 2px rgba(16,33,60,.05);
+}
+.dash-acc > summary:hover { box-shadow: 0 6px 18px -10px rgba(16,33,60,.22); }
+.dash-chev {
+  width: 30px; height: 30px; background: #eef3fb; color: var(--brand);
+  font-size: 1.3rem; box-shadow: inset 0 0 0 1px rgba(20,66,126,.06);
+}
+.dash-title { font-size: 1.04rem; font-weight: 750; letter-spacing: -.01em; }
+.dash-kpi { font-size: .78rem; padding: .26rem .7rem; }
+.dash-acc[open] > summary { box-shadow: 0 1px 2px rgba(16,33,60,.05); }
+.dash-acc[open] > .card {
+  border-color: #e7ecf4; border-radius: 0 0 16px 16px;
+  padding: 1rem 1.1rem 1.15rem;
+}
+
+/* Tableaux internes plus aérés et lisibles (interlignage, séparateurs doux) */
+.dash-acc .card table { font-size: .92rem; }
+.dash-acc .card table thead th { color: #7587a0; font-weight: 700; letter-spacing: .01em; }
+.dash-acc .card table tbody td { padding-top: .55rem; padding-bottom: .55rem; }
+
+/* Statistiques (Mes compteurs) : chiffres nets, blocs respirants */
+.dash-acc .stat .value { letter-spacing: -.02em; }
+
+/* Hero : un cran plus doux et premium */
+.dash-hero { border-radius: 24px; box-shadow: 0 24px 50px -26px rgba(16,33,60,.6); }
+.hero-chip { backdrop-filter: saturate(1.2) blur(2px); font-weight: 600; }
+
+@media (max-width: 600px) {
+  .dash-acc > summary { min-height: 56px; padding: .8rem .9rem; }
+  .dash-title { font-size: 1rem; }
+  .dash-acc[open] > .card { padding: .85rem .9rem 1rem; }
+}
