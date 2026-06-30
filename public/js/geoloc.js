@@ -88,9 +88,22 @@ function geoStatusChips(active, depot) {
 function geolocLiveTableHTML(positions) {
   if (!positions || !positions.length) return '<p class="help">Aucun véhicule géolocalisé pour le moment.</p>';
   const { depot, active } = geolocSplit(positions);
-  let html = active.length
-    ? '<div class="geo-cards">' + active.map(geoVehCardHTML).join('') + '</div>'
-    : '<p class="help">Aucun véhicule en activité — tous au dépôt.</p>';
+  // Les véhicules en arrêt PROLONGÉ sont regroupés dans une section dépliable
+  // pour alléger l'affichage : seuls les véhicules réellement en mouvement (ou
+  // récemment actifs) restent en cartes plein écran.
+  const prolonged = active.filter((p) => geoEffectiveStatus(p) === 'orange');
+  const live = active.filter((p) => geoEffectiveStatus(p) !== 'orange');
+  let html = live.length
+    ? '<div class="geo-cards">' + live.map(geoVehCardHTML).join('') + '</div>'
+    : '<p class="help">Aucun véhicule en mouvement — voir les arrêts prolongés et le dépôt ci-dessous.</p>';
+  if (prolonged.length) {
+    const foot = prolonged.map((p) => `<li><strong>${esc(geoVehLabel(p))}</strong> — arrêté depuis ${gStopSince(p.finalStopAt)}${p.address ? ' · ' + esc(p.address) : ''}</li>`).join('');
+    html += `<details class="geo-drop" id="geodrop-prolonged">
+      <summary>🟠 Véhicules en arrêt prolongé <span class="geo-count">${prolonged.length}</span></summary>
+      <div class="geo-cards" style="margin-top:.5rem">${prolonged.map(geoVehCardHTML).join('')}</div>
+      <div class="geo-depot-foot"><strong>Arrêts en cours</strong><ul>${foot}</ul></div>
+    </details>`;
+  }
   if (depot.length) {
     const foot = depot.map((p) => `<li><strong>${esc(geoVehLabel(p))}</strong> — arrêté ${gDateTime(p.finalStopAt)}</li>`).join('');
     html += `<details class="geo-drop" id="geodrop-depot">
