@@ -3230,8 +3230,7 @@ function fuelAnalysis(db) {
       if (t.vehicleId && vehById[t.vehicleId]) mapped = vehById[t.vehicleId];
       // Plein > capacité réservoir : remplissage suspect (jerrican / autre cuve).
       if ((t.liters || 0) > tank) {
-        const a = { vehicle: key, type: 'overtank', level: 'alert', date: t.date, driver: t.driver || '', text: `Plein de ${round1(t.liters)} L > capacité réservoir (${tank} L) — remplissage suspect (jerrican ?)` };
-        alerts.push(a);
+        alerts.push({ akey: 'overtank|' + t.txnId, vehicle: key, type: 'overtank', level: 'alert', date: t.date, driver: t.driver || '', text: `Plein de ${round1(t.liters)} L > capacité réservoir (${tank} L) — remplissage suspect (jerrican ?)` });
       }
       // Conso tank-to-tank entre deux pleins (kilométrage AS 24 renseigné).
       if (i > 0) {
@@ -3241,7 +3240,7 @@ function fuelAnalysis(db) {
           validKm += dk; validLiters += t.liters;
           const segConso = t.liters / dk * 100;
           if (segConso > refConso * (1 + Math.max(thr, 0.35))) {
-            alerts.push({ vehicle: key, type: 'spike', level: 'alert', date: t.date, driver: t.driver || '', text: `Conso anormale ${round1(segConso)} L/100 sur ${Math.round(dk)} km (${round1(t.liters)} L) — surconsommation ou vol à contrôler` });
+            alerts.push({ akey: 'spike|' + t.txnId, vehicle: key, type: 'spike', level: 'alert', date: t.date, driver: t.driver || '', text: `Conso anormale ${round1(segConso)} L/100 sur ${Math.round(dk)} km (${round1(t.liters)} L) — surconsommation ou vol à contrôler` });
           }
         }
       }
@@ -3254,7 +3253,7 @@ function fuelAnalysis(db) {
     const dominant = drvList[0] || null;
     const driverShare = dominant && txns.length ? Math.round(dominant.count / txns.length * 100) : 0;
     if (level === 'alert' && realConso != null) {
-      alerts.push({ vehicle: key, type: 'avg', level: 'alert', date: '', driver: dominant ? dominant.name : '', text: `Conso moyenne ${round1(realConso)} L/100 (réf. ${refConso}) — écart +${deviationPct}% à contrôler${dominant ? ' (chauffeur principal : ' + dominant.name + ')' : ''}` });
+      alerts.push({ akey: 'avg|' + key, vehicle: key, type: 'avg', level: 'alert', date: '', driver: dominant ? dominant.name : '', text: `Conso moyenne ${round1(realConso)} L/100 (réf. ${refConso}) — écart +${deviationPct}% à contrôler${dominant ? ' (chauffeur principal : ' + dominant.name + ')' : ''}` });
     }
     vehicles.push({
       vehicle: key, vehicleId: mapped ? mapped.id : null, plate: mapped ? (mapped.plate || '') : '',
@@ -3267,9 +3266,14 @@ function fuelAnalysis(db) {
     });
   }
   vehicles.sort((a, b) => (a.level === b.level ? b.ttc - a.ttc : a.level === 'alert' ? -1 : b.level === 'alert' ? 1 : a.level === 'warn' ? -1 : 1));
+  // Décisions admin (fraude confirmée / faux positif) rattachées par clé stable.
+  const dec = db.settings.fuelAlertDecisions || {};
+  alerts.forEach((a) => { a.key = a.akey; a.decision = dec[a.akey] ? dec[a.akey].status : null; delete a.akey; });
   const order = { alert: 0, warn: 1, ok: 2 };
-  alerts.sort((a, b) => (order[a.level] - order[b.level]) || String(b.date).localeCompare(String(a.date)));
-  return { refConso, threshold: kpi.threshold, tankCapacity: tank, vehicles, alerts: alerts.slice(0, 60), alertCount: alerts.length };
+  // Non traitées en premier ; les décidées (fraude/faux positif) en bas.
+  alerts.sort((a, b) => (((a.decision ? 1 : 0) - (b.decision ? 1 : 0)) || (order[a.level] - order[b.level]) || String(b.date).localeCompare(String(a.date))));
+  const pending = alerts.filter((a) => !a.decision).length;
+  return { refConso, threshold: kpi.threshold, tankCapacity: tank, vehicles, alerts: alerts.slice(0, 80), alertCount: pending, totalAlerts: alerts.length };
 }
 
 // Analyse par CHAUFFEUR sur 30 jours glissants (fenêtre se terminant à la
@@ -3372,6 +3376,21 @@ app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
     fuelCardMap: db.settings.fuelCardMap || {},
     available: fuelimport.available(),
   });
+});
+
+// Décision sur une alerte carburant : 'fraud' (fraude confirmée), 'false_positive'
+// (faux positif) ou '' pour réinitialiser.
+app.post('/api/staff/fuel/alert-decision', authRequired, adminRequired, async (req, res) => {
+  const db = getData(); ensureErp(db);
+  const { key, status } = req.body || {};
+  if (!key) return res.status(400).json({ error: 'Alerte non identifiée.' });
+  if (status === 'fraud' || status === 'false_positive') {
+    db.settings.fuelAlertDecisions[String(key)] = { status, by: req.user.id, byName: `${req.user.firstName} ${req.user.lastName}`, at: new Date().toISOString() };
+  } else {
+    delete db.settings.fuelAlertDecisions[String(key)];
+  }
+  await save();
+  res.json({ ok: true });
 });
 
 // Associe une carte AS 24 à un chauffeur inscrit (croisement conso par chauffeur).
