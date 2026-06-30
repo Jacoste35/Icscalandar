@@ -119,11 +119,12 @@ function geoVehCardHTML(p) {
   const fuelLine = ((st === 'orange' || st === 'depot') && p.stats && p.stats.litersDay != null)
     ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil consommés aujourd'hui (estimé)</div>` : '';
   const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
-  // Odomètre : réel (remonté par le traceur) ou distance GPS cumulée (estimation).
+  // Odomètre : réel (remonté par le traceur) sinon relevé de la flotte (mis à
+  // jour par l'import des rapports d'activité / Mobilic). Rien si aucun des deux.
   const odo = p.odometer || {};
-  const odoHtml = (odo.real != null)
-    ? `<div class="geo-odo">🧭 Odomètre : <strong>${Math.round(odo.real).toLocaleString('fr-FR')} km</strong>${odo.realAt ? ` <span class="help">(maj ${gTime(odo.realAt)})</span>` : ''}</div>`
-    : (odo.est > 0 ? `<div class="geo-odo">🧭 Distance GPS cumulée : <strong>${Math.round(odo.est).toLocaleString('fr-FR')} km</strong> <span class="help">(estimation — odomètre traceur indisponible)</span></div>` : '');
+  const odoKm = (odo.real != null) ? odo.real : (odo.fleet != null && odo.fleet > 0 ? odo.fleet : null);
+  const odoSrc = (odo.real != null) ? (odo.realAt ? `(maj ${gTime(odo.realAt)})` : '') : (odo.fleet != null ? '(relevé activité / Mobilic)' : '');
+  const odoHtml = (odoKm != null) ? `<div class="geo-odo">🧭 Odomètre : <strong>${Math.round(odoKm).toLocaleString('fr-FR')} km</strong>${odoSrc ? ` <span class="help">${odoSrc}</span>` : ''}</div>` : '';
   return `<div class="geo-card geo-${st}">
     <div class="geo-card-top">
       <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(geoVehLabel(p))}</span>
