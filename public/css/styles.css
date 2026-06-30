@@ -447,6 +447,8 @@ tr:last-child td { border-bottom: 0; }
 .leave-recap.leave-ok { background: #f0fdf4; border-left-color: #16a34a; color: #14532d; }
 .leave-recap.leave-warn { background: #fffbeb; border-left-color: #f59e0b; color: #78350f; }
 .leave-recap.leave-danger { background: #fef2f2; border-left-color: #dc2626; color: #7f1d1d; }
+.week-sugg-item { display: flex; gap: .6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: .45rem .65rem; margin: .35rem 0; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; font-size: .9rem; }
+.week-sugg-item .btn { flex-shrink: 0; }
 .disc-bar { display: block; height: 12px; background: #eef2f7; border-radius: 6px; overflow: hidden; margin-bottom: .15rem; }
 .disc-bar > span { display: block; height: 100%; border-radius: 6px; transition: width .25s; }
 .dm-retard-list { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; }
