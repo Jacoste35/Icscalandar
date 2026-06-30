@@ -1015,11 +1015,7 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 }
 body {
   font-family: 'Inter', 'Segoe UI', Roboto, -apple-system, BlinkMacSystemFont, sans-serif;
-  background:
-    radial-gradient(1200px 600px at 110% -10%, rgba(31,94,168,.07), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgba(212,48,45,.05), transparent 55%),
-    var(--bg);
-  background-attachment: fixed;
+  background: var(--bg);
 }
 
 /* Cartes : bord net, ombre douce en couches, léger relèvement au survol */
@@ -1030,8 +1026,6 @@ body {
   transition: box-shadow .22s var(--ease), transform .22s var(--ease), border-color .22s var(--ease);
 }
 .card:hover { box-shadow: var(--shadow-md); }
-.main > .card, #dash-body > .card { animation: cardIn .3s var(--ease) both; }
-@keyframes cardIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* Boutons : dégradés discrets, ombre, animation d'appui */
 .btn {
@@ -1046,7 +1040,7 @@ body {
 .btn.accent:hover { filter: brightness(1.06); background: var(--grad-accent); }
 .btn.ok { background: linear-gradient(135deg, #1fb155, #16a34a); }
 .btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
-.btn.ghost { background: #fff; box-shadow: none; }
+.btn.ghost { background: transparent; box-shadow: none; }
 .btn.ghost:hover { background: var(--surface-2); filter: none; border-color: var(--brand-3); }
 .btn.sm { border-radius: 9px; }
 

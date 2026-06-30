@@ -17,8 +17,12 @@ const pajgps = require('./lib/erp/pajgps');
 const payslip = require('./lib/erp/payslip');
 const fuelimport = require('./lib/erp/fuelimport');
 const { ensureErp } = require('./lib/erp');
+const push = require('./lib/push');
 
 const ROLES = ['admin', 'responsable', 'employee'];
+
+// Date ISO (YYYY-MM-DD) → JJ/MM/AAAA (pour les libellés de notifications).
+function frDate(s) { const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : String(s || ''); }
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -311,6 +315,38 @@ app.post('/api/login', loginRateLimit, async (req, res) => {
 
 app.get('/api/me', authRequired, (req, res) => {
   res.json({ user: publicUser(req.user) });
+});
+
+/* ---- Notifications push (Web Push / VAPID) ------------------------------- */
+// Config publique : indique si le push est disponible + la clé publique VAPID.
+app.get('/api/push/config', authRequired, async (req, res) => {
+  const db = getData();
+  const cfg = push.publicConfig(db);
+  if (cfg.enabled && db.settings.push && db.settings.push.generated) { try { await save(); } catch (e) {} }
+  const sub = Array.isArray(req.user.pushSubs) && req.user.pushSubs.length > 0;
+  res.json({ ...cfg, subscribed: sub });
+});
+// Le salarié enregistre l'abonnement de SON appareil.
+app.post('/api/me/push-subscribe', authRequired, async (req, res) => {
+  const sub = req.body || {};
+  if (!sub.endpoint) return res.status(400).json({ error: 'Abonnement invalide' });
+  push.addSubscription(req.user, sub, req.headers['user-agent']);
+  await save();
+  // Confirmation immédiate sur l'appareil qui vient de s'abonner.
+  push.fire(push.notifyUser(getData(), save, req.user.id, {
+    title: 'Notifications activées ✅',
+    body: 'Vous recevrez désormais les alertes importantes (congés, documents, planning).',
+    url: '/',
+  }));
+  res.json({ ok: true });
+});
+// Le salarié retire l'abonnement de son appareil.
+app.post('/api/me/push-unsubscribe', authRequired, async (req, res) => {
+  const { endpoint } = req.body || {};
+  if (endpoint) push.removeSubscription(req.user, endpoint);
+  else req.user.pushSubs = [];
+  await save();
+  res.json({ ok: true });
 });
 
 // Le salarié met à jour ses propres informations (statut de parent, téléphone).
@@ -727,6 +763,12 @@ app.post('/api/requests', authRequired, async (req, res) => {
   if (req.user.email) {
     mail.sendLeaveStatus({ to: req.user.email, firstName: req.user.firstName, status: 'pending', category: cat.label, startDate, endDate });
   }
+  // Push : prévient l'encadrement qu'une demande attend sa validation.
+  push.fire(push.notifyUsers(getData(), save, push.adminIds(getData()), {
+    title: 'Nouvelle demande de congé',
+    body: `${req.user.firstName} ${req.user.lastName} — ${cat.label} du ${frDate(startDate)} au ${frDate(endDate)}.`,
+    url: '/', tag: 'leave-pending',
+  }));
   res.json({ request });
 });
 
@@ -1187,6 +1229,12 @@ app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (r
   if (reqUser && reqUser.email) {
     mail.sendLeaveStatus({ to: reqUser.email, firstName: reqUser.firstName, status: decision, category: categoryLabel(r.category), startDate: r.startDate, endDate: r.endDate, note: r.adminNote });
   }
+  // Push : informe le salarié de la décision sur sa demande.
+  push.fire(push.notifyUser(getData(), save, r.userId, {
+    title: decision === 'approved' ? 'Congé validé ✅' : 'Demande refusée',
+    body: `${categoryLabel(r.category)} du ${frDate(r.startDate)} au ${frDate(r.endDate)} : ${decision === 'approved' ? 'validé' : 'refusé'}.${r.adminNote ? ' ' + r.adminNote : ''}`,
+    url: '/', tag: 'leave-' + r.id,
+  }));
   res.json({ request: r });
 });
 
@@ -2129,6 +2177,13 @@ app.post('/api/messages', authRequired, staffRequired, async (req, res) => {
   };
   db.messages.push(msg);
   await save();
+  // Push : diffuse l'annonce à tous les salariés (sauf l'auteur).
+  const targets = (db.users || []).filter((u) => u.status !== 'deleted' && u.id !== req.user.id).map((u) => u.id);
+  push.fire(push.notifyUsers(getData(), save, targets, {
+    title: '📣 ' + msg.title,
+    body: msg.body.slice(0, 160),
+    url: '/', tag: 'msg-' + msg.id,
+  }));
   res.json({ message: msg });
 });
 app.post('/api/messages/:id/read', authRequired, async (req, res) => {
