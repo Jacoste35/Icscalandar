@@ -633,10 +633,10 @@ function renderApp() {
   </div>
   <div class="nav-backdrop" id="nav-backdrop"></div>
   <nav class="bottom-nav" id="bottom-nav">
+    <button id="bn-menu"><span class="bn-ico">☰</span>Menu</button>
     <button data-view="dashboard" class="${State.view === 'dashboard' ? 'active' : ''}"><span class="bn-ico">🏠</span>Accueil</button>
     <button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
     <button data-view="mydata" class="${State.view === 'mydata' ? 'active' : ''}"><span class="bn-ico">👤</span>Profil</button>
-    <button id="bn-menu"><span class="bn-ico">☰</span>Menu</button>
   </nav>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   // Dépliage/repliage des groupes de menu (sans recharger la vue).

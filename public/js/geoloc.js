@@ -615,20 +615,19 @@ async function renderGeoloc(main) {
   _geoMap = null; _geoLayers = null; _geoFirstFit = true;
   const isAdmin = State.user.role === 'admin';
   main.innerHTML = `
-    <div class="page-head"><div><h1>🛰️ Géolocalisation des véhicules</h1>
-      <p>Positions et déplacements en temps réel (PAJ GPS).</p></div>
-      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
-        <label class="help" style="display:flex;align-items:center;gap:.3rem"><input type="checkbox" id="geo-auto" checked> Auto-actualisation</label>
-        <button class="btn ghost" id="geo-refresh">↻ Actualiser</button>
-        ${isAdmin ? '<button class="btn" id="geo-config">⚙️ Configuration</button>' : ''}
+    <div class="geo-head">
+      <div class="geo-title"><h1>🛰️ Géolocalisation</h1><p class="help">Suivi de la flotte en temps réel</p></div>
+      <div class="geo-actions">
+        <button class="geo-iconbtn" id="geo-refresh" title="Actualiser" aria-label="Actualiser">↻</button>
+        <label class="geo-toggle" title="Actualisation automatique (30 s)"><input type="checkbox" id="geo-auto" checked><span>Auto</span></label>
+        ${isAdmin ? '<button class="geo-iconbtn" id="geo-config" title="Configuration" aria-label="Configuration">⚙️</button>' : ''}
       </div>
     </div>
     <div id="geo-alert"></div>
     <div id="geo-config-panel"></div>
-    <div class="card" style="padding:0;overflow:hidden">
-      <div id="geo-map" style="height:60vh;min-height:380px;width:100%;background:#eef2f7"></div>
-    </div>
-    <div class="card"><div id="geo-list">Chargement…</div></div>`;
+    <div id="geo-stats" class="geo-statbar"></div>
+    <div class="geo-mapwrap"><div id="geo-map"></div></div>
+    <div id="geo-list" class="geo-listwrap"><div class="empty">Chargement…</div></div>`;
 
   const refreshBtn = main.querySelector('#geo-refresh');
   const autoChk = main.querySelector('#geo-auto');
@@ -652,9 +651,11 @@ async function renderGeoloc(main) {
     try {
       _geoLastData = cached;
       drawGeoMarkers(cached.positions);
+      const stats0 = document.getElementById('geo-stats');
+      if (stats0) { const sp = geolocSplit(cached.positions); stats0.innerHTML = geoStatusChips(sp.active, sp.depot); }
       const listEl0 = document.getElementById('geo-list');
       if (listEl0) {
-        listEl0.innerHTML = '<p class="help">Dernières positions connues — actualisation…</p>'
+        listEl0.innerHTML = '<div class="geo-updated muted">Dernières positions connues — actualisation…</div>'
           + geolocLiveTableHTML(cached.positions)
           + geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(cached.positions))
           + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(cached.positions, cached.config))
@@ -680,9 +681,11 @@ async function loadGeoloc(force) {
       return;
     }
     drawGeoMarkers(d.positions || []);
+    const stats = document.getElementById('geo-stats');
+    if (stats) { const sp = geolocSplit(d.positions || []); stats.innerHTML = geoStatusChips(sp.active, sp.depot); }
     const openIds = [...listEl.querySelectorAll('details[open]')].map((x) => x.id).filter(Boolean);
     const upd = (d.positions || []).reduce((mx, p) => (p.ts && p.ts > mx ? p.ts : mx), '');
-    listEl.innerHTML = `<p class="help">Dernière mise à jour : ${gTime(upd) || '—'} ${d.day ? '· ' + d.day : ''}</p>`
+    listEl.innerHTML = `<div class="geo-updated">↻ Mis à jour à ${gTime(upd) || '—'}</div>`
       + geolocLiveTableHTML(d.positions || [])
       + geoDrop('geodrop-cost', '💶 Coût d\'utilisation du jour', geolocCostHTML(d.positions || []))
       + geoDrop('geodrop-speed', '🚨 Excès de vitesse du jour', geolocSpeedTableHTML(d.positions || [], d.config))
