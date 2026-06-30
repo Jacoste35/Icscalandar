@@ -1321,3 +1321,33 @@ td { color: var(--ink); }
   .iosnum { width: 28px; height: 28px; font-size: .9rem; }
   .iosdot { width: 5px; height: 5px; }
 }
+
+/* ======================================================================
+   Mobile : plus de barre de menu en haut. La navigation est un TIROIR ouvert
+   depuis la barre du bas (bouton « Menu »), avec voile de fond.
+   ====================================================================== */
+@media (max-width: 860px) {
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; right: auto;
+    width: min(86vw, 330px); height: 100vh; max-height: none; z-index: 75;
+    overflow-y: auto; flex-direction: column; transform: translateX(-103%);
+    transition: transform .26s var(--ease); box-shadow: 0 0 70px rgba(16,33,60,.5);
+  }
+  .sidebar.nav-open { transform: translateX(0); }
+  .nav-toggle { display: none !important; }
+  .sidebar .brand { padding: 1.1rem 1.2rem; min-height: 0; }
+  .sidebar nav, .sidebar.nav-open nav { display: block; }
+  .nav-backdrop {
+    position: fixed; inset: 0; z-index: 74; background: rgba(16,33,60,.5);
+    -webkit-backdrop-filter: blur(1px); backdrop-filter: blur(1px);
+    opacity: 0; visibility: hidden; transition: opacity .26s var(--ease), visibility .26s var(--ease);
+  }
+  .nav-backdrop.show { opacity: 1; visibility: visible; }
+  body.nav-locked { overflow: hidden; }
+  /* Plus de barre en haut → le contenu démarre tout en haut (zone sûre encoche),
+     et garde de la place pour la barre du bas. */
+  .main {
+    padding: calc(env(safe-area-inset-top, 0px) + .9rem) 1rem calc(5rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (min-width: 861px) { .nav-backdrop { display: none; } }
