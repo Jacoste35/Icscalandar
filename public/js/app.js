@@ -701,11 +701,20 @@ function renderView() {
    CARBURANT — import & suivi des transactions AS 24
    ========================================================================= */
 const euro2 = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+let _fuelTab = 'analyse';
 async function renderCarburant(main) {
   if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>⛽ Carburant</h1>
-    <p>Suivi des pleins AS 24, analyse km / consommation, attribution chauffeur et détection des surconsommations & vols.</p></div></div>
+    <p>Analyse de la consommation par chauffeur, détection des surconsommations & vols, et pilotage des cartes AS 24.</p></div></div>
+    <div class="view-switch" id="fuel-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-ftab="analyse" class="active">📊 Analyse</button>
+      <button data-ftab="params">⚙️ Paramètres</button>
+    </div>
     <div id="fuel-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#fuel-tabs');
+  const setActive = () => tabs.querySelectorAll('[data-ftab]').forEach((b) => b.classList.toggle('active', b.dataset.ftab === _fuelTab));
+  tabs.querySelectorAll('[data-ftab]').forEach((b) => b.onclick = () => { _fuelTab = b.dataset.ftab; setActive(); loadCarburant(); });
+  setActive();
   await loadCarburant();
 }
 async function loadCarburant() {
@@ -713,23 +722,18 @@ async function loadCarburant() {
   let d;
   try { d = await api('GET', '/staff/fuel'); } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
   body.className = '';
+  if (_fuelTab === 'params') return fuelParamsTab(body, d);
+  return fuelAnalyseTab(body, d);
+}
+// --- Onglet Analyse : KPI + graphique & tableau par chauffeur + véhicules ----
+function fuelAnalyseTab(body, d) {
   const s = d.summary || {};
-  const importBlock = d.isAdmin ? `
-    <div class="card">
-      <h3 style="margin-top:0">Importer un export AS 24</h3>
-      <p class="help">Depuis AS 24 FleetManager → Info-Service, exportez vos transactions (Excel <strong>.xlsx</strong> ou CSV) puis déposez le fichier ici. Les doublons (même n° de transaction) sont ignorés.${d.available ? '' : ' <strong style="color:#b91c1c">Lecture Excel indisponible sur le serveur.</strong>'}</p>
-      <div class="erp-row" style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
-        <input type="file" id="fuel-file" accept=".xlsx,.xls,.csv">
-        <button class="btn accent" id="fuel-import">📥 Importer</button>
-        <span class="help" id="fuel-status"></span>
-      </div>
-    </div>` : '';
   const an = d.analysis || { vehicles: [], alerts: [], alertCount: 0, refConso: 11, threshold: 15, tankCapacity: 100 };
+  const da = d.driverAnalysis || { drivers: [], refConso: an.refConso };
   const nAlert = an.vehicles.filter((v) => v.level === 'alert').length;
   const nWarn = an.vehicles.filter((v) => v.level === 'warn').length;
   const consoVals = an.vehicles.map((v) => v.realConso).filter((x) => x != null);
   const fleetConso = consoVals.length ? Math.round(consoVals.reduce((a, b) => a + b, 0) / consoVals.length * 10) / 10 : null;
-  // KPI de tête.
   const kpiTone = nAlert ? 'tone-alert' : nWarn ? 'tone-warn' : 'tone-ok';
   const cards = `<div class="fuel-kpi-grid">
     <div class="fuel-kpi"><div class="fk-val">${fleetConso != null ? fleetConso + ' <small>L/100</small>' : '—'}</div><div class="fk-lbl">Conso moyenne flotte</div><div class="fk-sub">référence ${an.refConso} L/100</div></div>
@@ -737,74 +741,126 @@ async function loadCarburant() {
     <div class="fuel-kpi"><div class="fk-val">${(s.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres (total)</div><div class="fk-sub">${s.count || 0} pleins</div></div>
     <div class="fuel-kpi"><div class="fk-val">${euro2(s.ttc || 0)}</div><div class="fk-lbl">Dépense TTC</div><div class="fk-sub">HT ${euro2(s.ht || 0)}</div></div>
   </div>`;
-  // Panneau d'alertes.
-  const alLvl = (lv) => lv === 'alert' ? 'warn' : 'info';
   const alertsBlock = an.alerts && an.alerts.length ? `<details class="card fuel-alerts" open>
       <summary><strong>🚨 Alertes à contrôler (${an.alertCount})</strong> <span class="help">surconsommation ou vol potentiel — vérifiez le chauffeur concerné</span></summary>
       <ul class="fuel-alert-list">${an.alerts.map((a) => `<li class="al-${a.level}"><span class="al-veh">${esc(a.vehicle)}</span> ${a.date ? `<span class="help">${esc(a.date)}</span> ` : ''}${esc(a.text)}${a.driver ? ` <span class="al-drv">👤 ${esc(a.driver)}</span>` : ''}</li>`).join('')}</ul>
     </details>` : `<div class="alert ok">✅ Aucune surconsommation anormale détectée (réf. ${an.refConso} L/100, seuil +${an.threshold}%).</div>`;
-  // Tableau d'analyse par véhicule.
+  // --- Graphique + tableau PAR CHAUFFEUR (30 jours glissants) ---
+  const drivers = da.drivers || [];
+  const chart = drivers.length ? geoSvgBars(drivers.map((x, i, arr) => ({ label: x.key, value: x.costHT, valueLabel: euro2(x.costHT), color: geoRankColor(i, arr.length) }))) : '';
+  const consoCellD = (x) => x.realConso == null ? '<span class="help">km AS 24 manquant</span>'
+    : `<strong style="color:${x.deviationPct > an.threshold ? '#b91c1c' : x.deviationPct > an.threshold / 2 ? '#b45309' : '#166534'}">${x.realConso} L/100</strong> <span class="help">(${x.deviationPct >= 0 ? '+' : ''}${x.deviationPct}%)</span>`;
+  const indicCell = (x) => {
+    let html = x.complete ? `<span class="pill ok">30 j complets</span>` : `<span class="pill draft" title="${x.windowDays} j de données">≈ estimation ${euro2(x.estCostHT30)}/30j</span>`;
+    if (x.compare) html += `<div class="help" style="margin-top:.2rem">${x.compare.status === 'alert' ? '⚠️' : '✅'} Projection ${x.compare.status === 'alert' ? 'à revoir' : 'tenue'} : prévu ${euro2(x.compare.projectedCostHT)} → réel ${euro2(x.compare.realCostHT)} (${x.compare.deviationPct >= 0 ? '+' : ''}${x.compare.deviationPct}%)</div>`;
+    return html;
+  };
+  const driverBlock = `<div class="card"><h3 style="margin-top:0">📊 Analyse km / consommation & attribution chauffeur</h3>
+    <p class="help">Sur 30 jours glissants (jusqu'au ${da.asOf ? esc(da.asOf) : '—'}). Consommation « tank-to-tank » d'après le kilométrage des pleins. Si la période est incomplète, le coût est <strong>projeté sur 30 j</strong> ; au prochain import, la projection est confrontée au réel.</p>
+    ${chart ? `<div class="geo-chart-wrap"><div class="geo-chart-title">Coût HT par chauffeur (30 j)</div>${chart}</div>` : ''}
+    ${drivers.length ? `<div class="table-wrap"><table class="report-table"><thead><tr><th>Chauffeur</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Conso réelle</th><th style="text-align:right">Coût HT</th><th>Indicateur</th></tr></thead>
+      <tbody>${drivers.map((x) => `<tr>
+        <td><strong>${esc(x.key)}</strong></td>
+        <td style="text-align:center">${x.fills}</td>
+        <td style="text-align:right">${x.liters.toLocaleString('fr-FR')} L</td>
+        <td style="text-align:right">${consoCellD(x)}</td>
+        <td style="text-align:right"><strong>${euro2(x.costHT)}</strong></td>
+        <td>${indicCell(x)}</td>
+      </tr>`).join('')}</tbody></table></div>` : '<div class="alert info">Aucune donnée chauffeur. Importez un export AS 24 et associez les cartes aux chauffeurs dans Paramètres.</div>'}
+  </div>`;
+  // --- Détail par véhicule (repliable) ---
   const lvlPill = (lv, txt) => `<span class="pill ${lv === 'alert' ? 'warn' : lv === 'warn' ? 'draft' : 'ok'}">${txt}</span>`;
-  const consoCell = (v) => v.realConso == null ? '<span class="help">km AS 24 manquant</span>'
+  const consoCellV = (v) => v.realConso == null ? '<span class="help">km AS 24 manquant</span>'
     : `<strong style="color:${v.level === 'alert' ? '#b91c1c' : v.level === 'warn' ? '#b45309' : '#166534'}">${v.realConso} L/100</strong> <span class="help">(${v.deviationPct >= 0 ? '+' : ''}${v.deviationPct}%)</span>`;
-  const analysisBlock = an.vehicles && an.vehicles.length ? `<div class="card"><h3 style="margin-top:0">📊 Analyse km / consommation & attribution chauffeur</h3>
-      <p class="help">Consommation réelle « tank-to-tank » calculée d'après le kilométrage saisi aux pleins AS 24. Le chauffeur proposé est celui qui réalise le plus de pleins sur le véhicule.</p>
-      <div class="table-wrap"><table class="report-table"><thead><tr><th>Véhicule</th><th>Chauffeur proposé</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Conso réelle</th><th style="text-align:center">État</th></tr></thead>
+  const vehBlock = an.vehicles && an.vehicles.length ? `<details class="card"><summary><strong>🚚 Détail par véhicule</strong> <span class="help">${an.vehicles.length} véhicule(s)</span></summary>
+      <div class="table-wrap" style="margin-top:.6rem"><table class="report-table"><thead><tr><th>Véhicule</th><th>Chauffeur proposé</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Conso réelle</th><th style="text-align:center">État</th></tr></thead>
       <tbody>${an.vehicles.map((v) => `<tr>
         <td><strong>${esc(v.vehicle)}</strong>${v.plate ? `<div class="help">${esc(v.plate)}</div>` : ''}</td>
-        <td>${v.driver ? `${esc(v.driver.name)} <span class="help">${v.driver.share}% des pleins</span>` : '<span class="help">—</span>'}${v.assignedDriver && v.driver && esc(v.assignedDriver) !== esc(v.driver.name) ? `<div class="help">fiche véhicule : ${esc(v.assignedDriver)}</div>` : ''}</td>
+        <td>${v.driver ? `${esc(v.driver.name)} <span class="help">${v.driver.share}% des pleins</span>` : '<span class="help">—</span>'}</td>
         <td style="text-align:center">${v.fills}</td>
         <td style="text-align:right">${v.liters.toLocaleString('fr-FR')} L</td>
-        <td style="text-align:right">${consoCell(v)}</td>
+        <td style="text-align:right">${consoCellV(v)}</td>
         <td style="text-align:center">${lvlPill(v.level, v.level === 'alert' ? 'Surconso' : v.level === 'warn' ? 'À surveiller' : 'OK')}</td>
-      </tr>`).join('')}</tbody></table></div>
-    </div>` : '';
-  // Réglages KPI (admin).
-  const kpiSettings = d.isAdmin ? `<details class="card"><summary><strong>⚙️ Paramètres d'analyse</strong> <span class="help">conso de référence, seuil d'alerte, capacité réservoir</span></summary>
-      <div class="grid2" style="margin-top:.6rem">
-        <div><label>Conso de référence (L/100 km)</label><input id="fk-ref" type="number" step="0.1" value="${an.refConso}"></div>
-        <div><label>Seuil d'alerte surconsommation (%)</label><input id="fk-thr" type="number" step="1" value="${an.threshold}"></div>
-        <div><label>Capacité réservoir (L)</label><input id="fk-tank" type="number" step="1" value="${an.tankCapacity}"></div>
-      </div>
-      <div style="margin-top:.5rem"><button class="btn accent" id="fk-save">Enregistrer</button></div>
-    </details>` : '';
-  const byVeh = (d.byVehicle || []).length ? `<h3 class="erp" style="margin-top:1rem">Par véhicule</h3>
-    <div class="table-wrap"><table class="report-table"><thead><tr><th>Véhicule (AS 24)</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Total TTC</th></tr></thead>
-    <tbody>${d.byVehicle.map((b) => `<tr><td>${esc(b.vehicle)}</td><td style="text-align:center">${b.count}</td><td style="text-align:right">${b.liters.toLocaleString('fr-FR')} L</td><td style="text-align:right">${euro2(b.ttc)}</td></tr>`).join('')}</tbody></table></div>` : '';
-  const txns = (d.transactions || []).length ? `<h3 class="erp" style="margin-top:1rem">Transactions (${(d.transactions || []).length})</h3>
-    <div class="table-wrap"><table class="report-table"><thead><tr><th>Date</th><th>Station</th><th>Véhicule</th><th>Chauffeur</th><th style="text-align:right">Litres</th><th style="text-align:right">TTC</th><th>État</th>${d.isAdmin ? '<th></th>' : ''}</tr></thead>
+      </tr>`).join('')}</tbody></table></div></details>` : '';
+  // --- Transactions (repliable) ---
+  const txns = (d.transactions || []).length ? `<details class="card"><summary><strong>🧾 Transactions (${(d.transactions || []).length})</strong> <span class="help">détail des pleins AS 24</span></summary>
+    <div class="table-wrap" style="margin-top:.6rem"><table class="report-table"><thead><tr><th>Date</th><th>Station</th><th>Véhicule</th><th>Chauffeur</th><th style="text-align:right">Litres</th><th style="text-align:right">TTC</th><th>État</th>${d.isAdmin ? '<th></th>' : ''}</tr></thead>
     <tbody>${d.transactions.map((t) => `<tr>
       <td>${esc(t.date)}${t.time ? ' ' + esc(t.time) : ''}</td><td>${esc(t.place)}</td><td>${esc(t.vehicleName)}</td><td>${esc(t.driver)}</td>
       <td style="text-align:right">${(t.liters || 0).toLocaleString('fr-FR')}</td><td style="text-align:right">${euro2(t.amountTTC)}</td>
       <td><span class="pill ${t.state && t.state.toLowerCase().indexOf('non') === -1 ? 'paid' : 'draft'}">${esc(t.state || '')}</span></td>
-      ${d.isAdmin ? `<td><button class="btn ghost sm" data-fueldel="${t.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`
-    : '<div class="alert info">Aucune transaction. Importez un export AS 24.</div>';
+      ${d.isAdmin ? `<td><button class="btn ghost sm" data-fueldel="${t.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div></details>`
+    : '<div class="alert info">Aucune transaction. Importez un export AS 24 dans l\'onglet Paramètres.</div>';
 
-  body.innerHTML = cards + alertsBlock + analysisBlock + kpiSettings + importBlock + byVeh + txns;
-
+  body.innerHTML = cards + alertsBlock + driverBlock + vehBlock + txns;
   if (d.isAdmin) {
-    const fk = body.querySelector('#fk-save');
-    if (fk) fk.onclick = async () => {
-      try { await api('PUT', '/admin/fuel/kpi', { refConso: +body.querySelector('#fk-ref').value, threshold: +body.querySelector('#fk-thr').value, tankCapacity: +body.querySelector('#fk-tank').value }); toast('Paramètres enregistrés.', 'ok'); loadCarburant(); }
-      catch (e) { toast(e.message, 'err'); }
-    };
-    const fileEl = body.querySelector('#fuel-file');
-    body.querySelector('#fuel-import').onclick = async () => {
-      const f = fileEl.files && fileEl.files[0];
-      if (!f) { toast('Sélectionnez un fichier AS 24.', 'warn'); return; }
-      const st = body.querySelector('#fuel-status'); st.textContent = 'Import en cours…';
-      try {
-        const dataUrl = await new Promise((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(String(fr.result)); fr.onerror = () => reject(new Error('Lecture impossible')); fr.readAsDataURL(f); });
-        const r = await api('POST', '/staff/fuel/import', { fileBase64: dataUrl });
-        toast(`${r.added} transaction(s) importée(s)${r.skipped ? `, ${r.skipped} doublon(s) ignoré(s)` : ''}.`, 'ok');
-        loadCarburant();
-      } catch (e) { st.textContent = ''; toast('Erreur : ' + e.message, 'err'); }
-    };
     body.querySelectorAll('[data-fueldel]').forEach((b) => b.onclick = async () => {
       if (!confirm('Supprimer cette transaction ?')) return;
       try { await api('DELETE', '/staff/fuel/' + b.dataset.fueldel); loadCarburant(); } catch (e) { toast(e.message, 'err'); }
     });
   }
+}
+// --- Onglet Paramètres : association carte→chauffeur, réglages, import --------
+function fuelParamsTab(body, d) {
+  if (!d.isAdmin) { body.innerHTML = `<div class="alert info">Réservé à l'administrateur.</div>`; return; }
+  const an = d.analysis || { refConso: 11, threshold: 15, tankCapacity: 100 };
+  const users = d.users || [], cards = d.cards || [], dMap = d.fuelDriverMap || {}, vMap = d.fuelCardMap || {};
+  const vehicles = d.vehicles || [];
+  const userOpt = (sel) => `<option value="">— chauffeur —</option>` + users.map((u) => `<option value="${u.id}" ${sel === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
+  const vehOpt = (sel) => `<option value="">— véhicule —</option>` + vehicles.map((v) => `<option value="${v.id}" ${sel === v.id ? 'selected' : ''}>${esc(v.name)}${v.plate ? ' (' + esc(v.plate) + ')' : ''}</option>`).join('');
+  const cardsBlock = cards.length ? `<div class="table-wrap"><table class="report-table"><thead><tr><th>Carte AS 24</th><th>Chauffeur (relevé)</th><th style="text-align:center">Pleins</th><th>Associer au chauffeur</th><th>Associer au véhicule</th></tr></thead>
+      <tbody>${cards.map((c) => `<tr>
+        <td><strong>${esc(c.card)}</strong></td>
+        <td>${esc(c.driver || '—')}${c.vehicleName ? `<div class="help">${esc(c.vehicleName)}</div>` : ''}</td>
+        <td style="text-align:center">${c.count}</td>
+        <td><select data-cardd="${esc(c.card)}">${userOpt(dMap[c.card] || '')}</select></td>
+        <td><select data-cardv="${esc(c.card)}">${vehOpt(vMap[c.card] || '')}</select></td>
+      </tr>`).join('')}</tbody></table></div>`
+    : '<div class="alert info">Aucune carte détectée. Importez un export AS 24 ci-dessous.</div>';
+  body.innerHTML = `
+    <div class="card"><h3 style="margin-top:0">👤 Association carte AS 24 → chauffeur</h3>
+      <p class="help">Associez chaque carte au chauffeur inscrit qui l'utilise : l'analyse de consommation se fera alors par chauffeur (et non plus seulement par libellé AS 24). L'association au véhicule alimente le rapprochement de la flotte.</p>
+      ${cardsBlock}
+    </div>
+    <div class="card"><h3 style="margin-top:0">⚙️ Paramètres d'analyse</h3>
+      <p class="help">Conso de référence, seuil d'alerte et capacité réservoir (utilisés pour détecter surconsommations et remplissages suspects).</p>
+      <div class="grid2">
+        <div><label>Conso de référence (L/100 km)</label><input id="fk-ref" type="number" step="0.1" value="${an.refConso}"></div>
+        <div><label>Seuil d'alerte surconsommation (%)</label><input id="fk-thr" type="number" step="1" value="${an.threshold}"></div>
+        <div><label>Capacité réservoir (L)</label><input id="fk-tank" type="number" step="1" value="${an.tankCapacity}"></div>
+      </div>
+      <div style="margin-top:.5rem"><button class="btn accent" id="fk-save">Enregistrer</button></div>
+    </div>
+    <div class="card"><h3 style="margin-top:0">📥 Importer un export AS 24</h3>
+      <p class="help">Depuis AS 24 FleetManager → Info-Service, exportez vos transactions (Excel <strong>.xlsx</strong> ou CSV) puis déposez le fichier ici. Les doublons (même n° de transaction) sont ignorés.${d.available ? '' : ' <strong style="color:#b91c1c">Lecture Excel indisponible sur le serveur.</strong>'}</p>
+      <div class="erp-row" style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+        <input type="file" id="fuel-file" accept=".xlsx,.xls,.csv">
+        <button class="btn accent" id="fuel-import">📥 Importer</button>
+        <span class="help" id="fuel-status"></span>
+      </div>
+    </div>`;
+  body.querySelectorAll('[data-cardd]').forEach((sel) => sel.onchange = async () => {
+    try { await api('POST', '/staff/fuel/driver-map', { card: sel.dataset.cardd, userId: sel.value || '' }); toast('Association enregistrée.', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-cardv]').forEach((sel) => sel.onchange = async () => {
+    try { await api('POST', '/staff/fuel/card-map', { card: sel.dataset.cardv, vehicleId: sel.value || '' }); toast('Association enregistrée.', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelector('#fk-save').onclick = async () => {
+    try { await api('PUT', '/admin/fuel/kpi', { refConso: +body.querySelector('#fk-ref').value, threshold: +body.querySelector('#fk-thr').value, tankCapacity: +body.querySelector('#fk-tank').value }); toast('Paramètres enregistrés.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const fileEl = body.querySelector('#fuel-file');
+  body.querySelector('#fuel-import').onclick = async () => {
+    const f = fileEl.files && fileEl.files[0];
+    if (!f) { toast('Sélectionnez un fichier AS 24.', 'warn'); return; }
+    const st = body.querySelector('#fuel-status'); st.textContent = 'Import en cours…';
+    try {
+      const dataUrl = await new Promise((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(String(fr.result)); fr.onerror = () => reject(new Error('Lecture impossible')); fr.readAsDataURL(f); });
+      const r = await api('POST', '/staff/fuel/import', { fileBase64: dataUrl });
+      toast(`${r.added} transaction(s) importée(s)${r.skipped ? `, ${r.skipped} doublon(s) ignoré(s)` : ''}.`, 'ok');
+      loadCarburant();
+    } catch (e) { st.textContent = ''; toast('Erreur : ' + e.message, 'err'); }
+  };
 }
 
 /* =========================================================================
