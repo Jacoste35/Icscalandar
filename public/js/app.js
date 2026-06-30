@@ -3454,7 +3454,16 @@ function vanDiagramSVG(impacts) {
 // Options de chauffeur (liste des utilisateurs de la base) et de groupe.
 function driverOptions(selectedId) {
   const team = (_veh.team || []).slice().sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  return `<option value="">— Aucun —</option>` + team.map((m) => `<option value="${m.id}" ${m.id === selectedId ? 'selected' : ''}>${esc(m.lastName)} ${esc(m.firstName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('');
+  // Chauffeurs déjà attribués à un véhicule (hors celui en cours d'édition) :
+  // affichés dans une catégorie non sélectionnable pour éviter les doublons.
+  const assigned = new Set((_veh.vehicles || []).map((v) => v.assignedUserId).filter(Boolean));
+  if (selectedId) assigned.delete(selectedId);
+  const label = (m) => `${esc(m.lastName)} ${esc(m.firstName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}`;
+  const free = team.filter((m) => !assigned.has(m.id));
+  const taken = team.filter((m) => assigned.has(m.id));
+  let html = `<option value="">— Aucun —</option>` + free.map((m) => `<option value="${m.id}" ${m.id === selectedId ? 'selected' : ''}>${label(m)}</option>`).join('');
+  if (taken.length) html += `<optgroup label="— Déjà attribués à un véhicule —" disabled>` + taken.map((m) => `<option value="${m.id}" disabled>${label(m)}</option>`).join('') + `</optgroup>`;
+  return html;
 }
 function groupOptions(selectedId) {
   return `<option value="">— Aucun —</option>` + (_veh.groups || State.groups).map((g) => `<option value="${g.id}" ${g.id === selectedId ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
