@@ -59,29 +59,40 @@
   </div>
   <div id="toast-container"></div>
   <script>
-    // Gestion du splash : on le retire dès que l'application a affiché son
-    // premier écran (sinon repli automatique), avec une durée minimale pour un
-    // effet « ouverture d'app » propre.
+    // Gestion du splash : on le maintient le temps que (1) l'application ait
+    // affiché son premier écran ET (2) le service worker soit prêt — c.-à-d. que
+    // tout le site soit mis en cache pour fonctionner hors-ligne. Durée minimale
+    // d'affichage allongée pour laisser le cache se constituer sur les téléphones.
     (function () {
       var t0 = Date.now();
-      function hide() {
+      var MIN_MS = 2200;            // durée minimale d'affichage (mise en cache)
+      var appReady = false;
+      var swReady = !('serviceWorker' in navigator); // si pas de SW : non bloquant
+      function doHide() {
         var s = document.getElementById('splash');
         if (!s || s.classList.contains('hide')) return;
-        var wait = Math.max(0, 550 - (Date.now() - t0));
-        setTimeout(function () {
-          s.classList.add('hide');
-          setTimeout(function () { if (s && s.parentNode) s.parentNode.removeChild(s); }, 650);
-        }, wait);
+        s.classList.add('hide');
+        setTimeout(function () { if (s && s.parentNode) s.parentNode.removeChild(s); }, 650);
       }
-      window.hideSplash = hide;
+      function tryHide() {
+        if (!appReady || !swReady) return;
+        setTimeout(doHide, Math.max(0, MIN_MS - (Date.now() - t0)));
+      }
+      window.hideSplash = function () { appReady = true; tryHide(); };
       var app = document.getElementById('app');
       if (app && 'MutationObserver' in window) {
         var obs = new MutationObserver(function () {
-          if (!app.querySelector('.boot')) { hide(); obs.disconnect(); }
+          if (!app.querySelector('.boot')) { appReady = true; obs.disconnect(); tryHide(); }
         });
         obs.observe(app, { childList: true, subtree: true });
       }
-      setTimeout(hide, 8000); // garde-fou : ne jamais rester bloqué
+      // Attend que le service worker ait fini d'installer le cache (borné pour ne
+      // jamais bloquer si le SW tarde ou échoue).
+      if ('serviceWorker' in navigator && navigator.serviceWorker.ready) {
+        navigator.serviceWorker.ready.then(function () { swReady = true; tryHide(); });
+        setTimeout(function () { swReady = true; tryHide(); }, 5000);
+      }
+      setTimeout(doHide, 9000); // repli absolu : ne jamais rester bloqué
     })();
   </script>
   <script src="/js/reglement.js"></script>

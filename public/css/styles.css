@@ -1548,3 +1548,45 @@ td { color: var(--ink); }
 /* Corps du panneau : un peu d'air et fond doux pour détacher du bandeau */
 .geo-drop-main[open] > *:not(summary) { padding-left: 1rem; padding-right: 1rem; }
 .geo-drop-main[open] { background: #fff; }
+
+/* ======================================================================
+   ACCUEIL — widget « Mon planning » à onglets de semaines
+   Un seul bloc avec sélecteur (Précédente · En cours · +1 · +2) + compteur
+   d'absences, au lieu de 4 cartes déroulantes empilées.
+   ====================================================================== */
+.dash-planning { padding: 0; overflow: hidden; }
+.dash-wk-tabs {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem;
+  padding: .7rem .7rem .15rem; background: var(--surface-2, #f8fafc);
+  border-bottom: 1px solid var(--border);
+}
+.dash-wk-tab {
+  display: flex; flex-direction: column; align-items: center; gap: .25rem;
+  padding: .55rem .25rem; border: 1px solid var(--border); border-radius: 13px;
+  background: #fff; cursor: pointer; transition: background .14s var(--ease), box-shadow .14s var(--ease), transform .06s;
+  min-width: 0;
+}
+.dash-wk-tab:hover { background: #f3f7fd; }
+.dash-wk-tab:active { transform: translateY(1px); }
+.dash-wk-tab.active { background: var(--brand); border-color: var(--brand); box-shadow: 0 9px 20px -11px rgba(20,66,126,.7); }
+.dash-wk-tab-lbl { font-weight: 750; font-size: .84rem; color: var(--text); letter-spacing: -.01em; white-space: nowrap; }
+.dash-wk-tab.active .dash-wk-tab-lbl { color: #fff; }
+.dash-wk-badge {
+  font-size: .72rem; font-weight: 800; min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: 999px; background: #eef3fb; color: var(--brand);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.dash-wk-badge.zero { background: #eef1f6; color: #9aa7bd; }
+.dash-wk-tab.active .dash-wk-badge { background: rgba(255,255,255,.24); color: #fff; }
+.dash-wk-panes { padding: .85rem .95rem 1.05rem; }
+.dash-wk-pane.hidden { display: none; }
+.dash-wk-head { display: flex; align-items: baseline; gap: .55rem; flex-wrap: wrap; }
+.dash-wk-head h3 { margin: 0; font-size: 1.06rem; letter-spacing: -.01em; }
+.dash-wk-period { font-weight: 700; color: var(--muted); font-size: .9rem; }
+
+@media (max-width: 560px) {
+  .dash-wk-tabs { gap: .3rem; padding: .55rem .5rem .1rem; }
+  .dash-wk-tab { padding: .5rem .15rem; border-radius: 11px; }
+  .dash-wk-tab-lbl { font-size: .78rem; }
+  .dash-wk-panes { padding: .75rem .7rem .9rem; }
+}
