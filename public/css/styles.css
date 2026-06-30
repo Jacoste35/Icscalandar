@@ -1121,3 +1121,79 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 .week-grid .whead { background: linear-gradient(180deg, #f8fafc, #eef2f7); letter-spacing: .3px; }
 .week-grid .wrow:not(.whead) .wcell { transition: background .14s var(--ease); }
 .week-grid .wrow:not(.whead):hover { background: #f6f9fe; }
+
+/* ======================================================================
+   DESIGN « 5 ÉTOILES » — inspiration Doctolib / HelloFresh, palette ICS
+   (marine + rouge). Épuré, aéré, cartes douces, hiérarchie claire.
+   Surcouche visuelle en fin de feuille — n'altère pas la structure.
+   ====================================================================== */
+:root {
+  --radius: 18px;
+  --radius-sm: 12px;
+  --shadow: 0 1px 2px rgba(16,33,60,.04), 0 10px 30px -14px rgba(16,33,60,.16);
+  --shadow-md: 0 14px 40px -16px rgba(16,33,60,.26);
+  --muted: #5b6b80;
+  --ink: #16233b;
+}
+body { color: var(--ink); font-size: 15px; line-height: 1.55; letter-spacing: .002em; }
+h1 { letter-spacing: -.02em; }
+h2, h3, h4 { letter-spacing: -.01em; color: var(--ink); }
+.help { color: var(--muted); }
+
+/* Plus d'air dans la zone de contenu */
+@media (min-width: 861px) { .main { padding: 2rem 2.4rem; } }
+
+/* Cartes : généreuses, douces, hairline + ombre légère */
+.card { border: 1px solid #eef1f6; border-radius: var(--radius); padding: 1.45rem 1.5rem; }
+.card h3 { font-size: 1.06rem; font-weight: 700; }
+@media (min-width: 861px) { .card { padding: 1.6rem 1.7rem; } }
+
+/* Boutons : franc, arrondi, confortable (style appli grand public) */
+.btn { border-radius: 12px; font-weight: 650; padding: .62rem 1.05rem; letter-spacing: .005em; }
+.btn.sm { padding: .42rem .8rem; border-radius: 10px; }
+
+/* Statistiques : chiffres mis en avant, sous-titres calmes */
+.stat { border-radius: var(--radius); padding: 1.35rem 1.4rem; }
+.stat .value { font-size: 2.05rem; font-weight: 800; letter-spacing: -.03em; }
+.stat .label { color: var(--muted); }
+
+/* Champs : doux et lisibles */
+input, select, textarea { border-radius: 12px; }
+
+/* En-tête de page : titre franc, sous-titre discret */
+.page-head h1 { font-size: 1.6rem; font-weight: 800; }
+.page-head p { color: var(--muted); }
+
+/* ---- En-tête d'accueil (hero) facon application ---- */
+.dash-hero {
+  background: radial-gradient(130% 130% at 0% 0%, #1c5a97 0%, #14427e 50%, #102e54 100%);
+  color: #fff; border-radius: 22px; padding: 1.5rem 1.6rem; margin-bottom: 1.4rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  box-shadow: 0 20px 45px -22px rgba(16,33,60,.55);
+}
+.dash-hello { font-size: 1.5rem; font-weight: 800; letter-spacing: -.02em; }
+.dash-date { opacity: .85; margin-top: .15rem; font-size: .92rem; }
+.dash-hero-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.hero-chip {
+  background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.22);
+  border-radius: 999px; padding: .5rem .95rem; font-weight: 650; font-size: .9rem;
+  transition: background .16s var(--ease), transform .08s var(--ease);
+}
+.hero-chip:hover { background: rgba(255,255,255,.24); }
+.hero-chip:active { transform: translateY(1px); }
+@media (max-width: 560px) {
+  .dash-hero { padding: 1.2rem 1.2rem; border-radius: 18px; }
+  .dash-hello { font-size: 1.25rem; }
+  .dash-hero-actions { width: 100%; }
+  .hero-chip { flex: 1; text-align: center; }
+}
+
+/* Pastilles & tags un peu plus doux (fond pastel) */
+.pill, .tag { font-weight: 650; }
+
+/* Navigation du bas (mobile) : barre propre facon appli */
+.bottom-nav { box-shadow: 0 -8px 24px -16px rgba(16,33,60,.4); }
+
+/* Barre latérale : items plus aérés */
+.sidebar nav button { padding: .68rem .85rem; font-weight: 550; }
+.nav-section { color: #9db4d4; }
