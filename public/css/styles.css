@@ -1466,3 +1466,85 @@ td { color: var(--ink); }
   .dash-title { font-size: 1rem; }
   .dash-acc[open] > .card { padding: .85rem .9rem 1rem; }
 }
+
+/* ======================================================================
+   PLANNING — vues JOUR & SEMAINE « façon Calendrier iPhone »
+   Jour : liste épurée du détail de journée. Semaine : bande de 7 jours
+   sélectionnables (pastille rouge = aujourd'hui) + détail du jour choisi.
+   ====================================================================== */
+.iosday--solo { margin-top: .2rem; border-top: 0; padding-top: 0; }
+
+/* Bande hebdomadaire : 7 colonnes égales, lisibles sur téléphone */
+.iosweek-strip {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: .35rem;
+  background: var(--surface-2, #f8fafc); border: 1px solid var(--border);
+  border-radius: 16px; padding: .55rem .4rem; margin-bottom: 1rem;
+}
+.iosweek-day {
+  display: flex; flex-direction: column; align-items: center; gap: .3rem;
+  padding: .45rem .1rem .5rem; border: 0; background: transparent; cursor: pointer;
+  border-radius: 12px; transition: background .14s var(--ease);
+}
+.iosweek-day:hover { background: rgba(20,66,126,.06); }
+.iosweek-day.sel { background: #eef3fc; }
+.iosweek-dow { font-size: .68rem; font-weight: 700; color: #8a98ad; text-transform: uppercase; letter-spacing: .03em; }
+.iosweek-day .iosnum {
+  width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: .98rem; font-weight: 700; color: var(--text);
+}
+.iosweek-day.sel:not(.today) .iosnum { background: #e7eefa; color: var(--brand); }
+.iosweek-day.today .iosnum { background: var(--accent); color: #fff; font-weight: 800; box-shadow: 0 7px 16px -7px rgba(212,48,45,.75); }
+.iosweek-day.closed .iosnum { box-shadow: inset 0 0 0 2px #fca5a5; }
+.iosweek-day.holiday .iosnum { box-shadow: inset 0 0 0 2px #fcd34d; }
+.iosweek-day.school .iosnum { box-shadow: inset 0 0 0 2px #93c5fd; }
+.iosweek-day.today.closed .iosnum,
+.iosweek-day.today.holiday .iosnum,
+.iosweek-day.today.school .iosnum { box-shadow: 0 7px 16px -7px rgba(212,48,45,.75); }
+.iosweek-day .iosdots { min-height: 7px; }
+
+@media (max-width: 560px) {
+  .iosweek-strip { gap: .15rem; padding: .5rem .25rem; border-radius: 14px; }
+  .iosweek-day { padding: .4rem 0 .45rem; }
+  .iosweek-day .iosnum { width: 30px; height: 30px; font-size: .9rem; }
+  .iosweek-dow { font-size: .62rem; }
+}
+
+/* ======================================================================
+   GÉOLOCALISATION — panneau d'accueil modernisé (lisible, épuré)
+   En-tête bleu avec pastilles d'état blanches translucides (contraste OK),
+   chevron propre, pilules à point coloré.
+   ====================================================================== */
+.geo-dashcard { padding: 0; overflow: hidden; }
+.geo-drop-main { border: 0; border-radius: 18px; box-shadow: 0 14px 32px -18px rgba(20,66,126,.55); }
+.geo-drop-main > summary {
+  display: flex; flex-direction: column; gap: .6rem; align-items: stretch;
+  background: radial-gradient(120% 140% at 0% 0%, #1c5a97 0%, #14427e 55%, #102e54 100%);
+  color: #fff; padding: 1rem 1.1rem; border-radius: 0; flex-wrap: nowrap;
+}
+.geo-drop-main > summary::before { content: none; }       /* on remplace le chevron par le nôtre */
+.geo-drop-main > summary:hover { filter: brightness(1.04); }
+.geo-main-row { display: flex; align-items: center; gap: .6rem; }
+.geo-main-icon { font-size: 1.2rem; line-height: 1; }
+.geo-main-title { font-weight: 800; letter-spacing: .01em; font-size: 1.06rem; flex: 1; min-width: 0; }
+.geo-main-chev {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+  background: rgba(255,255,255,.16); color: #fff; display: inline-flex;
+  align-items: center; justify-content: center; font-size: 1.2rem; font-weight: 800;
+  transition: transform .2s var(--ease);
+}
+.geo-drop-main[open] > summary .geo-main-chev { transform: rotate(90deg); }
+.geo-main-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+
+/* Pilules d'état : point coloré + texte. Variante claire (page) & foncée (accueil). */
+.geo-chip { display: inline-flex; align-items: center; gap: .35rem; }
+.geo-chip-dot { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; box-shadow: 0 0 0 2px rgba(255,255,255,.35); }
+.geo-chip-d {
+  background: rgba(255,255,255,.16); color: #fff; border: 1px solid rgba(255,255,255,.26);
+  font-weight: 700; font-size: .76rem; padding: .26rem .62rem; border-radius: 999px;
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+}
+.geo-chip-d .geo-chip-dot { box-shadow: 0 0 0 2px rgba(255,255,255,.25); }
+
+/* Corps du panneau : un peu d'air et fond doux pour détacher du bandeau */
+.geo-drop-main[open] > *:not(summary) { padding-left: 1rem; padding-right: 1rem; }
+.geo-drop-main[open] { background: #fff; }

@@ -2189,7 +2189,7 @@ function drawCalendar() {
     // Jour d'un mois adjacent : on bascule sur ce mois (comme l'app iPhone).
     if (cell.classList.contains('out')) { State.cal.selDay = ds; State.cal.cursor = parseISO(ds); refreshCalForYear(); return; }
     State.cal.selDay = ds;
-    grid.querySelectorAll('.ioscell.sel').forEach((c) => c.classList.remove('sel'));
+    grid.querySelectorAll('[data-iosday].sel').forEach((c) => c.classList.remove('sel'));
     cell.classList.add('sel');
     const box = document.getElementById('iosday');
     if (box) { box.innerHTML = iosDayDetail(ds); bindCalDelete(box); }
@@ -2252,51 +2252,46 @@ function viewDay(cursor) {
   if (closed) banner += `<div class="alert warn">🔒 ${esc(closed.label)} — prise de congé fermée.</div>`;
   if (vac) banner += `<div class="alert info" style="background:#dbeafe;color:#1e40af;border-color:#93c5fd">Vacances scolaires (Zone B) : ${esc(vac.label)}.</div>`;
 
-  const isAdmin = State.user.role === 'admin';
-  if (evs.length === 0) return banner + `<div class="empty">✅ Aucune absence ce jour. Toute l'équipe est présente.</div>`;
-  return banner + `<div class="day-list">` + evs.map((ev) => `
-    <div class="day-event">
-      <div class="bar" style="background:${evColor(ev)}"></div>
-      <div>
-        <strong>${esc(ev.userName)} <span class="help" style="font-weight:600">(${esc(ev.groupName)})</span></strong>
-        <div class="help">${esc(ev.categoryLabel)}${ev.fractionnement?` — ${ev.fractionnement==='fractionne'?'fractionné':'complet'}`:''}${ev.status==='pending'?' — <em>demande en attente</em>':''}</div>
-        ${ev.replacedByName?`<div class="help" style="color:var(--brand-2)">↪ remplacé par <strong>${esc(ev.replacedByName)}</strong></div>`:''}
-      </div>
-      <span style="margin-left:auto" class="group-chip ${ev.status==='pending'?'is-pending':''}" style="background:${catColor(ev.code)}">${esc(ev.code)}</span>
-      ${isAdmin?`<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer">✕</button>`:''}
-    </div>`).join('') + `</div>`;
+  // Vue Jour « façon Calendrier iPhone » : on réutilise la liste épurée du
+  // détail de journée (cartes à barre colorée, parfaitement lisibles sur mobile).
+  return `<div class="ioscal ios-dayview">${banner}<div class="iosday iosday--solo" id="iosday">${iosDayDetail(ds)}</div></div>`;
 }
 
+// Vue Semaine « façon Calendrier iPhone » : une bande de 7 jours sélectionnables
+// (lettre du jour + numéro, pastilles de couleur, aujourd'hui en pastille rouge)
+// puis le détail lisible du jour choisi en dessous. Fini la grille à 7 colonnes
+// illisible sur téléphone.
 function viewWeek(cursor) {
   const ws = startOfWeekMonday(cursor);
-  const days = [...Array(6)].map((_, i) => addDays(ws, i));
-  const we = addDays(ws, 5);
-  const absent = (State._calEvents || []).filter((ev) => ev.startDate <= iso(we) && ev.endDate >= iso(ws));
-  const byUser = {};
-  absent.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { name: ev.userName, color: ev.groupColor, evs: [] }).evs.push(ev); });
-  const rows = Object.values(byUser);
-
-  let html = `<div class="week-grid"><div class="wrow whead"><div class="wcell namecol">Salarié</div>`;
-  days.forEach((d) => {
-    const ds = iso(d); const h = State.holidays[ds]; const vac = schoolHolidayFor(ds); const closed = closedPeriodFor(ds);
-    const cls = closed ? 'closed' : (h ? 'holiday' : (vac ? 'school' : ''));
-    const sub = closed ? '🔒 fermé' : (h ? esc(h) : (vac ? 'vac. scol.' : ''));
-    html += `<div class="wcell ${cls}">${DOW_SHORT[(d.getDay()+6)%7]} ${pad(d.getDate())}<div class="sub">${sub}</div></div>`;
-  });
-  html += `</div>`;
-  if (rows.length === 0) html += `<div class="wrow"><div class="wcell namecol" style="grid-column:1/-1;color:var(--muted)">✅ Aucune absence cette semaine.</div></div>`;
-  else rows.forEach((r) => {
-    const repl = r.evs.map((ev) => ev.replacedByName).filter(Boolean)[0];
-    html += `<div class="wrow"><div class="wcell namecol"><div><span class="dot" style="background:${r.color}"></span> ${esc(r.name)}</div>${repl?`<div class="help" style="color:var(--brand-2)">↪ ${esc(repl)} (remplaçant)</div>`:''}</div>`;
-    days.forEach((d) => {
-      const ds = iso(d); const hit = r.evs.find((ev) => ev.startDate <= ds && ev.endDate >= ds); const isH = State.holidays[ds];
-      if (hit) { const c = catColor(hit.code); html += `<div class="wcell" style="background:${c}22"><span class="tag ${hit.status==='pending'?'is-pending':''}" style="background:${c};color:#fff" title="${esc(calTooltip(hit))}">${esc(hit.code)}</span>${State.user.role==='admin'?` <button class="btn danger sm" data-del-ev="${hit.id}" title="Supprimer / recréditer" style="padding:0 .35rem">✕</button>`:''}</div>`; }
-      else html += `<div class="wcell ${isH?'holiday':''}"></div>`;
-    });
-    html += `</div>`;
-  });
-  html += `</div>`;
-  return html;
+  const days = [...Array(7)].map((_, i) => addDays(ws, i));
+  const we = addDays(ws, 6);
+  const today = new Date();
+  // Jour sélectionné : conservé s'il appartient à la semaine, sinon aujourd'hui
+  // (si la semaine le contient) ou le lundi.
+  const sd = State.cal.selDay ? parseISO(State.cal.selDay) : null;
+  const inWeek = sd && sd >= ws && sd <= we;
+  if (!inWeek) State.cal.selDay = (today >= ws && today <= we) ? iso(today) : iso(ws);
+  const sel = State.cal.selDay;
+  const dows = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'];
+  const strip = days.map((d, i) => {
+    const ds = iso(d);
+    const evs = eventsOnDay(ds);
+    const hol = State.holidays[ds], vac = schoolHolidayFor(ds), closed = closedPeriodFor(ds);
+    let cls = 'iosweek-day';
+    if (sameDay(d, today)) cls += ' today';
+    if (ds === sel) cls += ' sel';
+    if (closed) cls += ' closed'; else if (hol) cls += ' holiday'; else if (vac) cls += ' school';
+    const dots = evs.slice(0, 3).map((ev) => `<i class="iosdot" style="background:${evColor(ev)}"></i>`).join('');
+    return `<button class="${cls}" data-iosday="${ds}">
+      <span class="iosweek-dow">${dows[i]}</span>
+      <span class="iosnum">${d.getDate()}</span>
+      <span class="iosdots">${dots}${evs.length > 3 ? `<i class="iosmore">+${evs.length - 3}</i>` : ''}</span>
+    </button>`;
+  }).join('');
+  return `<div class="ioscal ios-weekview">
+    <div class="iosweek-strip">${strip}</div>
+    <div class="iosday iosday--solo" id="iosday">${iosDayDetail(sel)}</div>
+  </div>`;
 }
 
 // Écran étroit (téléphone) : on bascule sur un mois compact (pastilles).
