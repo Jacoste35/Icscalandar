@@ -947,6 +947,18 @@ async function renderDashboard(main) {
     const prevStart = addDays(curStart, -7);   // semaine précédente
     const next1 = addDays(curStart, 7);        // +1
     const next2 = addDays(curStart, 14);       // +2
+    // Priorité d'affichage du planning : du lundi au jeudi on met en avant la
+    // semaine EN COURS ; à partir du vendredi (et le week-end) on met en avant la
+    // semaine À VENIR (on prépare la semaine suivante).
+    const _dow = today.getDay(); // 0 dim … 6 sam
+    const _focusNext = (_dow === 5 || _dow === 6 || _dow === 0);
+    const cardCur = dashWeekCard('Semaine en cours', curStart, events, true);
+    const cardNext1 = dashWeekCard('Semaine à venir (+1)', next1, events);
+    const cardNext2 = dashWeekCard('Dans deux semaines (+2)', next2, events);
+    const cardPrev = dashWeekCard('Semaine précédente', prevStart, events, false, true);
+    const weekCards = _focusNext
+      ? `${cardNext1}${cardCur}${cardNext2}${cardPrev}`
+      : `${cardCur}${cardNext1}${cardNext2}${cardPrev}`;
 
     const realAdmin = user.role === 'admin';
     const isAdmin = viewUser.role === 'admin';
@@ -985,7 +997,8 @@ async function renderDashboard(main) {
 
     // Mes retards (compteurs glissants) + classement (encadrement)
     const myRetards = events.filter((e) => e.userId === viewUser.id && e.category === 'RET' && e.status === 'approved');
-    const retardCards = isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">⏱️ Mes retards</h3><div class="grid cols-4">
+    // « Mes retards » n'apparaît qu'à partir du 1er retard validé par l'administrateur.
+    const retardCards = (isPresident || !myRetards.length) ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">⏱️ Mes retards</h3><div class="grid cols-4">
       ${statCard('Retards 30 j', retardCountSince(myRetards, 30), 'retard(s)')}
       ${statCard('Retards 90 j', retardCountSince(myRetards, 90), 'retard(s)')}
       ${statCard('Retards (semestre)', retardCountSince(myRetards, 182), 'retard(s)')}
@@ -1025,11 +1038,28 @@ async function renderDashboard(main) {
     let messagesPanel = '';
     try { const { messages } = await api('GET', '/messages'); messagesPanel = messagesPanelHTML(messages); } catch (e) {}
 
+    // Synchronisation du calendrier de la société avec l'agenda perso (iCal).
+    const calSyncPanel = isPresident ? '' : `<div class="card" style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;border-left:5px solid var(--accent)">
+      <div style="flex:1;min-width:200px"><h3 style="margin:0 0 .2rem">📲 Synchroniser mon calendrier</h3><p class="help" style="margin:0">Recevez automatiquement le planning de la société (congés &amp; absences) dans l'agenda de votre téléphone ou ordinateur.</p></div>
+      <button class="btn accent" id="dash-calsync">Synchroniser mon agenda</button>
+    </div>`;
+
     // Cumul des congés / récup / RCC déjà pris (indicatif).
     const mineApproved = events.filter((e) => e.userId === viewUser.id && e.status === 'approved');
     const takenCP = Math.round(mineApproved.filter((e) => e.category === 'CP').reduce((s, e) => s + (e.days || 0), 0) * 100) / 100;
     const takenRCP = Math.round(mineApproved.filter((e) => e.category === 'RCP').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
     const takenRCC = Math.round(mineApproved.filter((e) => e.category === 'RCC').reduce((s, e) => s + (e.hours || 0), 0) * 100) / 100;
+    // Demandes EN ATTENTE de validation : montants qui seront déduits une fois
+    // validés → on affiche « en attente : X » + un compteur prévisionnel.
+    const minePending = events.filter((e) => e.userId === viewUser.id && (e.status === 'pending'));
+    const sumP = (pred, key) => Math.round(minePending.filter(pred).reduce((s, e) => s + (e[key] || 0), 0) * 100) / 100;
+    const pendCPN = sumP((e) => e.category === 'CP' && e.pool !== 'N1', 'days');
+    const pendCPN1 = sumP((e) => e.category === 'CP' && e.pool === 'N1', 'days');
+    const pendRCC = sumP((e) => e.category === 'RCC', 'hours');
+    const pendRCP = sumP((e) => e.category === 'RCP', 'hours');
+    const rnd = (x) => Math.round(x * 100) / 100;
+    // Texte « en attente / prévisionnel » ajouté au sous-titre d'un compteur.
+    const pendSub = (pend, cur, unit) => pend > 0 ? ` · <span style="color:#b45309">en attente : ${pend} ${unit}</span> → <strong style="color:#1d4ed8">prévisionnel : ${rnd(cur - pend)} ${unit}</strong>` : '';
 
     // Alerte conflits de dates dans mon groupe
     const conflictPanel = conflictAlertHTML(events, team);
@@ -1051,13 +1081,14 @@ async function renderDashboard(main) {
       ${geolocPanel}
       ${anc}
       ${isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">📊 Mes compteurs</h3><div class="grid cols-4">
-        ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)`)}
-        ${statCard('Congés N-1 restants', b.congesN1, 'jours')}
-        ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h`)}
-        ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
+        ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)${pendSub(pendCPN, b.congesN, 'j')}`)}
+        ${statCard('Congés N-1 restants', b.congesN1, 'jours', false, pendCPN1 > 0 ? `${pendSub(pendCPN1, b.congesN1, 'j')}` : '')}
+        ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h${pendSub(pendRCC, b.rcc, 'h')}`)}
+        ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h${pendSub(pendRCP, b.heuresSupp, 'h')}`)}
       </div></div>`}
       ${myLeavePanel}
       ${weekSuggestPanel}
+      ${calSyncPanel}
       ${philo}
       ${myDocsPanel}
       ${messagesPanel}
@@ -1074,10 +1105,7 @@ async function renderDashboard(main) {
       ${priorityPanel}
       ${classement}
       ${colleaguesPanel}
-      ${dashWeekCard('Semaine précédente', prevStart, events, false, true)}
-      ${dashWeekCard('Semaine en cours', curStart, events, true)}
-      ${dashWeekCard('Semaine à venir (+1)', next1, events)}
-      ${dashWeekCard('Dans deux semaines (+2)', next2, events)}`;
+      ${weekCards}`;
     // Rend chaque section de l'accueil repliable (ouvrir/masquer à la demande).
     makeDashCollapsible(dashBody);
     // Sélecteur d'aperçu (toujours actif pour l'admin).
@@ -1153,6 +1181,8 @@ function bindDashboardActions(scope) {
   scope.querySelectorAll('[data-leavemod]').forEach((b) => b.onclick = () => openRequestModal({ id: b.dataset.leavemod, category: b.dataset.cat, pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: b.dataset.reason || '' }));
   // Poser une semaine complète proposée à l'accueil (optimisation des congés).
   scope.querySelectorAll('[data-bookweek]').forEach((b) => b.onclick = () => openRequestModal({ category: 'CP', pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: '' }));
+  // Synchroniser le calendrier de la société avec l'agenda perso.
+  const calSyncBtn = scope.querySelector('#dash-calsync'); if (calSyncBtn) calSyncBtn.onclick = () => calendarSyncModal();
   // Démarre le panneau géoloc auto-actualisé (encadrement).
   if (typeof geolocStartDashboard === 'function' && scope.querySelector('#dash-geoloc')) geolocStartDashboard();
   // Mes documents : consulter, accuser réception (signature), attestation.
@@ -1219,8 +1249,12 @@ function messageReadsModal(r) {
 
 // Panneau messagerie interne (accueil).
 function messagesPanelHTML(messages) {
+  const isAdmin = State.user.role === 'admin';
   const staff = isStaff();
-  const compose = staff ? `<div class="msg-compose">
+  // Seul l'administrateur publie des annonces. Pour tous les autres (salariés ET
+  // responsables), la messagerie reste masquée tant qu'aucun message n'a été posté.
+  if (!isAdmin && !(messages || []).length) return '';
+  const compose = isAdmin ? `<div class="msg-compose">
     <input id="msg-title" placeholder="Titre (facultatif)">
     <textarea id="msg-body" placeholder="Message d'information à l'ensemble des salariés…" style="min-height:60px"></textarea>
     <button class="btn accent sm" id="msg-send">Publier</button>
@@ -1521,7 +1555,8 @@ function colleaguesUpcomingHTML(team, events) {
     </div>` : '';
 
   // Encadrement : vision d'ensemble de TOUTES les absences à venir (tous groupes).
-  if (staff) {
+  // Masquée dans l'espace salarié (et en aperçu salarié) — trop d'affichage.
+  if (staff && !_previewMode) {
     const upcoming = events.filter((e) => e.endDate >= t && e.category !== 'RET')
       .sort((a, b) => a.startDate.localeCompare(b.startDate)).slice(0, 80);
     return `${replBlock}
@@ -2338,8 +2373,8 @@ async function renderMyData(main) {
         <h3>Profil</h3>
         <div class="table-wrap"><table>
           <tr><th>Nom</th><td>${esc(user.firstName)} ${esc(user.lastName)}</td></tr>
-          ${user.username?`<tr><th>Nom de compte</th><td>${esc(user.username)}</td></tr>`:''}
-          <tr><th>Email</th><td>${user.email?esc(user.email):'<em>—</em>'}</td></tr>
+          ${user.username?`<tr><th>Nom de compte</th><td>${esc(user.username)} <span class="help">(donnée personnelle — visible par vous et l'administrateur uniquement)</span></td></tr>`:''}
+          <tr><th>Email</th><td>${user.email?esc(user.email):'<em>—</em>'} <span class="help">(donnée personnelle — visible par vous et l'administrateur uniquement)</span></td></tr>
           <tr><th>Adresse postale</th><td>${user.address?esc(user.address):'<em>—</em>'} <span class="help">(donnée personnelle — visible par vous et l'administrateur uniquement)</span></td></tr>
           <tr><th>Téléphone</th><td><span style="display:inline-flex;gap:.4rem;align-items:center"><input id="md-phone" value="${user.phone?esc(user.phone):''}" placeholder="06 12 34 56 78" style="max-width:200px"><button class="btn sm" id="md-phone-save">Enregistrer</button></span></td></tr>
           <tr><th>Groupe de travail</th><td>${g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Non attribué</em>'}</td></tr>
