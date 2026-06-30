@@ -3272,6 +3272,79 @@ function fuelAnalysis(db) {
   return { refConso, threshold: kpi.threshold, tankCapacity: tank, vehicles, alerts: alerts.slice(0, 60), alertCount: alerts.length };
 }
 
+// Analyse par CHAUFFEUR sur 30 jours glissants (fenêtre se terminant à la
+// dernière transaction connue). Quand la fenêtre est incomplète, projette la
+// consommation sur 30 j ; à l'import suivant, compare la projection au réel.
+function fuelDriverAnalysis(db) {
+  const round2 = (n) => Math.round((n || 0) * 100) / 100;
+  const round1 = (n) => Math.round((n || 0) * 10) / 10;
+  const kpi = db.settings.fuelKpi || {};
+  const refConso = Number(kpi.refConso) || 11;
+  const thrPct = Math.max(Number(kpi.threshold) || 15, 10);
+  const driverMap = db.settings.fuelDriverMap || {};
+  const usersById = {}; (db.users || []).forEach((u) => { usersById[u.id] = `${u.firstName} ${u.lastName}`; });
+  const keyOf = (t) => (t.card && driverMap[t.card] && usersById[driverMap[t.card]]) ? usersById[driverMap[t.card]] : ((t.driver || '').trim() || '—');
+  const allDates = db.fuel.map((t) => t.date).filter(Boolean).sort();
+  const lastDate = allDates.length ? allDates[allDates.length - 1] : new Date().toISOString().slice(0, 10);
+  const cutoff = new Date(new Date(lastDate + 'T00:00:00Z').getTime() - 29 * 86400000).toISOString().slice(0, 10);
+  const groups = {};
+  for (const t of db.fuel) { if (!t.date || t.date < cutoff) continue; (groups[keyOf(t)] || (groups[keyOf(t)] = [])).push(t); }
+  const store = db.settings.fuelProjections || {};
+  const drivers = Object.keys(groups).map((k) => {
+    const txns = groups[k].slice().sort((a, b) => String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
+    let liters = 0, costHT = 0, validKm = 0, validLiters = 0;
+    for (let i = 0; i < txns.length; i++) {
+      const t = txns[i]; liters += t.liters || 0; costHT += t.amountHT || 0;
+      if (i > 0) { const p = txns[i - 1]; const dk = (t.km || 0) - (p.km || 0); if ((p.km || 0) > 0 && (t.km || 0) > 0 && dk > 1 && dk < 2000 && (t.liters || 0) > 0) { validKm += dk; validLiters += t.liters; } }
+    }
+    const realConso = validKm > 0 ? validLiters / validKm * 100 : null;
+    const ds = txns.map((t) => t.date).sort();
+    const windowDays = ds.length ? Math.round((new Date(ds[ds.length - 1]) - new Date(ds[0])) / 86400000) + 1 : 1;
+    const complete = windowDays >= 28;
+    const factor = (complete || windowDays <= 0) ? 1 : 30 / windowDays;
+    const estLiters30 = round1(liters * factor), estCostHT30 = round2(costHT * factor);
+    // Comparaison : si la projection précédente était incomplète et que la
+    // fenêtre est désormais complète, on confronte projeté vs réel.
+    const stored = store[k];
+    let liveCompare = null;
+    if (stored && stored.basisDays < 28 && complete && stored.projCostHT > 0) {
+      const dev = Math.round((costHT - stored.projCostHT) / stored.projCostHT * 100);
+      liveCompare = { projectedCostHT: round2(stored.projCostHT), realCostHT: round2(costHT), deviationPct: dev, status: Math.abs(dev) > thrPct ? 'alert' : 'ok' };
+    }
+    const compare = (stored && stored.lastCompare) ? stored.lastCompare : liveCompare;
+    return {
+      key: k, fills: txns.length, liters: round1(liters), costHT: round2(costHT),
+      realConso: realConso != null ? round1(realConso) : null,
+      deviationPct: realConso != null ? Math.round((realConso - refConso) / refConso * 100) : null,
+      windowDays, complete, estLiters30, estCostHT30, refConso, compare,
+    };
+  }).sort((a, b) => b.costHT - a.costHT);
+  return { asOf: lastDate, windowFrom: cutoff, refConso, drivers };
+}
+// À l'import : fige la projection de chaque chauffeur (réel si fenêtre complète,
+// sinon estimation sur 30 j) et mémorise la dernière comparaison disponible.
+function updateFuelProjections(db) {
+  const an = fuelDriverAnalysis(db);
+  const next = {};
+  for (const d of an.drivers) {
+    const prev = (db.settings.fuelProjections || {})[d.key];
+    next[d.key] = {
+      projCostHT: d.complete ? d.costHT : d.estCostHT30,
+      projLiters: d.complete ? d.liters : d.estLiters30,
+      basisDays: d.windowDays, madeAt: new Date().toISOString(),
+      lastCompare: d.compare || (prev && prev.lastCompare) || null,
+    };
+  }
+  db.settings.fuelProjections = next;
+}
+
+// Cartes AS 24 distinctes (pour l'association carte → chauffeur).
+function fuelCards(db) {
+  const info = {};
+  db.fuel.forEach((t) => { if (!t.card) return; const c = info[t.card] || (info[t.card] = { card: t.card, count: 0, driver: t.driver || '', vehicleName: t.vehicleName || '' }); c.count++; if (t.driver && !c.driver) c.driver = t.driver; });
+  return Object.values(info).sort((a, b) => b.count - a.count);
+}
+
 // Liste des transactions + synthèse (litres, montants, par véhicule).
 app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
   const db = getData(); ensureErp(db);
@@ -3290,10 +3363,26 @@ app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
     summary: { count: sum.count, liters: round2(sum.liters), ht: round2(sum.ht), ttc: round2(sum.ttc) },
     byVehicle: Object.values(byVeh).map((b) => ({ ...b, liters: round2(b.liters), ttc: round2(b.ttc) })).sort((a, z) => z.ttc - a.ttc),
     analysis: fuelAnalysis(db),
+    driverAnalysis: fuelDriverAnalysis(db),
     isAdmin: req.user.role === 'admin',
     vehicles: db.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
+    users: (db.users || []).filter((u) => u.status === 'active').map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}` })),
+    cards: fuelCards(db),
+    fuelDriverMap: db.settings.fuelDriverMap || {},
+    fuelCardMap: db.settings.fuelCardMap || {},
     available: fuelimport.available(),
   });
+});
+
+// Associe une carte AS 24 à un chauffeur inscrit (croisement conso par chauffeur).
+app.post('/api/staff/fuel/driver-map', authRequired, adminRequired, async (req, res) => {
+  const db = getData(); ensureErp(db);
+  const { card, userId } = req.body || {};
+  if (!card) return res.status(400).json({ error: 'Carte requise.' });
+  if (userId) db.settings.fuelDriverMap[String(card)] = String(userId);
+  else delete db.settings.fuelDriverMap[String(card)];
+  await save();
+  res.json({ fuelDriverMap: db.settings.fuelDriverMap });
 });
 
 // Réglage des paramètres d'analyse carburant (conso de référence, seuils).
@@ -3323,6 +3412,7 @@ app.post('/api/staff/fuel/import', authRequired, adminRequired, async (req, res)
     db.fuel.push({ id: nextId('fuel'), ...r, vehicleId: veh ? veh.id : null, importedAt: new Date().toISOString() });
     seen.add(r.txnId); added++;
   }
+  updateFuelProjections(db); // fige la projection conso & compare au réel
   await save();
   res.json({ added, skipped, total: db.fuel.length });
 });
