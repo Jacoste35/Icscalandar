@@ -26,9 +26,11 @@ const discipline = require('../lib/erp/discipline');
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 function mount(app, deps) {
-  const { express, authRequired, adminRequired, getData, save } = deps;
+  const { express, authRequired, adminRequired, staffRequired, getData, save } = deps;
   const r = express.Router();
   const guard = [authRequired, adminRequired];
+  // Accès encadrement (admin + responsable) — réservé aux procédures RH/documents.
+  const guardStaff = staffRequired ? [authRequired, staffRequired] : guard;
 
   const withData = (fn) => async (req, res) => {
     try {
@@ -122,7 +124,7 @@ function mount(app, deps) {
   }));
 
   /* ---- Documents (publipostage) --------------------------------------- */
-  r.get('/templates', guard, withData(async (req, res, data) => {
+  r.get('/templates', guardStaff, withData(async (req, res, data) => {
     res.json({ templates: data.settings.erpTemplates });
   }));
   r.put('/templates/:type', guard, withData(async (req, res, data) => {
@@ -159,10 +161,10 @@ function mount(app, deps) {
     res.json({ ok: true });
   }));
   // Options de génération : motifs RH + « faits » types (listes éditables).
-  r.get('/doc-options', guard, withData(async (req, res, data) => {
+  r.get('/doc-options', guardStaff, withData(async (req, res, data) => {
     res.json({ motifs: data.settings.docMotifs || [], faits: data.settings.docFaits || [] });
   }));
-  r.post('/doc-options/motif', guard, withData(async (req, res, data) => {
+  r.post('/doc-options/motif', guardStaff, withData(async (req, res, data) => {
     const m = String((req.body || {}).motif || '').trim();
     if (!m) return res.status(400).json({ error: 'Motif vide' });
     data.settings.docMotifs = data.settings.docMotifs || [];
@@ -170,13 +172,13 @@ function mount(app, deps) {
     await save();
     res.json({ motifs: data.settings.docMotifs });
   }));
-  r.delete('/doc-options/motif', guard, withData(async (req, res, data) => {
+  r.delete('/doc-options/motif', guardStaff, withData(async (req, res, data) => {
     const v = String(req.query.value || '');
     data.settings.docMotifs = (data.settings.docMotifs || []).filter((x) => x !== v);
     await save();
     res.json({ motifs: data.settings.docMotifs });
   }));
-  r.post('/doc-options/fait', guard, withData(async (req, res, data) => {
+  r.post('/doc-options/fait', guardStaff, withData(async (req, res, data) => {
     const { label, text } = req.body || {};
     if (!label || !text) return res.status(400).json({ error: 'Libellé et texte requis' });
     data.settings.docFaits = data.settings.docFaits || [];
@@ -184,7 +186,7 @@ function mount(app, deps) {
     await save();
     res.json({ faits: data.settings.docFaits });
   }));
-  r.delete('/doc-options/fait', guard, withData(async (req, res, data) => {
+  r.delete('/doc-options/fait', guardStaff, withData(async (req, res, data) => {
     const v = String(req.query.value || '');
     data.settings.docFaits = (data.settings.docFaits || []).filter((f) => f.label !== v);
     await save();
@@ -194,7 +196,7 @@ function mount(app, deps) {
   //  - dates des retards VALIDÉS par un administrateur (statut « approved ») ;
   //  - compteur d'avertissements déjà au dossier ;
   //  - proposition de mise à pied proportionnelle à la gravité du motif.
-  r.get('/documents/disciplinary-context', guard, withData(async (req, res, data) => {
+  r.get('/documents/disciplinary-context', guardStaff, withData(async (req, res, data) => {
     const userId = req.query.userId;
     const motif = String(req.query.motif || '');
     const u = (data.users || []).find((x) => x.id === userId);
@@ -265,12 +267,12 @@ function mount(app, deps) {
       };
     }).sort((a, b) => { const order = { licenciement: 0, mise_a_pied: 1, avertissement: 2, vierge: 3 }; return (order[a.level] - order[b.level]) || (b.total - a.total) || a.userName.localeCompare(b.userName); });
   }
-  r.get('/documents/disciplinary-files', guard, withData(async (req, res, data) => {
+  r.get('/documents/disciplinary-files', guardStaff, withData(async (req, res, data) => {
     res.json({ files: disciplinaryFiles(data), severity: discipline.MOTIF_SEVERITY, graviteLabels: discipline.GRAVITE_LABEL });
   }));
 
   // Génère un brouillon de document rempli (pas encore enregistré).
-  r.post('/documents/render', guard, withData(async (req, res, data) => {
+  r.post('/documents/render', guardStaff, withData(async (req, res, data) => {
     const { type, vars } = req.body || {};
     const tpl = data.settings.erpTemplates[type];
     if (!tpl) return res.status(404).json({ error: 'modèle inconnu' });
@@ -279,7 +281,7 @@ function mount(app, deps) {
     res.json({ html, label: tpl.label });
   }));
   // Enregistre un avertissement validé dans l'historique des sanctions existant.
-  r.post('/documents/save-sanction', guard, withData(async (req, res, data) => {
+  r.post('/documents/save-sanction', guardStaff, withData(async (req, res, data) => {
     const { userId, type, motif } = req.body || {};
     const u = (data.users || []).find((x) => x.id === userId);
     const sanction = {
@@ -315,7 +317,7 @@ function mount(app, deps) {
   }));
 
   /* ---- Méta (formulaires : salariés détaillés, véhicules, contrats) --- */
-  r.get('/meta', guard, withData(async (req, res, data) => {
+  r.get('/meta', guardStaff, withData(async (req, res, data) => {
     const groupsById = Object.fromEntries((data.groups || []).map((g) => [g.id, g]));
     res.json({
       users: (data.users || []).map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, name: `${u.firstName} ${u.lastName}`, hireDate: u.hireDate || '', address: u.address || '', birthDate: u.birthDate || '', groupId: u.groupId || null, groupName: (groupsById[u.groupId] || {}).name || 'Sans groupe' })),
@@ -515,7 +517,7 @@ function mount(app, deps) {
   }));
 
   // Document imprimable (publipostage -> page HTML complète -> PDF navigateur).
-  r.post('/documents/print', guard, withData(async (req, res, data) => {
+  r.post('/documents/print', guardStaff, withData(async (req, res, data) => {
     const { type, vars, title, html: rawHtml } = req.body || {};
     let inner = rawHtml;
     if (!inner) {
@@ -536,7 +538,7 @@ function mount(app, deps) {
 
   /* ---- Documents adressés aux salariés + accusé de réception ---------- */
   // Admin : valide et adresse un document à un salarié.
-  r.post('/documents/issue', guard, withData(async (req, res, data) => {
+  r.post('/documents/issue', guardStaff, withData(async (req, res, data) => {
     const { userId, type, vars, html: rawHtml, label } = req.body || {};
     const u = (data.users || []).find((x) => x.id === userId);
     if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
@@ -568,7 +570,7 @@ function mount(app, deps) {
     res.json({ document: { id: doc.id, label: doc.label, userName: doc.userName, status: doc.status } });
   }));
   // Admin : suivi de tous les documents adressés (lu/reçu).
-  r.get('/documents', guard, withData(async (req, res, data) => {
+  r.get('/documents', guardStaff, withData(async (req, res, data) => {
     res.json({ documents: data.erp.documents.slice().reverse().map((d) => ({ id: d.id, userId: d.userId, userName: d.userName, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt, ackName: d.ackName })) });
   }));
   // Salarié : ses propres documents (authRequired seul).
@@ -578,7 +580,7 @@ function mount(app, deps) {
     res.json({ documents: mine });
   }));
   // Admin : annule / supprime l'envoi d'un document (et la signature associée).
-  r.delete('/documents/:id', guard, withData(async (req, res, data) => {
+  r.delete('/documents/:id', guardStaff, withData(async (req, res, data) => {
     const doc = data.erp.documents.find((d) => d.id === req.params.id);
     if (!doc) return res.status(404).json({ error: 'Document introuvable' });
     data.erp.documents = data.erp.documents.filter((d) => d.id !== req.params.id);
