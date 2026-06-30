@@ -448,7 +448,7 @@ function navSections() {
   if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Carburant' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
   if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
-  if (admin) exp.push({ id: 'stocks', icon: '📦', label: 'Gestion des Stocks' });
+  if (admin) exp.push({ id: 'stocks', icon: '🛠️', label: 'Suivi entretiens & stock' });
   if (exp.length) groups.push({ id: 'exploit', icon: '🚚', title: 'Exploitation & Transport', items: exp });
   if (admin) {
     groups.push({ id: 'fin', icon: '💰', title: 'Finance & Facturation', items: [
@@ -703,7 +703,7 @@ const euro2 = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString('fr-FR', 
 async function renderCarburant(main) {
   if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>⛽ Carburant</h1>
-    <p>Suivi des pleins (cartes AS 24) — litres et coûts par véhicule.</p></div></div>
+    <p>Suivi des pleins AS 24, analyse km / consommation, attribution chauffeur et détection des surconsommations & vols.</p></div></div>
     <div id="fuel-body" class="empty">Chargement…</div>`;
   await loadCarburant();
 }
@@ -723,12 +723,50 @@ async function loadCarburant() {
         <span class="help" id="fuel-status"></span>
       </div>
     </div>` : '';
-  const cards = `<div class="grid cols-4">
-    ${statCard('Transactions', s.count || 0, '')}
-    ${statCard('Litres', (s.liters || 0).toLocaleString('fr-FR'), 'L')}
-    ${statCard('Total TTC', euro2(s.ttc || 0), '', true)}
-    ${statCard('Total HT', euro2(s.ht || 0), '')}
+  const an = d.analysis || { vehicles: [], alerts: [], alertCount: 0, refConso: 11, threshold: 15, tankCapacity: 100 };
+  const nAlert = an.vehicles.filter((v) => v.level === 'alert').length;
+  const nWarn = an.vehicles.filter((v) => v.level === 'warn').length;
+  const consoVals = an.vehicles.map((v) => v.realConso).filter((x) => x != null);
+  const fleetConso = consoVals.length ? Math.round(consoVals.reduce((a, b) => a + b, 0) / consoVals.length * 10) / 10 : null;
+  // KPI de tête.
+  const kpiTone = nAlert ? 'tone-alert' : nWarn ? 'tone-warn' : 'tone-ok';
+  const cards = `<div class="fuel-kpi-grid">
+    <div class="fuel-kpi"><div class="fk-val">${fleetConso != null ? fleetConso + ' <small>L/100</small>' : '—'}</div><div class="fk-lbl">Conso moyenne flotte</div><div class="fk-sub">référence ${an.refConso} L/100</div></div>
+    <div class="fuel-kpi ${kpiTone}"><div class="fk-val">${an.alertCount}</div><div class="fk-lbl">Alertes surconso / vol</div><div class="fk-sub">${nAlert} véhicule(s) en alerte</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${(s.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres (total)</div><div class="fk-sub">${s.count || 0} pleins</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${euro2(s.ttc || 0)}</div><div class="fk-lbl">Dépense TTC</div><div class="fk-sub">HT ${euro2(s.ht || 0)}</div></div>
   </div>`;
+  // Panneau d'alertes.
+  const alLvl = (lv) => lv === 'alert' ? 'warn' : 'info';
+  const alertsBlock = an.alerts && an.alerts.length ? `<details class="card fuel-alerts" open>
+      <summary><strong>🚨 Alertes à contrôler (${an.alertCount})</strong> <span class="help">surconsommation ou vol potentiel — vérifiez le chauffeur concerné</span></summary>
+      <ul class="fuel-alert-list">${an.alerts.map((a) => `<li class="al-${a.level}"><span class="al-veh">${esc(a.vehicle)}</span> ${a.date ? `<span class="help">${esc(a.date)}</span> ` : ''}${esc(a.text)}${a.driver ? ` <span class="al-drv">👤 ${esc(a.driver)}</span>` : ''}</li>`).join('')}</ul>
+    </details>` : `<div class="alert ok">✅ Aucune surconsommation anormale détectée (réf. ${an.refConso} L/100, seuil +${an.threshold}%).</div>`;
+  // Tableau d'analyse par véhicule.
+  const lvlPill = (lv, txt) => `<span class="pill ${lv === 'alert' ? 'warn' : lv === 'warn' ? 'draft' : 'ok'}">${txt}</span>`;
+  const consoCell = (v) => v.realConso == null ? '<span class="help">km AS 24 manquant</span>'
+    : `<strong style="color:${v.level === 'alert' ? '#b91c1c' : v.level === 'warn' ? '#b45309' : '#166534'}">${v.realConso} L/100</strong> <span class="help">(${v.deviationPct >= 0 ? '+' : ''}${v.deviationPct}%)</span>`;
+  const analysisBlock = an.vehicles && an.vehicles.length ? `<div class="card"><h3 style="margin-top:0">📊 Analyse km / consommation & attribution chauffeur</h3>
+      <p class="help">Consommation réelle « tank-to-tank » calculée d'après le kilométrage saisi aux pleins AS 24. Le chauffeur proposé est celui qui réalise le plus de pleins sur le véhicule.</p>
+      <div class="table-wrap"><table class="report-table"><thead><tr><th>Véhicule</th><th>Chauffeur proposé</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Conso réelle</th><th style="text-align:center">État</th></tr></thead>
+      <tbody>${an.vehicles.map((v) => `<tr>
+        <td><strong>${esc(v.vehicle)}</strong>${v.plate ? `<div class="help">${esc(v.plate)}</div>` : ''}</td>
+        <td>${v.driver ? `${esc(v.driver.name)} <span class="help">${v.driver.share}% des pleins</span>` : '<span class="help">—</span>'}${v.assignedDriver && v.driver && esc(v.assignedDriver) !== esc(v.driver.name) ? `<div class="help">fiche véhicule : ${esc(v.assignedDriver)}</div>` : ''}</td>
+        <td style="text-align:center">${v.fills}</td>
+        <td style="text-align:right">${v.liters.toLocaleString('fr-FR')} L</td>
+        <td style="text-align:right">${consoCell(v)}</td>
+        <td style="text-align:center">${lvlPill(v.level, v.level === 'alert' ? 'Surconso' : v.level === 'warn' ? 'À surveiller' : 'OK')}</td>
+      </tr>`).join('')}</tbody></table></div>
+    </div>` : '';
+  // Réglages KPI (admin).
+  const kpiSettings = d.isAdmin ? `<details class="card"><summary><strong>⚙️ Paramètres d'analyse</strong> <span class="help">conso de référence, seuil d'alerte, capacité réservoir</span></summary>
+      <div class="grid2" style="margin-top:.6rem">
+        <div><label>Conso de référence (L/100 km)</label><input id="fk-ref" type="number" step="0.1" value="${an.refConso}"></div>
+        <div><label>Seuil d'alerte surconsommation (%)</label><input id="fk-thr" type="number" step="1" value="${an.threshold}"></div>
+        <div><label>Capacité réservoir (L)</label><input id="fk-tank" type="number" step="1" value="${an.tankCapacity}"></div>
+      </div>
+      <div style="margin-top:.5rem"><button class="btn accent" id="fk-save">Enregistrer</button></div>
+    </details>` : '';
   const byVeh = (d.byVehicle || []).length ? `<h3 class="erp" style="margin-top:1rem">Par véhicule</h3>
     <div class="table-wrap"><table class="report-table"><thead><tr><th>Véhicule (AS 24)</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Total TTC</th></tr></thead>
     <tbody>${d.byVehicle.map((b) => `<tr><td>${esc(b.vehicle)}</td><td style="text-align:center">${b.count}</td><td style="text-align:right">${b.liters.toLocaleString('fr-FR')} L</td><td style="text-align:right">${euro2(b.ttc)}</td></tr>`).join('')}</tbody></table></div>` : '';
@@ -741,9 +779,14 @@ async function loadCarburant() {
       ${d.isAdmin ? `<td><button class="btn ghost sm" data-fueldel="${t.id}">✕</button></td>` : ''}</tr>`).join('')}</tbody></table></div>`
     : '<div class="alert info">Aucune transaction. Importez un export AS 24.</div>';
 
-  body.innerHTML = importBlock + cards + byVeh + txns;
+  body.innerHTML = cards + alertsBlock + analysisBlock + kpiSettings + importBlock + byVeh + txns;
 
   if (d.isAdmin) {
+    const fk = body.querySelector('#fk-save');
+    if (fk) fk.onclick = async () => {
+      try { await api('PUT', '/admin/fuel/kpi', { refConso: +body.querySelector('#fk-ref').value, threshold: +body.querySelector('#fk-thr').value, tankCapacity: +body.querySelector('#fk-tank').value }); toast('Paramètres enregistrés.', 'ok'); loadCarburant(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
     const fileEl = body.querySelector('#fuel-file');
     body.querySelector('#fuel-import').onclick = async () => {
       const f = fileEl.files && fileEl.files[0];
@@ -3601,8 +3644,8 @@ const eur = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('fr
 
 async function renderStocks(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>Gestion des stocks</h1>
-    <p>Stock de pièces et consommables, et coût réel d'exploitation des véhicules.</p></div></div>
+  main.innerHTML = `<div class="page-head"><div><h1>Suivi des entretiens et du stock</h1>
+    <p>Entretiens des véhicules, stock de pièces et consommables, et coût réel d'exploitation.</p></div></div>
     <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-stab="costs" class="active">Coûts par véhicule</button>
       <button data-stab="parts">Stock de pièces & consommables</button>
@@ -4113,6 +4156,20 @@ function snapDesignation(raw, knownLabels) {
 }
 
 // --- Gestion de la facturation (factures conformes + PDF) --------------------
+// Déduit, d'après le libellé d'une ligne, ce que représente la « quantité » à
+// saisir (points livrés, colis, enlèvements, jours, véhicules…) et donc ce que
+// signifie le prix unitaire. Guide la saisie pour éviter les confusions.
+function billQtyKind(designation) {
+  const s = String(designation || '').toLowerCase();
+  if (/(enl[èe]vement|ramassage|collecte|pickup)/.test(s)) return { unit: 'enlèvements', qLabel: 'Nb d\'enlèvements', puLabel: 'Prix / enlèvement (€ HT)', tone: 'pts' };
+  if (/(point|livraison|livr[ée]|delivery|distribu)/.test(s)) return { unit: 'points', qLabel: 'Nb de points', puLabel: 'Prix / point (€ HT)', tone: 'pts' };
+  if (/(colis|paquet|parcel)/.test(s)) return { unit: 'colis', qLabel: 'Nb de colis', puLabel: 'Prix / colis (€ HT)', tone: 'pts' };
+  if (/(forfait|journ[ée]e|\bjour\b|\bjours\b|vacation|tourn[ée]e)/.test(s)) return { unit: 'jours', qLabel: 'Nb de jours', puLabel: 'Prix / jour (€ HT)', tone: 'days' };
+  if (/(v[ée]hicule|camion|tracteur)/.test(s)) return { unit: 'véhicules', qLabel: 'Nb de véhicules', puLabel: 'Prix / véhicule (€ HT)', tone: 'days' };
+  if (/(\bkm\b|kilom[èe]tr)/.test(s)) return { unit: 'km', qLabel: 'Nb de km', puLabel: 'Prix / km (€ HT)', tone: 'days' };
+  if (/(prime|bonus|p[ée]nalit|indexation|gazole|carburant|forfaitaire|frais|montant|index)/.test(s)) return { unit: 'forfait €', qLabel: 'Mettre 1', puLabel: 'Montant (€ HT)', tone: 'amt' };
+  return { unit: 'unités', qLabel: 'Quantité', puLabel: 'Prix unitaire (€ HT)', tone: 'pts' };
+}
 let _billTab = 'generic';
 async function renderBilling(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
@@ -4183,8 +4240,21 @@ async function billTab(main) {
   body.innerHTML = formHtml + `<div class="card"><h3>Factures émises</h3><div id="iv-list"></div></div>`;
   const val = (s) => { const el = body.querySelector(s); return el ? el.value : ''; };
   const linesBox = body.querySelector('#iv-lines');
+  // Légende des colonnes : rappelle ce que représente chaque champ à saisir.
+  const legend = document.createElement('div');
+  legend.className = 'bill-legend help';
+  legend.innerHTML = `<span style="flex:2">📝 <strong>Désignation</strong> de la prestation</span><span style="width:130px">🔢 <strong>Quantité</strong> (s'adapte au libellé)</span><span style="width:130px">💶 <strong>Prix unitaire</strong> HT</span><span style="width:34px"></span>`;
+  linesBox.parentElement.insertBefore(legend, linesBox);
   let updateTotal = () => {};
-  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><input class="il-q" type="number" step="0.01" value="${q}" style="width:90px" title="Qté"><input class="il-pu" type="number" step="0.001" value="${pu}" style="width:120px" title="P.U. HT"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => { row.remove(); updateTotal(); }; linesBox.appendChild(row); updateTotal(); };
+  const refreshKind = (row) => {
+    const k = billQtyKind(row.querySelector('.il-d').value);
+    const chip = row.querySelector('.il-kind');
+    chip.textContent = k.unit; chip.className = 'il-kind kind-' + k.tone;
+    const q = row.querySelector('.il-q'), pu = row.querySelector('.il-pu');
+    q.title = k.qLabel; q.placeholder = k.qLabel;
+    pu.title = k.puLabel; pu.placeholder = k.puLabel;
+  };
+  const addLine = (d = '', q = 1, pu = '') => { const row = document.createElement('div'); row.className = 'impact-row'; row.innerHTML = `<input class="il-d" placeholder="Désignation" value="${esc(d)}" style="flex:2"><span class="il-kind" title="Type de donnée attendu pour la quantité"></span><input class="il-q" type="number" step="0.01" value="${q}" style="width:90px"><input class="il-pu" type="number" step="0.001" value="${pu}" style="width:120px"><button class="btn ghost sm il-del">✕</button>`; row.querySelector('.il-del').onclick = () => { row.remove(); updateTotal(); }; row.querySelector('.il-d').addEventListener('input', () => refreshKind(row)); linesBox.appendChild(row); refreshKind(row); updateTotal(); };
   if (isClient) { (prof.lignes && prof.lignes.length ? prof.lignes : [{ designation: 'Prestation de livraison', prixUnitaire: 0 }]).forEach((l) => addLine(l.designation, 0, l.prixUnitaire || 0)); }
   else { addLine('Prestation de livraison', 21, 560); }
   body.querySelector('#iv-add').onclick = () => addLine();
@@ -4783,15 +4853,19 @@ function tenderCompute(p) {
   const pneusM = p.tyresPerMonth * drivers;
   const fraisGen = p.fraisGeneraux || 0;
   const carburantM = fuelMonthlyPerDriver * drivers;
-  const fixedMonthly = salairesChauffeurs + salairesResp + salaireSecr + vehiculesM + pneusM + fraisGen;
-  const variableMonthly = carburantM;
+  const kmTotal = p.kmPerDay * p.daysPerMonth * drivers;
+  // Pôles « méthode ICS » (fichier tarif au point) — additifs, neutres si à 0.
+  const panierM = (p.panierRepas || 0) * (p.joursPanier || p.daysPerMonth || 0) * drivers;        // indemnité repas (exonérée)
+  const remplacementM = (p.remplacementPerDriver || 0) * drivers;                                  // provision remplacement congés
+  const entretienKmM = (p.entretienPerKm || 0) * kmTotal;                                          // entretien/consommables au km
+  const fixedMonthly = salairesChauffeurs + salairesResp + salaireSecr + vehiculesM + pneusM + fraisGen + panierM + remplacementM;
+  const variableMonthly = carburantM + entretienKmM;
   const totalCostMonthly = fixedMonthly + variableMonthly;
   // Volumes : livraisons + enlèvements (= total points).
   const deliveryPoints = p.pointsPerDay * p.daysPerMonth * drivers;
   const rama = p.ramassage ? 1 : 0;
   const pickupPoints = rama ? (p.ramassagePerDay * p.daysPerMonth * drivers) : 0;
   const totalPoints = deliveryPoints + pickupPoints;
-  const kmTotal = p.kmPerDay * p.daysPerMonth * drivers;
   const hoursMonth = (p.hoursPerDay || 8) * p.daysPerMonth * drivers;
   // Coûts unitaires.
   const coutReelPoint = totalPoints > 0 ? totalCostMonthly / totalPoints : 0;
@@ -4825,6 +4899,11 @@ function tenderCompute(p) {
     deliveryPrice = prixCible; pickupPrice = 0;
   }
   const ramaRevenue = pickupPoints * pickupPrice;
+  // Tarifs « au-delà du forfait » (méthode ICS) : livraison au-delà = ½ du prix
+  // de base ; collecte au-delà = prix de livraison de base.
+  const auDelaPct = p.auDelaPct != null ? p.auDelaPct / 100 : 0.5;
+  const prixLivraisonAuDela = deliveryPrice * auDelaPct;
+  const prixCollecteAuDela = deliveryPrice;
   const caMonthly = deliveryPrice * deliveryPoints + ramaRevenue;
   const caPerDriver = caMonthly / drivers;
   const resultMonth = caMonthly - totalCostMonthly;
@@ -4854,9 +4933,11 @@ function tenderCompute(p) {
   if (!reco.length) reco.push({ lvl: 'green', txt: 'Indicateurs conformes : activité rentable et productive.' });
   return {
     drivers, fuelDay, fuelMonthlyPerDriver, carburantM, salairesChauffeurs, salairesResp, salaireSecr, vehiculesM, pneusM, fraisGen,
+    panierM, remplacementM, entretienKmM,
     fixedMonthly, variableMonthly, totalCostMonthly, deliveryPoints, pickupPoints, totalPoints, kmTotal, hoursMonth,
     coutReelPoint, coutKm, coutHoraire, prixMin, prixCible, prixPremium, prixCibleCNR, prixPremiumCNR,
     variationPct, coefAjustPct, suppPerPoint, suppPerTour, suppMonthly,
+    prixLivraisonAuDela, prixCollecteAuDela,
     rama, ratio, deliveryPrice, pickupPrice, ramaRevenue, caMonthly, caPerDriver, resultMonth, marginRealisedPct,
     pointMort, pointMortPct, margeSecurite, ptsPerHour, ptsPerVehicle, kmPerPoint, coutChauffeurPerPoint, coutChauffeurPerHour, prodLevel, reco,
     // compat anciens champs
@@ -4916,6 +4997,28 @@ function tndResume(body) {
     </div>
     <div class="card"><h3>Analyse & recommandations</h3>
       <ul class="veh-alert-list">${c.reco.map((r) => `<li>${feu(r.lvl)} ${esc(r.txt)}</li>`).join('')}</ul>
+    </div>
+    <div class="card"><h3>Grille tarifaire (méthode au point)</h3>
+      <div class="table-wrap"><table class="veh-table"><tbody>
+        <tr><td>Prix au point — <strong>livraison</strong></td><td><strong>${eur3(c.deliveryPrice)}</strong></td></tr>
+        ${c.rama ? `<tr><td>Prix au point — <strong>collecte</strong></td><td><strong>${eur3(c.pickupPrice)}</strong> (ratio ×${(p.ramassageRatio || 0).toLocaleString('fr-FR')})</td></tr>` : ''}
+        <tr><td>Livraison au-delà du forfait (${p.auDelaPct || 50} %)</td><td>${eur3(c.prixLivraisonAuDela)}</td></tr>
+        <tr><td>Collecte au-delà du forfait</td><td>${eur3(c.prixCollecteAuDela)}</td></tr>
+        <tr><td>Prix ajusté indexation gazole (CNR)</td><td>${eur3(c.prixCibleCNR)}</td></tr>
+      </tbody></table></div>
+    </div>
+    <div class="card"><h3>Décomposition des coûts mensuels (méthode ICS)</h3>
+      <div class="table-wrap"><table class="veh-table"><tbody>
+        <tr><td>Chauffeurs (chargés)</td><td>${eur(c.salairesChauffeurs)}</td></tr>
+        ${c.remplacementM ? `<tr><td>Remplacement congés (provision)</td><td>${eur(c.remplacementM)}</td></tr>` : ''}
+        ${c.panierM ? `<tr><td>Panier repas (exonéré)</td><td>${eur(c.panierM)}</td></tr>` : ''}
+        ${(c.salairesResp || c.salaireSecr) ? `<tr><td>Encadrement & secrétariat</td><td>${eur(c.salairesResp + c.salaireSecr)}</td></tr>` : ''}
+        <tr><td>Véhicules (LOA + assurance + structure)</td><td>${eur(c.vehiculesM + c.pneusM + c.fraisGen)}</td></tr>
+        ${c.entretienKmM ? `<tr><td>Entretien & consommables (au km)</td><td>${eur(c.entretienKmM)}</td></tr>` : ''}
+        <tr><td>Carburant</td><td>${eur(c.carburantM)}</td></tr>
+        <tr><td><strong>Coût total / mois</strong></td><td><strong>${eur(c.totalCostMonthly)}</strong></td></tr>
+        <tr><td>C.A. à facturer / mois (marge ${p.marginPct} %)</td><td><strong>${eur(c.caMonthly)}</strong></td></tr>
+      </tbody></table></div>
     </div>
     <div class="card"><h3>Réponses clés</h3>
       <div class="table-wrap"><table class="veh-table"><tbody>
@@ -5127,7 +5230,29 @@ function tndParams(body) {
       </div>
       <p class="help" style="margin-top:.5rem">📈 Part gasoil : relevez l'indice gasoil M-1 (base 100) sur <a href="https://www.cnr.fr/espaces/13/indicateurs/26" target="_blank" rel="noopener">cnr.fr</a>. Seule la part gasoil du prix est réindexée (indice actuel / référence).</p>
     </div>
+    <div class="card"><h3>Méthode ICS — pôles complémentaires (fichier « tarif au point »)</h3>
+      <p class="help">Reproduit votre fichier de référence : indemnité repas exonérée, provision de remplacement des congés, entretien au km et tarif « au-delà du forfait ». Mettez 0 pour neutraliser un pôle.</p>
+      <div class="grid2">
+        ${f('tp-panier', 'Panier repas (€/jour/chauffeur)', p.panierRepas, 0.01)}
+        ${f('tp-jpanier', 'Jours de panier / mois', p.joursPanier, 0.01)}
+        ${f('tp-rempl', 'Provision remplacement congés (€/mois/chauffeur)', p.remplacementPerDriver)}
+        ${f('tp-entkm', 'Entretien & consommables (€/km)', p.entretienPerKm, 0.0001)}
+        ${f('tp-audela', 'Tarif livraison au-delà du forfait (% du prix de base)', p.auDelaPct, 1)}
+      </div>
+      <p class="help" style="margin-top:.5rem">💡 Méthode au point : le prix de livraison est calculé sur un <strong>dénominateur pondéré</strong> (points livraison + ratio collecte/livraison × points collecte, réglé dans « Activité & tarif » → mode auto-équilibré). Avec un ratio de 2, la collecte vaut 2× la livraison. La collecte au-delà du forfait est facturée au prix de livraison de base.</p>
+      <div style="margin-top:.6rem"><button class="btn ghost" id="tp-refmodel">📋 Charger le modèle de référence ICS</button></div>
+    </div>
     <button class="btn accent" id="tp-save">Enregistrer tous les paramètres</button>`;
+    // Pré-remplit tous les champs avec les valeurs du fichier de référence ICS.
+    document.getElementById('tp-refmodel').onclick = () => {
+      if (!confirm('Charger les valeurs de référence du fichier « ICS tarif au point » dans le formulaire ? (rien n\'est enregistré tant que vous ne cliquez pas sur « Enregistrer »)')) return;
+      const ref = { 'tp-driver': 2738, 'tp-resp': 3500, 'tp-secr': 2600, 'tp-fg': 150, 'tp-vehicle': 1420, 'tp-tyres': 0, 'tp-cons': 10, 'tp-fuel': 1.60, 'tp-panier': 16.36, 'tp-jpanier': 21.67, 'tp-rempl': 263, 'tp-entkm': 0.0353, 'tp-audela': 50, 'tp-ramaratio2': 2, 'tp-margin': 15, 'tp-cnrref': 234.36, 'tp-cnrcur': 234.36 };
+      for (const id in ref) { const el = document.getElementById(id); if (el) el.value = ref[id]; }
+      const rama = document.getElementById('tp-rama'); if (rama) rama.checked = true;
+      const ramamode = document.getElementById('tp-ramamode'); if (ramamode) ramamode.checked = true;
+      const rr = document.getElementById('tp-ramaratio'); if (rr) rr.value = 2;
+      toast('Modèle de référence chargé — vérifiez puis « Enregistrer ».', 'ok');
+    };
   document.getElementById('tp-save').onclick = async () => {
     const payload = {
       nbDrivers: v('#tp-nbd'), nbResponsables: v('#tp-nbr'), nbSecretaires: v('#tp-nbs'),
@@ -5137,6 +5262,7 @@ function tndParams(body) {
       pointsPerDay: v('#tp-points'), kmPerDay: v('#tp-km'), marginPct: v('#tp-margin'), marginPremiumPct: v('#tp-marginp'), fuelSurchargePct: v('#tp-pg'),
       cnrRef: v('#tp-cnrref'), cnrCurrent: v('#tp-cnrcur'), targetPtsPerHour: v('#tp-tph'), maxKmPerPoint: v('#tp-kpp'),
       ramassage: document.getElementById('tp-rama').checked ? 1 : 0, ramassageMode: document.getElementById('tp-ramamode').checked ? 1 : 0, ramassagePerDay: v('#tp-ramaday'), ramassagePrice: v('#tp-ramaprice'), ramassageRatio: v('#tp-ramaratio'),
+      panierRepas: v('#tp-panier'), joursPanier: v('#tp-jpanier'), remplacementPerDriver: v('#tp-rempl'), entretienPerKm: v('#tp-entkm'), auDelaPct: v('#tp-audela'),
     };
     try { await api('PUT', '/admin/tender', payload); await loadTender(); toast('Paramètres enregistrés.', 'ok'); tndTab('dashboard'); } catch (e) { toast(e.message, 'err'); }
   };
@@ -5160,8 +5286,10 @@ function tenderProposalPDF(p, c) {
       <h2>Objet : proposition de prix de livraison au point</h2>
       <p>Madame, Monsieur,<br>Suite à votre consultation, veuillez trouver notre proposition tarifaire pour la prestation de livraison de colis.</p>
       <table><tbody>
-        <tr><th>Prix par point livré (HT)</th><td class="big">${eur3(c.pricePerPoint)}</td></tr>
-        ${c.rama ? `<tr><th>Prix par point de ramassage (HT)</th><td>${eur3(p.ramassagePrice)}</td></tr>` : ''}
+        <tr><th>Prix par point livré (HT)</th><td class="big">${eur3(c.deliveryPrice)}</td></tr>
+        ${c.rama ? `<tr><th>Prix par point de collecte / enlèvement (HT)</th><td>${eur3(c.pickupPrice)}</td></tr>` : ''}
+        <tr><th>Livraison au-delà du forfait (HT)</th><td>${eur3(c.prixLivraisonAuDela)}</td></tr>
+        ${c.rama ? `<tr><th>Collecte au-delà du forfait (HT)</th><td>${eur3(c.prixCollecteAuDela)}</td></tr>` : ''}
         <tr><th>Volume estimé</th><td>${p.pointsPerDay} points/jour/chauffeur · ${c.drivers} chauffeurs · ${Math.round(c.pointsMonth).toLocaleString('fr-FR')} points/mois</td></tr>
         <tr><th>Chiffre d'affaires mensuel estimé (HT)</th><td>${eur(c.caMonthly)}</td></tr>
         <tr><th>Révision tarifaire</th><td>Indexation gasoil (part ${p.fuelSurchargePct}%) sur l'indice CNR (base 100, mois M-1) — cnr.fr</td></tr>
@@ -5215,14 +5343,96 @@ function contractCompute(k) {
   return { caLivraison, caEnlevement, caForfait, caPrimes, caEquip, caTotal, penalites, resultBrut, resultNet, marginPct, totalPoints, coutReelPoint, resultParVehicule, variationPct, indexPct, cnrPerPoint, cnrDaily, cnrMonthly, cnrYearly, prixRecommande, ecart, gainAnnuel };
 }
 
+// Extraction heuristique des paramètres d'un contrat depuis un texte OCR.
+// Imparfait par nature : tout est PROPOSÉ et relu dans le formulaire.
+function contractExtractFromText(txt) {
+  const t = String(txt || '').replace(/ /g, ' ');
+  const low = t.toLowerCase();
+  const lines = t.split(/\r?\n/);
+  const out = {};
+  // Donneur d'ordre connu.
+  for (const d of CONTRACT_DONNEURS) { if (d !== 'Autre' && low.includes(d.toLowerCase())) { out.name = d; break; } }
+  // Montant (prix/€) sur une ligne contenant un mot-clé.
+  const amountOn = (re) => {
+    for (const ln of lines) {
+      if (!re.test(ln)) continue;
+      const m = ln.match(/(\d{1,3}(?:[ .]\d{3})*(?:[.,]\d{1,3})|\d+[.,]\d{1,3}|\d+)/);
+      if (m) { const n = parseFloat(m[1].replace(/[ ]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.')); if (Number.isFinite(n)) return n; }
+    }
+    return null;
+  };
+  const priceOn = (re) => {
+    for (const ln of lines) {
+      if (!re.test(ln)) continue;
+      const m = ln.match(/(\d+[.,]\d{1,3})\s*(?:€|eur|ht)?/i);
+      if (m) { const n = parseFloat(m[1].replace(',', '.')); if (Number.isFinite(n) && n < 100) return n; }
+    }
+    return null;
+  };
+  const pd = priceOn(/(point|livraison|livr[ée]|colis)/i); if (pd != null) out.priceDelivery = pd;
+  const pp = priceOn(/(enl[èe]vement|collecte|ramassage|pickup)/i); if (pp != null) out.pricePickup = pp;
+  const fd = amountOn(/forfait\s*(journalier|jour|quotidien)/i); if (fd != null) out.dailyFlat = fd;
+  const fv = amountOn(/forfait\s*(v[ée]hicule|camion)/i); if (fv != null) out.vehicleFlat = fv;
+  const ff = amountOn(/forfait\s*(carburant|gazole|gasoil)/i); if (ff != null) out.fuelFlat = ff;
+  // Pénalités selon le motif.
+  const penOn = (re) => amountOn(new RegExp('p[ée]nalit[ée].*' + re.source + '|' + re.source + '.*p[ée]nalit', 'i'));
+  let v;
+  if ((v = penOn(/retard/i)) != null) out.penLate = v;
+  if ((v = penOn(/(r[ée]clamation|litige)/i)) != null) out.penClaim = v;
+  if ((v = penOn(/(échec|echec|non[- ]?livr)/i)) != null) out.penFailedDelivery = v;
+  if ((v = penOn(/absence/i)) != null) out.penAbsence = v;
+  if ((v = penOn(/qualit[ée]/i)) != null) out.penQuality = v;
+  // Part gazole / indexation (%).
+  const gz = low.match(/(?:indexation|gazole|gasoil)[^%]{0,40}?(\d{1,2}(?:[.,]\d)?)\s*%/);
+  if (gz) out.fuelSharePct = parseFloat(gz[1].replace(',', '.'));
+  // Jours / mois.
+  const jm = low.match(/(\d{1,2}(?:[.,]\d{1,2})?)\s*jours?\s*(?:\/|par|ouvr)/);
+  if (jm) { const n = parseFloat(jm[1].replace(',', '.')); if (n >= 15 && n <= 31) out.daysPerMonth = n; }
+  // Dates (du … au …).
+  const dts = [...t.matchAll(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/g)].map((m) => {
+    let y = m[3]; if (y.length === 2) y = '20' + y;
+    return `${y}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  });
+  if (dts[0]) out.startDate = dts[0];
+  if (dts[1]) out.endDate = dts[1];
+  // Secteur.
+  const sec = t.match(/secteur\s*:?\s*([^\n]{2,40})/i);
+  if (sec) out.sector = sec[1].trim().replace(/[.;].*$/, '');
+  return out;
+}
+
 let _contracts = [];
 async function renderContracts(main) {
   if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Contrats donneurs d'ordre</h1>
     <p>Rentabilité par contrat, indexation CNR et tarif à négocier.</p></div>
-    <button class="btn accent" id="ct-new">+ Nouveau contrat</button></div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn" id="ct-ocr">📄 Importer un contrat (OCR)</button><button class="btn accent" id="ct-new">+ Nouveau contrat</button></div></div>
+    <details class="card" id="ct-ocr-box" style="display:none">
+      <summary style="display:none"></summary>
+      <h3 style="margin-top:0">Lecture automatique d'un contrat</h3>
+      <p class="help">Déposez le contrat (PDF ou image). Le système lit le document <strong>localement</strong> (OCR) et pré-remplit une fiche contrat avec les paramètres détectés (prix au point, forfaits, pénalités, indexation gazole, dates…). Tout est <strong>proposé</strong> : relisez et corrigez avant d'enregistrer.</p>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <input type="file" id="ct-file" accept=".pdf,image/*">
+        <button class="btn accent" id="ct-ocr-run">🔍 Lire & pré-remplir</button>
+        <span class="help" id="ct-ocr-status"></span>
+      </div>
+    </details>
     <div id="ct-body" class="empty">Chargement…</div>`;
   document.getElementById('ct-new').onclick = () => contractModal(null);
+  const ocrBox = document.getElementById('ct-ocr-box');
+  document.getElementById('ct-ocr').onclick = () => { ocrBox.style.display = ocrBox.style.display === 'none' ? '' : 'none'; ocrBox.open = true; };
+  document.getElementById('ct-ocr-run').onclick = async () => {
+    const file = document.getElementById('ct-file').files[0];
+    const status = document.getElementById('ct-ocr-status');
+    if (!file) { toast('Choisissez un fichier (PDF ou image).', 'err'); return; }
+    try {
+      const txt = await ocrFileToText(file, status);
+      const params = contractExtractFromText(txt);
+      const n = Object.keys(params).length;
+      status.textContent = n ? `OCR terminé — ${n} paramètre(s) détecté(s), à vérifier.` : 'OCR terminé — aucun paramètre reconnu automatiquement, saisissez manuellement.';
+      contractModal(params, true);
+    } catch (e) { status.textContent = ''; toast('OCR indisponible : ' + e.message, 'err'); }
+  };
   await loadContracts();
 }
 async function loadContracts() {
@@ -5283,12 +5493,13 @@ function contractDetailModal(k) {
   });
 }
 
-function contractModal(k) {
+function contractModal(k, isNew) {
   const e = k || {};
+  const creating = isNew || !k || !k.id; // OCR/préremplissage = création (POST)
   const f = (id, lbl, val, step) => `<div><label>${lbl}</label><input id="${id}" type="number" step="${step || 1}" value="${val != null ? val : ''}"></div>`;
   const donneurOpts = CONTRACT_DONNEURS.map((d) => `<option ${e.name === d ? 'selected' : ''}>${d}</option>`).join('');
   modal({
-    title: k ? 'Modifier le contrat' : 'Nouveau contrat',
+    title: creating ? 'Nouveau contrat' : 'Modifier le contrat',
     bodyHTML: `
       <div class="grid2">
         <div><label>Nom du contrat</label><input id="k-name" list="k-donneurs" value="${esc(e.name || '')}" placeholder="GLS, FedEx, DPD…"><datalist id="k-donneurs">${donneurOpts}</datalist></div>
@@ -5317,7 +5528,7 @@ function contractModal(k) {
       <div class="grid2">${f('k-p1', 'Échec de livraison', e.penFailedDelivery, 0.01)}${f('k-p2', 'Retard', e.penLate, 0.01)}${f('k-p3', 'Absence chauffeur', e.penAbsence, 0.01)}${f('k-p4', 'Réclamation client', e.penClaim, 0.01)}${f('k-p5', 'Non-respect qualité', e.penQuality, 0.01)}</div>
       <h4 style="margin:.7rem 0 .3rem">Indexation CNR & objectif</h4>
       <div class="grid2">${f('k-fref', 'Gazole référence (€/L)', e.fuelRef != null ? e.fuelRef : 1.5, 0.01)}${f('k-fcur', 'Gazole actuel (€/L)', e.fuelCurrent != null ? e.fuelCurrent : 1.5, 0.01)}${f('k-fs', 'Part carburant (%)', e.fuelSharePct != null ? e.fuelSharePct : 10, 1)}${f('k-mt', 'Marge cible (%)', e.marginTargetPct != null ? e.marginTargetPct : 12, 0.5)}</div>`,
-    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="k-save">${k ? 'Enregistrer' : 'Créer'}</button>`,
+    footHTML: `${creating && (e.priceDelivery != null || e.name) ? '<span class="help" style="margin-right:auto">📄 Valeurs pré-remplies par OCR — à vérifier</span>' : ''}<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="k-save">${creating ? 'Créer' : 'Enregistrer'}</button>`,
     onMount: (ov) => { ov.querySelector('#k-save').onclick = async () => {
       const g = (s) => ov.querySelector(s).value;
       const payload = { name: g('#k-name'), sector: g('#k-sector'), startDate: g('#k-start'), endDate: g('#k-end'), vehicles: g('#k-vehicles'), daysPerMonth: g('#k-days'), deliveries: g('#k-deliveries'), pickups: g('#k-pickups'), monthlyCost: g('#k-cost'), priceDelivery: g('#k-pd'), pricePickup: g('#k-pp'), dailyFlat: g('#k-fd'), vehicleFlat: g('#k-fv'), fuelFlat: g('#k-ff'), bonusQuality: g('#k-bq'), bonusPerf: g('#k-bp'), bonusProd: g('#k-bpr'), penFailedDelivery: g('#k-p1'), penLate: g('#k-p2'), penAbsence: g('#k-p3'), penClaim: g('#k-p4'), penQuality: g('#k-p5'), fuelRef: g('#k-fref'), fuelCurrent: g('#k-fcur'), fuelSharePct: g('#k-fs'), marginTargetPct: g('#k-mt'),
@@ -5325,7 +5536,7 @@ function contractModal(k) {
         degressivePickup: ov.querySelector('#k-degp').checked ? 1 : 0, pickupThreshold: g('#k-pthr'), pricePickupDeg: g('#k-ppdeg'),
         flocage: g('#k-flocage'), tenues: g('#k-tenues') };
       if (!payload.name.trim()) { toast('Nom du contrat obligatoire.', 'err'); return; }
-      try { await api(k ? 'PUT' : 'POST', '/admin/contracts' + (k ? '/' + k.id : ''), payload); closeModal(); loadContracts(); toast('Enregistré.', 'ok'); }
+      try { await api(creating ? 'POST' : 'PUT', '/admin/contracts' + (creating ? '' : '/' + k.id), payload); closeModal(); loadContracts(); toast('Enregistré.', 'ok'); }
       catch (err) { toast(err.message, 'err'); }
     }; },
   });
