@@ -441,6 +441,8 @@ tr:last-child td { border-bottom: 0; }
 
 .impact-row { display: flex; align-items: center; gap: .55rem; padding: .35rem 0; border-bottom: 1px solid var(--border); font-size: .9rem; }
 .impact-row .btn { margin-left: auto; }
+.disc-bar { display: block; height: 12px; background: #eef2f7; border-radius: 6px; overflow: hidden; margin-bottom: .15rem; }
+.disc-bar > span { display: block; height: 100%; border-radius: 6px; transition: width .25s; }
 .dm-retard-list { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; }
 .dm-retard-chip { display: inline-flex; align-items: center; gap: .35rem; font-size: .82rem; padding: .25rem .6rem; border: 1px solid var(--border); border-radius: 999px; background: #fff; cursor: pointer; }
 .dm-retard-chip input { margin: 0; }
