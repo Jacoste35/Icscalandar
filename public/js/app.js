@@ -443,7 +443,8 @@ function navSections() {
   if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
   // Exploitation & Transport
   const exp = [];
-  if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
+  // Gestion des Tournées masquée pour le moment (à la demande).
+  // if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
   if (admin || staff) exp.push({ id: 'geoloc', icon: '🛰️', label: 'Géolocalisation' });
   if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Carburant' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
@@ -2811,9 +2812,9 @@ async function renderVehicleManagement(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des véhicules</h1>
     <p>Suivi de la flotte, alertes d'entretien, signalements et tours de véhicule.</p></div></div>
     <div class="view-switch" id="veh-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-vtab="suivi" class="active">Suivi & alertes</button>
+      <button data-vtab="tour" class="active">Tour du véhicule</button>
+      <button data-vtab="suivi">Suivi & alertes</button>
       <button data-vtab="pending">Demandes concernant les véhicules en attente <span id="veh-pending-badge"></span></button>
-      <button data-vtab="tour">Tour du véhicule</button>
     </div>
     <div id="veh-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#veh-tabs');
@@ -2823,7 +2824,7 @@ async function renderVehicleManagement(main) {
     vehTab(b.dataset.vtab);
   });
   await loadFleet();
-  vehTab('suivi');
+  vehTab('tour');
 }
 
 async function loadFleet() {
@@ -3893,39 +3894,42 @@ async function docMgmtGen(main) {
   try { templates = (await api('GET', '/admin/erp/templates')).templates; meta = await api('GET', '/admin/erp/meta'); docOpts = await api('GET', '/admin/erp/doc-options'); }
   catch (e) { document.getElementById('dm-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
   const motifs = docOpts.motifs || [], faitsList = docOpts.faits || [];
-  const cats = {};
-  Object.entries(templates).forEach(([k, v]) => { (cats[v.category || 'Autres'] = cats[v.category || 'Autres'] || []).push([k, v.label]); });
-  const optgroups = Object.keys(cats).map((c) => `<optgroup label="${esc(c)}">${cats[c].map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</optgroup>`).join('');
+  // Seuls les documents disciplinaires sont proposés (avertissement + mises à pied).
+  const DISC_TYPES = ['avertissement', 'mise_a_pied_disciplinaire', 'mise_a_pied_conservatoire'];
+  const typeOpts = DISC_TYPES.filter((k) => templates[k]).map((k) => {
+    const cond = k !== 'avertissement';
+    return `<option value="${k}"${cond ? ' disabled data-cond="1"' : ''}>${esc(templates[k].label)}${cond ? ' — (verrouillé)' : ''}</option>`;
+  }).join('');
   // Salariés rangés par groupe.
   const byGroup = {}; (meta.users || []).forEach((u) => { const g = u.groupName || 'Sans groupe'; (byGroup[g] = byGroup[g] || []).push(u); });
   const userOpts = Object.keys(byGroup).sort().map((g) => `<optgroup label="${esc(g)}">${byGroup[g].sort((a, b) => a.name.localeCompare(b.name)).map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</optgroup>`).join('');
   const customTpls = Object.entries(templates).filter(([, v]) => v.custom);
   const body = document.getElementById('dm-body'); body.className = '';
-  body.innerHTML = `<div class="card"><h3>Générer un document</h3>
+  body.innerHTML = `<div class="card"><h3>Générer un document disciplinaire</h3>
       <div class="grid2">
-        <div><label>Type de document</label><select id="dm-type">${optgroups}</select></div>
-        <div><label>Salarié concerné (si applicable)</label><select id="dm-user"><option value="">—</option>${userOpts}</select></div>
+        <div><label>Type de document</label><select id="dm-type">${typeOpts}</select>
+          <p class="help" id="dm-type-note" style="margin:.3rem 0 0">Les mises à pied se déverrouillent selon le nombre d'avertissements déjà notifiés et la gravité du motif.</p></div>
+        <div><label>Salarié concerné</label><select id="dm-user"><option value="">—</option>${userOpts}</select></div>
       </div>
       <div class="grid2">
         <div>
           <label>Motif / objet</label>
-          <select id="dm-motif-sel"><option value="">— choisir un motif courant —</option>${motifs.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}<option value="__free__">✏️ Autre (saisie libre)…</option></select>
+          <select id="dm-motif-sel"><option value="">— choisir un motif —</option>${motifs.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}<option value="__free__">✏️ Autre (saisie libre)…</option></select>
           <div id="dm-motif-freewrap" style="display:none;margin-top:.4rem"><input id="dm-motif-free" placeholder="Saisissez le motif"><button class="btn ghost sm" id="dm-motif-save" style="margin-top:.3rem">💾 Ajouter à la liste</button></div>
         </div>
-        <div>
-          <label>Champ libre (faits, clause, rémunération…)</label>
-          <select id="dm-faits-sel"><option value="">— insérer un texte type —</option>${faitsList.map((f, i) => `<option value="${i}">${esc(f.label)}</option>`).join('')}<option value="__free__">✏️ Écrire librement…</option></select>
-          <textarea id="dm-faits-text" style="min-height:90px;margin-top:.4rem" placeholder="Texte inséré dans le document (modifiable)."></textarea>
-          <button class="btn ghost sm" id="dm-faits-save">💾 Enregistrer ce texte comme modèle</button>
-        </div>
+        <div id="dm-ctx-box"><label>Dossier disciplinaire</label><div id="dm-ctx" class="help" style="padding:.5rem .6rem;background:#f8fafc;border:1px solid var(--border);border-radius:8px;min-height:38px">Sélectionnez un salarié et un motif.</div></div>
+      </div>
+      <div id="dm-retards-wrap" style="display:none;margin-top:.6rem">
+        <label>📅 Dates de retard à intégrer au document (issues du calendrier — code RET)</label>
+        <div id="dm-retards" class="dm-retard-list"></div>
       </div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
         <button class="btn accent" id="dm-gen">Aperçu</button>
         <button class="btn" id="dm-pdf">⬇️ Exporter en PDF</button>
         <button class="btn ok" id="dm-issue" style="display:none">✅ Valider & adresser au salarié</button>
-        <button class="btn ghost" id="dm-sanction" style="display:none">Enregistrer comme avertissement (dossier salarié)</button>
+        <button class="btn ghost" id="dm-sanction" style="display:none">Enregistrer au dossier du salarié</button>
       </div>
-      <p class="help">Le brouillon est éditable avant export. La structure juridique (CCN Transports routiers IDCC 16) est automatique ; vous remplissez les champs.</p>
+      <p class="help">Les faits sont rédigés automatiquement à partir du motif ; un encart vous demande de compléter les éléments variables (dates, véhicule, description). Le brouillon reste éditable avant export. Cadre : CCN Transports routiers IDCC 16.</p>
     </div>
     <div class="card"><h3>Modèles de lettre</h3>
       <p class="help">Enrichissez la base : créez un nouveau modèle ou importez le contenu d'une lettre type. Variables disponibles : <code>{{salarie.fullName}}</code>, <code>{{salarie.lastName}}</code>, <code>{{salarie.address}}</code>, <code>{{motif}}</code>, <code>{{faits}}</code>, <code>{{date}}</code>, <code>{{company.legal}}</code>, <code>{{company.address}}</code>.</p>
@@ -3934,30 +3938,83 @@ async function docMgmtGen(main) {
     </div>
     <div id="dm-preview"></div>`;
   const effMotif = () => { const s = body.querySelector('#dm-motif-sel'); return s.value === '__free__' ? body.querySelector('#dm-motif-free').value.trim() : s.value; };
-  const collectVars = () => {
+  let _discCtx = null;
+  const selectedRetards = () => [...body.querySelectorAll('.dm-ret:checked')].map((c) => c.value);
+  // Pré-remplit un placeholder connu [token].
+  const prefillFor = (tok) => { const t = tok.toLowerCase(); if (/v[ée]hicule|mat[ée]riel/.test(t)) return (_discCtx && _discCtx.vehicle) || ''; if (/date/.test(t)) return new Date().toLocaleDateString('fr-FR'); return ''; };
+  // Détecte les [tokens] restant à compléter et ouvre un popup ; renvoie le
+  // texte des faits complété (ou null si annulé).
+  const fillPlaceholders = (faits) => new Promise((resolve) => {
+    const toks = []; const re = /\[([^\]]+)\]/g; let m; while ((m = re.exec(faits))) { if (!toks.includes(m[0])) toks.push(m[0]); }
+    if (!toks.length) { resolve(faits); return; }
+    const rows = toks.map((tk, i) => `<div style="margin:.45rem 0"><label>${esc(tk)}</label><input id="ph-${i}" value="${esc(prefillFor(tk))}" placeholder="à compléter"></div>`).join('');
+    modal({
+      title: 'Compléter les informations du document',
+      bodyHTML: `<p class="help">Renseignez les éléments variables détectés dans les faits. Les valeurs déjà connues (véhicule attribué, date du jour) sont pré-remplies.</p>${rows}`,
+      footHTML: `<button class="btn ghost" id="ph-cancel">Annuler</button><button class="btn accent" id="ph-ok">Insérer dans le document</button>`,
+      onMount: (ov) => {
+        ov.querySelector('#ph-cancel').onclick = () => { closeModal(); resolve(null); };
+        ov.querySelector('#ph-ok').onclick = () => { let out = faits; toks.forEach((tk, i) => { const val = (ov.querySelector('#ph-' + i).value || '').trim() || tk; out = out.split(tk).join(val); }); closeModal(); resolve(out); };
+      },
+    });
+  });
+  // Construit le texte des faits (motif → phrase type, dates de retard, popup).
+  const buildFaits = async () => {
+    const motif = effMotif();
+    let faits = motifFacts(motif);
+    if (/retard/i.test(motif)) {
+      const dates = selectedRetards();
+      if (dates.length) { const txt = dates.map((d) => fmtDate(d)).join(', '); faits = faits.split('[dates]').join(txt).split('[date]').join(txt); }
+    }
+    return fillPlaceholders(faits);
+  };
+  const collectVars = (faits) => {
     const uid = body.querySelector('#dm-user').value; const u = (meta.users || []).find((x) => x.id === uid);
-    const motif = effMotif(), faits = body.querySelector('#dm-faits-text').value;
+    const motif = effMotif();
+    const mp = (_discCtx && _discCtx.miseAPied) || {};
     return {
       motif, faits,
+      miseAPied: mp,
+      retards: { count: selectedRetards().length, dates: selectedRetards() },
       salarie: u ? { fullName: u.name, lastName: (u.lastName || u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: u.address || '', birthDate: u.birthDate || '', hireDate: u.hireDate || '', poste: 'conducteur VL ≤ 3,5 T', coefficient: '110M' } : {},
-      contrat: { type: 'CDI', lieu: 'Éterville (14930) et déplacements', horaires: '151,67 h/mois (35 h hebdomadaires)', remuneration: faits || 'selon grille — à compléter', motif, objet: motif, clause: faits, dateEffet: '', terme: '', lastDay: '', detail: faits },
+      contrat: { type: 'CDI', lieu: 'Éterville (14930) et déplacements', horaires: '151,67 h/mois (35 h hebdomadaires)', motif, objet: motif, detail: faits },
     };
+  };
+  // Met à jour le dossier disciplinaire (compteur, éligibilité mises à pied, retards).
+  const optD = body.querySelector('#dm-type option[value="mise_a_pied_disciplinaire"]');
+  const optC = body.querySelector('#dm-type option[value="mise_a_pied_conservatoire"]');
+  const typeSel = body.querySelector('#dm-type');
+  const refreshContext = async () => {
+    const uid = body.querySelector('#dm-user').value; const motif = effMotif();
+    const ctxEl = body.querySelector('#dm-ctx'); const rw = body.querySelector('#dm-retards-wrap');
+    if (!uid || !motif) {
+      _discCtx = null; ctxEl.textContent = 'Sélectionnez un salarié et un motif.';
+      if (optD) optD.disabled = true; if (optC) optC.disabled = true; rw.style.display = 'none'; return;
+    }
+    try { _discCtx = await api('GET', '/admin/erp/documents/disciplinary-context?userId=' + encodeURIComponent(uid) + '&motif=' + encodeURIComponent(motif)); }
+    catch (e) { _discCtx = null; ctxEl.textContent = 'Contexte indisponible.'; return; }
+    const mp = _discCtx.miseAPied || {};
+    const allowDisc = !!mp.proposed && /disciplinaire/i.test(mp.type || '') && (mp.gravite || 0) < 4;
+    const allowCons = !!mp.proposed && ((mp.gravite || 0) >= 4 || /conservatoire/i.test(mp.type || ''));
+    if (optD) { optD.disabled = !allowDisc; optD.textContent = 'Mise à pied disciplinaire' + (allowDisc ? ` — ${mp.jours} jour(s) proposé(s)` : ' — (verrouillé)'); }
+    if (optC) { optC.disabled = !allowCons; optC.textContent = 'Mise à pied conservatoire' + (allowCons ? ' — disponible' : ' — (verrouillé)'); }
+    if (typeSel.options[typeSel.selectedIndex] && typeSel.options[typeSel.selectedIndex].disabled) { typeSel.value = 'avertissement'; }
+    ctxEl.innerHTML = `<strong>${_discCtx.warningCount}</strong> avertissement(s) au dossier · gravité ${esc(mp.graviteLabel || '—')} · ${mp.proposed ? `mise à pied <strong>${esc(mp.type || '')}</strong>${mp.jours ? ` (${mp.jours} j)` : ''} désormais proportionnée` : `mise à pied non encore proportionnée (seuil ${mp.seuil != null ? mp.seuil : '—'})`}${_discCtx.vehicle ? ` · véhicule : ${esc(_discCtx.vehicle)}` : ''}`;
+    const isRet = /retard/i.test(motif);
+    rw.style.display = isRet ? '' : 'none';
+    if (isRet) {
+      const dl = _discCtx.retardDates || [];
+      body.querySelector('#dm-retards').innerHTML = dl.length
+        ? dl.map((d) => `<label class="dm-retard-chip"><input type="checkbox" class="dm-ret" value="${d}" checked> ${fmtDate(d)}</label>`).join('')
+        : '<span class="help">Aucun retard validé (RET) au calendrier pour ce salarié.</span>';
+    }
   };
   // Motif : bascule saisie libre + enregistrement d'un nouveau motif.
   const motifSel = body.querySelector('#dm-motif-sel');
-  motifSel.onchange = () => { body.querySelector('#dm-motif-freewrap').style.display = motifSel.value === '__free__' ? 'block' : 'none'; };
+  motifSel.onchange = () => { body.querySelector('#dm-motif-freewrap').style.display = motifSel.value === '__free__' ? 'block' : 'none'; refreshContext(); };
   body.querySelector('#dm-motif-save').onclick = async () => {
     const m = body.querySelector('#dm-motif-free').value.trim(); if (!m) { toast('Saisissez un motif.', 'err'); return; }
     try { await api('POST', '/admin/erp/doc-options/motif', { motif: m }); toast('Motif ajouté à la liste.', 'ok'); renderDocMgmt(main); }
-    catch (e) { toast(e.message, 'err'); }
-  };
-  // Faits : insère le texte type choisi dans la zone éditable.
-  const faitsSel = body.querySelector('#dm-faits-sel'), faitsText = body.querySelector('#dm-faits-text');
-  faitsSel.onchange = () => { if (faitsSel.value === '__free__') { faitsText.value = ''; faitsText.focus(); } else if (faitsSel.value !== '') { const f = faitsList[+faitsSel.value]; if (f) faitsText.value = f.text; } };
-  body.querySelector('#dm-faits-save').onclick = async () => {
-    const text = faitsText.value.trim(); if (!text) { toast('La zone de texte est vide.', 'err'); return; }
-    const label = prompt('Nom de ce modèle de texte ?'); if (!label) return;
-    try { await api('POST', '/admin/erp/doc-options/fait', { label, text }); toast('Texte enregistré comme modèle.', 'ok'); renderDocMgmt(main); }
     catch (e) { toast(e.message, 'err'); }
   };
   // Modèles de lettre : créer/importer, éditer, supprimer.
@@ -3968,28 +4025,52 @@ async function docMgmtGen(main) {
     try { await api('DELETE', '/admin/erp/templates/' + b.dataset.tpldel); toast('Modèle supprimé.', 'ok'); renderDocMgmt(main); }
     catch (e) { toast(e.message, 'err'); }
   });
-  const showSanctionBtn = () => { body.querySelector('#dm-sanction').style.display = body.querySelector('#dm-type').value === 'avertissement' ? 'inline-block' : 'none'; };
-  body.querySelector('#dm-type').onchange = showSanctionBtn; showSanctionBtn();
+  const syncBtns = () => { const uid = body.querySelector('#dm-user').value; body.querySelector('#dm-issue').style.display = uid ? 'inline-block' : 'none'; body.querySelector('#dm-sanction').style.display = uid ? 'inline-block' : 'none'; };
+  body.querySelector('#dm-user').addEventListener('change', () => { syncBtns(); refreshContext(); });
+  body.querySelector('#dm-type').addEventListener('change', syncBtns);
+  syncBtns();
   body.querySelector('#dm-gen').onclick = async () => {
-    try { const { html } = await api('POST', '/admin/erp/documents/render', { type: body.querySelector('#dm-type').value, vars: collectVars() });
+    if (!effMotif()) { toast('Choisissez un motif.', 'err'); return; }
+    const faits = await buildFaits(); if (faits == null) return;
+    try { const { html } = await api('POST', '/admin/erp/documents/render', { type: body.querySelector('#dm-type').value, vars: collectVars(faits) });
       body.querySelector('#dm-preview').innerHTML = `<div class="card"><div contenteditable="true" style="background:#fff;color:#111;padding:18px;border-radius:8px;outline:none">${html}</div></div>`;
     } catch (e) { toast(e.message, 'err'); }
   };
-  body.querySelector('#dm-pdf').onclick = () => erpOpenHtml('POST', '/admin/erp/documents/print', { type: body.querySelector('#dm-type').value, vars: collectVars() });
-  // Affiche « Adresser au salarié » dès qu'un salarié est sélectionné.
-  const syncIssue = () => { body.querySelector('#dm-issue').style.display = body.querySelector('#dm-user').value ? 'inline-block' : 'none'; };
-  body.querySelector('#dm-user').addEventListener('change', syncIssue); syncIssue();
+  body.querySelector('#dm-pdf').onclick = async () => {
+    if (!effMotif()) { toast('Choisissez un motif.', 'err'); return; }
+    const faits = await buildFaits(); if (faits == null) return;
+    erpOpenHtml('POST', '/admin/erp/documents/print', { type: body.querySelector('#dm-type').value, vars: collectVars(faits) });
+  };
   body.querySelector('#dm-issue').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
+    if (!effMotif()) { toast('Choisissez un motif.', 'err'); return; }
+    const faits = await buildFaits(); if (faits == null) return;
     if (!confirm('Adresser ce document au salarié ? Il devra en accuser réception dans l\'application.')) return;
-    try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: body.querySelector('#dm-type').value, vars: collectVars() }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
+    try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: body.querySelector('#dm-type').value, vars: collectVars(faits) }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
     catch (e) { toast(e.message, 'err'); }
   };
   body.querySelector('#dm-sanction').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
-    try { await api('POST', '/admin/erp/documents/save-sanction', { userId: uid, type: 'Avertissement', motif: effMotif() }); toast('Avertissement enregistré au dossier du salarié.', 'ok'); }
+    const lbl = templates[body.querySelector('#dm-type').value] ? templates[body.querySelector('#dm-type').value].label : 'Avertissement';
+    try { await api('POST', '/admin/erp/documents/save-sanction', { userId: uid, type: lbl, motif: effMotif() }); toast('Enregistré au dossier du salarié.', 'ok'); refreshContext(); }
     catch (e) { toast(e.message, 'err'); }
   };
+}
+
+// Phrases-type des faits selon le motif (avec [placeholders] à compléter).
+const MOTIF_FACTS = {
+  'Retards répétés': "Aux dates suivantes : [dates], vous vous êtes présenté(e) à votre poste avec un retard injustifié, désorganisant le service et l'exécution des tournées de livraison.",
+  "Dégradation du matériel de l'entreprise": "Le [date], une négligence de votre part a entraîné [dégradation / incident] sur [matériel / véhicule], occasionnant un préjudice pour l'entreprise.",
+  "Négligence dans l'exécution du travail": "Le [date], une négligence de votre part a entraîné [dégradation / incident] sur [matériel / véhicule], occasionnant un préjudice pour l'entreprise.",
+  'Absence injustifiée': "Le [date], vous avez été absent(e) de votre poste sans justification ni autorisation préalable, désorganisant le service et les tournées.",
+  'Abandon de poste': "Le [date], vous avez quitté votre poste sans autorisation et sans en informer la Direction, abandonnant les missions qui vous étaient confiées.",
+  'Non-respect des consignes de sécurité': "Le [date], vous n'avez pas respecté les consignes de sécurité suivantes : [consignes concernées], exposant des personnes et le matériel à un risque.",
+  "Insubordination / refus d'exécuter une tâche": "Le [date], vous avez refusé d'exécuter [tâche demandée] qui relevait de vos fonctions, malgré la demande explicite de votre responsable.",
+  'Utilisation non autorisée du véhicule de service': "Le [date], vous avez utilisé le [matériel / véhicule] à des fins non autorisées, en dehors du cadre de vos missions.",
+  'Non-respect des temps de conduite et de repos': "Le [date], il a été constaté un non-respect des temps de conduite et de repos réglementaires sur [véhicule], en infraction avec la réglementation sociale européenne.",
+};
+function motifFacts(motif) {
+  return MOTIF_FACTS[motif] || "Le [date], il a été constaté les faits suivants : [description des faits], constitutifs d'un manquement à vos obligations contractuelles.";
 }
 
 // Création / édition / import d'un modèle de lettre.

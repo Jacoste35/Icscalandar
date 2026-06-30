@@ -163,6 +163,51 @@ function geoCostBar(c) {
   return GEO_POLES.map(([k, lbl, col]) => c[k] > 0 && c.total > 0
     ? `<span class="geo-cost-seg" style="width:${(c[k] / c.total * 100).toFixed(1)}%;background:${col}" title="${lbl} : ${euroFmt(c[k])}"></span>` : '').join('');
 }
+
+// Graphique à barres horizontales (SVG inline, sans JS — fonctionne aussi en PDF).
+// items : [{ label, value, valueLabel, color }]. Trié dans l'ordre fourni.
+function geoSvgBars(items, opts) {
+  opts = opts || {};
+  if (!items || !items.length) return '';
+  const W = opts.width || 540, rowH = 26, padT = 6, labelW = opts.labelW || 160, valW = 64;
+  const barMax = W - labelW - valW;
+  const max = Math.max(1, ...items.map((i) => i.value || 0));
+  const H = items.length * rowH + padT * 2;
+  const rows = items.map((it, i) => {
+    const y = padT + i * rowH + 4;
+    const bw = Math.max(2, (it.value || 0) / max * barMax);
+    const col = it.color || '#2563eb';
+    return `<text x="0" y="${y + 12}" font-size="11" fill="#334155">${esc(String(it.label).slice(0, 26))}</text>`
+      + `<rect x="${labelW}" y="${y}" width="${bw.toFixed(1)}" height="16" rx="3" fill="${col}"/>`
+      + `<text x="${(labelW + bw + 5).toFixed(1)}" y="${y + 12}" font-size="11" font-weight="700" fill="#0f172a">${esc(String(it.valueLabel != null ? it.valueLabel : it.value))}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;height:auto" font-family="-apple-system,Segoe UI,sans-serif" role="img">${rows}</svg>`;
+}
+// Couleur d'une barre selon son rang (le plus cher = rouge, le moins = vert).
+function geoRankColor(i, n) {
+  if (n <= 1) return '#2563eb';
+  const t = i / (n - 1); // 0 (1er) -> 1 (dernier)
+  if (t < 0.34) return '#dc2626';
+  if (t > 0.66) return '#16a34a';
+  return '#f59e0b';
+}
+// Graphique du coût d'utilisation du jour (du plus cher au moins cher).
+function geoCostChartData(positions) {
+  return (positions || []).filter((p) => p.cost && p.cost.total > 0)
+    .sort((a, b) => b.cost.total - a.cost.total)
+    .map((p, i, arr) => ({ label: geoVehLabel(p), value: p.cost.total, valueLabel: euroFmt(p.cost.total), color: geoRankColor(i, arr.length) }));
+}
+// Excès du jour agrégés par chauffeur (sinon par véhicule).
+function geoExcessByDriver(positions) {
+  const by = {};
+  (positions || []).forEach((p) => {
+    const n = (p.overspeed && p.overspeed.count) || 0; if (!n) return;
+    const key = p.driverName || geoVehLabel(p);
+    (by[key] = by[key] || { label: key, value: 0 }).value += n;
+  });
+  return Object.values(by).sort((a, b) => b.value - a.value)
+    .map((it, i, arr) => ({ ...it, valueLabel: it.value + ' excès', color: geoRankColor(i, arr.length) }));
+}
 function geolocCostHTML(positions) {
   const items = (positions || []).filter((p) => p.cost && p.cost.total > 0).sort((a, b) => b.cost.total - a.cost.total);
   if (!items.length) return '';
@@ -176,7 +221,10 @@ function geolocCostHTML(positions) {
       <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h · ${c.km} km · ${litFmt(c.liters)} — Salarié <strong>${euroFmt(c.salarie)}</strong> · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong>${c.vehiculeFixe ? ` <span class="help">(dont leasing+assurance ${euroFmt(c.vehiculeFixe)})</span>` : ''}</div>
     </div>`;
   }).join('');
+  const chart = geoSvgBars(geoCostChartData(items));
   return `<p class="help">Total flotte aujourd'hui : <strong>${euroFmt(grand.total)}</strong> — cumul jusqu'au retour au dépôt ou 18h.</p>
+    <div class="geo-pdf-row"><button class="btn ghost sm" data-geopdf-cost="1">📄 Exporter (tableau + graphique)</button></div>
+    <div class="geo-chart-wrap geo-chart-pc"><div class="geo-chart-title">Classement — du plus cher au moins cher</div>${chart}</div>
     <div class="geo-cost-legend">${GEO_POLES.map(([k, lbl, col]) => `<span><i style="background:${col}"></i>${lbl} ${euroFmt(grand[k])}</span>`).join('')}</div>
     <div class="geo-cost-bar geo-cost-grand">${geoCostBar(grand)}</div>
     ${rows}`;
@@ -207,7 +255,10 @@ function geolocSpeedTableHTML(positions, cfg) {
       ${chips ? `<div class="geo-ex-chips">${chips}</div>` : ''}
     </div>`;
   }).join('');
+  const chart = geoSvgBars(geoExcessByDriver(positions));
   return `<p class="help">Entre ${esc(cfg.dayStart || '05:00')} et ${esc(cfg.dayEnd || '18:00')} — <strong>vitesse relevée / limite autorisée</strong> (km/h). Limite de la route si connue, sinon seuil ${limit}. Total du jour : <strong>${total}</strong>.</p>
+    <div class="geo-pdf-row"><button class="btn ghost sm" data-geopdf-exday="1">📄 Exporter (tableau + graphique)</button></div>
+    ${chart ? `<div class="geo-chart-wrap geo-chart-pc"><div class="geo-chart-title">Excès par chauffeur (aujourd'hui)</div>${chart}</div>` : ''}
     ${cards}`;
 }
 
@@ -237,10 +288,43 @@ function geolocWeeklyRecapHTML(recap, cfg) {
   const vehSet = {};
   recap.forEach((w) => (w.vehicles || []).forEach((v) => { vehSet[v.label] = true; }));
   const pdfBtns = Object.keys(vehSet).map((lbl) => `<button class="btn ghost sm" data-geopdf-recap="${encodeURIComponent(lbl)}">📄 ${esc(lbl)}</button>`).join(' ');
+  // Projection 12 mois (3 mois glissants ≈ 1/4 d'année).
+  const yearE = grandE * 4, yearL = grandL * 4;
+  // Graphique global d'impact : total des excès par véhicule/chauffeur sur 3 mois.
+  const chart = geoSvgBars(geoRecapByVehicle(recap));
+  // Sélecteur d'export par groupe ou flotte entière.
+  const groups = geoRecapGroupOptions();
+  const grpSel = `<div class="geo-pdf-row"><span class="help">Exporter (tableau + graphique) :</span>
+    <select data-georecap-grp style="width:auto">${groups.map((g) => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('')}</select>
+    <button class="btn ghost sm" data-geopdf-recapgrp="1">📄 Générer</button></div>`;
   return `<div class="geo-recap-sum">📊 Sur 3 mois : <strong>${grandTotal}</strong> excès · sur-conso <strong>${litFmt(grandL)}</strong> · <strong>${euroFmt(grandE)}</strong></div>
-    ${pdfBtns ? `<div class="geo-pdf-row"><span class="help">PDF à envoyer aux chauffeurs :</span> ${pdfBtns}</div>` : ''}
+    <div class="geo-recap-proj">📅 Projeté sur 12 mois à ce rythme : <strong>${euroFmt(yearE)}/an</strong> gaspillés (≈ ${litFmt(yearL)} de carburant). Lever le pied, c'est de la sécurité et des économies pour tous.</div>
+    ${chart ? `<div class="geo-chart-wrap"><div class="geo-chart-title">Impact par chauffeur — total des excès (3 mois)</div>${chart}</div>` : ''}
+    ${grpSel}
+    ${pdfBtns ? `<div class="geo-pdf-row"><span class="help">PDF individuel :</span> ${pdfBtns}</div>` : ''}
     ${cards}
     ${empties ? `<p class="help">${empties} semaine(s) sans excès sur la période.</p>` : ''}`;
+}
+// Total des excès par véhicule/chauffeur sur la période (pour le graphique global).
+function geoRecapByVehicle(recap) {
+  const by = {};
+  (recap || []).forEach((w) => (w.vehicles || []).forEach((v) => { (by[v.label] = by[v.label] || { label: geoRecapDriverLabel(v.label), value: 0 }).value += v.count || 0; }));
+  return Object.values(by).sort((a, b) => b.value - a.value)
+    .map((it, i, arr) => ({ ...it, valueLabel: it.value + ' excès', color: geoRankColor(i, arr.length) }));
+}
+// Résout le nom du chauffeur attribué à un libellé véhicule (via les positions).
+function geoRecapDriverLabel(vehLabel) {
+  const d = _geoLastData; if (!d) return vehLabel;
+  const p = (d.positions || []).find((x) => geoVehLabel(x) === vehLabel);
+  return (p && p.driverName) ? `${p.driverName}` : vehLabel;
+}
+// Groupes disponibles à l'export (depuis les positions) + flotte entière.
+function geoRecapGroupOptions() {
+  const opts = [{ id: '__all__', name: 'Flotte entière' }];
+  const seen = {};
+  const d = _geoLastData;
+  (d && d.positions || []).forEach((p) => { if (p.groupId && p.groupName && !seen[p.groupId]) { seen[p.groupId] = 1; opts.push({ id: p.groupId, name: p.groupName }); } });
+  return opts;
 }
 
 // Bloc accueil (encadrement) : menu déroulant « Véhicules en temps réel ».
@@ -300,6 +384,53 @@ let _geoLastData = null;
 function geoBindPdfButtons(scope) {
   scope.querySelectorAll('[data-geopdf-day]').forEach((b) => b.onclick = () => geoExcessDayPdf(b.getAttribute('data-geopdf-day')));
   scope.querySelectorAll('[data-geopdf-recap]').forEach((b) => b.onclick = () => geoRecapPdf(decodeURIComponent(b.getAttribute('data-geopdf-recap'))));
+  scope.querySelectorAll('[data-geopdf-cost]').forEach((b) => b.onclick = () => geoCostExportPdf());
+  scope.querySelectorAll('[data-geopdf-exday]').forEach((b) => b.onclick = () => geoExcessFleetPdf());
+  scope.querySelectorAll('[data-geopdf-recapgrp]').forEach((b) => b.onclick = () => { const sel = scope.querySelector('[data-georecap-grp]'); geoRecapGroupPdf(sel ? sel.value : ''); });
+}
+
+// Export « coût du jour » : tableau + graphique dans une fenêtre imprimable.
+function geoCostExportPdf() {
+  const d = _geoLastData; if (!d) return;
+  const items = (d.positions || []).filter((p) => p.cost && p.cost.total > 0).sort((a, b) => b.cost.total - a.cost.total);
+  if (!items.length) { toast('Aucun coût à exporter aujourd\'hui.', 'info'); return; }
+  const grandTotal = items.reduce((s, p) => s + p.cost.total, 0);
+  const dateStr = new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const rows = items.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(geoVehLabel(p))}</td><td>${esc(p.cost.driverName || '—')}</td><td style="text-align:right">${euroFmt(p.cost.salarie)}</td><td style="text-align:right">${euroFmt(p.cost.carburant)}</td><td style="text-align:right">${euroFmt(p.cost.vehicule)}</td><td style="text-align:right"><strong>${euroFmt(p.cost.total)}</strong></td></tr>`).join('');
+  const body = `
+    <div class="head"><div class="co">INTER COLIS SERVICES</div><div class="muted">Coût d'utilisation des véhicules — du jour</div></div>
+    <h1>Coût d'utilisation du jour</h1>
+    <p class="muted">${esc(dateStr)} — total flotte <strong>${euroFmt(grandTotal)}</strong></p>
+    <h2>Classement — du plus cher au moins cher</h2>
+    <div>${geoSvgBars(geoCostChartData(items), { width: 700 })}</div>
+    <h2>Détail par véhicule</h2>
+    <table><thead><tr><th>#</th><th>Véhicule</th><th>Chauffeur</th><th style="text-align:right">Salarié</th><th style="text-align:right">Carburant</th><th style="text-align:right">Véhicule</th><th style="text-align:right">Total</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th colspan="6">Total flotte</th><th style="text-align:right">${euroFmt(grandTotal)}</th></tr></tfoot></table>
+    <p class="muted">Coût cumulé jusqu'au retour au dépôt ou 18h. Pôles : salarié (taux horaire chargé), carburant estimé, véhicule (leasing+assurance prorata + usage au km).</p>`;
+  geoPrintWindow('Coût du jour', body);
+}
+
+// Export « excès du jour » flotte : tableau + graphique par chauffeur.
+function geoExcessFleetPdf() {
+  const d = _geoLastData; if (!d) return;
+  const positions = d.positions || [];
+  const ranked = positions.filter((p) => (p.overspeed && p.overspeed.count) || 0).sort((a, b) => b.overspeed.count - a.overspeed.count);
+  if (!ranked.length) { toast('Aucun excès aujourd\'hui.', 'info'); return; }
+  const dateStr = new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  const total = ranked.reduce((s, p) => s + p.overspeed.count, 0);
+  const rows = ranked.map((p) => `<tr><td>${esc(geoVehLabel(p))}</td><td>${esc(p.driverName || '—')}</td><td style="text-align:center"><strong>${p.overspeed.count}</strong></td></tr>`).join('');
+  const body = `
+    <div class="head"><div class="co">INTER COLIS SERVICES</div><div class="muted">Excès de vitesse — du jour</div></div>
+    <h1>Excès de vitesse du jour</h1>
+    <p class="muted">${esc(dateStr)} — total <strong>${total}</strong> excès</p>
+    <h2>Excès par chauffeur</h2>
+    <div>${geoSvgBars(geoExcessByDriver(positions), { width: 700 })}</div>
+    <h2>Détail</h2>
+    <table><thead><tr><th>Véhicule</th><th>Chauffeur</th><th style="text-align:center">Excès</th></tr></thead><tbody>${rows}</tbody>
+      <tfoot><tr><th colspan="2">Total</th><th style="text-align:center">${total}</th></tr></tfoot></table>
+    <div class="box">Chaque excès augmente le risque routier et la consommation. Merci de respecter les limitations.</div>`;
+  geoPrintWindow('Excès du jour — flotte', body);
 }
 
 /* ---- Génération de PDF à envoyer aux chauffeurs --------------------- */
@@ -377,6 +508,57 @@ function geoRecapPdf(label) {
     </div>
     <p class="muted">Estimation basée sur la différence de consommation théorique entre la vitesse relevée et la limite autorisée (Mercedes Sprinter 314 CDI).</p>`;
   geoPrintWindow('Récap 3 mois — ' + label, body);
+}
+// Export du récap 3 mois pour un groupe (ou la flotte entière) : tableau + graphique
+// + projection 12 mois. Filtre les véhicules par groupe via les positions courantes.
+function geoRecapGroupPdf(groupId) {
+  const d = _geoLastData; if (!d) return;
+  const recap = d.speedRecap || [];
+  if (!recap.length) { toast('Aucune donnée d\'excès sur la période.', 'info'); return; }
+  const all = !groupId || groupId === '__all__';
+  // Libellés véhicules appartenant au groupe sélectionné.
+  let allowed = null, groupName = 'Flotte entière';
+  if (!all) {
+    allowed = {};
+    (d.positions || []).forEach((p) => { if (p.groupId === groupId) { allowed[geoVehLabel(p)] = true; if (p.groupName) groupName = p.groupName; } });
+  }
+  // Agrège par véhicule + par semaine (filtré).
+  const byVeh = {}; const weekTot = [];
+  recap.forEach((w) => {
+    let wc = 0, we = 0;
+    (w.vehicles || []).forEach((v) => {
+      if (allowed && !allowed[v.label]) return;
+      (byVeh[v.label] = byVeh[v.label] || { label: geoRecapDriverLabel(v.label), count: 0, euros: 0, liters: 0 });
+      byVeh[v.label].count += v.count || 0; byVeh[v.label].euros += v.euros || 0; byVeh[v.label].liters += v.liters || 0;
+      wc += v.count || 0; we += v.euros || 0;
+    });
+    weekTot.push({ label: w.label, count: wc, euros: we });
+  });
+  const vehs = Object.values(byVeh).sort((a, b) => b.count - a.count);
+  if (!vehs.length) { toast('Aucun excès pour cette sélection.', 'info'); return; }
+  const totCount = vehs.reduce((s, v) => s + v.count, 0);
+  const totE = vehs.reduce((s, v) => s + v.euros, 0);
+  const totL = vehs.reduce((s, v) => s + v.liters, 0);
+  const chartData = vehs.map((v, i) => ({ label: v.label, value: v.count, valueLabel: v.count + ' excès', color: geoRankColor(i, vehs.length) }));
+  const rows = vehs.map((v) => `<tr><td>${esc(v.label)}</td><td style="text-align:center">${v.count}</td><td style="text-align:right">${litFmt(v.liters)}</td><td style="text-align:right">${euroFmt(v.euros)}</td></tr>`).join('');
+  const body = `
+    <div class="head"><div class="co">INTER COLIS SERVICES</div><div class="muted">Bilan éco-conduite — 3 derniers mois</div></div>
+    <h1>Récapitulatif des excès — ${esc(groupName)}</h1>
+    <p class="muted">Édité le ${new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })} — <strong>${totCount}</strong> excès · ${euroFmt(totE)} sur la période</p>
+    <h2>Impact par chauffeur</h2>
+    <div>${geoSvgBars(chartData, { width: 700 })}</div>
+    <h2>Détail par chauffeur</h2>
+    <table><thead><tr><th>Chauffeur / véhicule</th><th style="text-align:center">Excès</th><th style="text-align:right">Carburant perdu</th><th style="text-align:right">Coût</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th>Total</th><th style="text-align:center">${totCount}</th><th style="text-align:right">${litFmt(totL)}</th><th style="text-align:right">${euroFmt(totE)}</th></tr></tfoot></table>
+    <div class="box">
+      <div>Projection sur 12 mois à ce rythme :</div>
+      <div class="big">≈ ${euroFmt(totE * 4)} / an</div>
+      <div class="muted">soit environ ${litFmt(totL * 4)} de carburant gaspillé inutilement chaque année.</div>
+      <p style="margin:.6rem 0 0">Chaque excès de vitesse <strong>évitable</strong> est une dépense inutile, en plus du risque routier. Lever le pied, c'est plus de sécurité et des économies pour tous.</p>
+    </div>
+    <p class="muted">Estimation basée sur la différence de consommation théorique entre la vitesse relevée et la limite autorisée (Mercedes Sprinter 314 CDI).</p>`;
+  geoPrintWindow('Récap 3 mois — ' + groupName, body);
 }
 function geolocFallbackHTML(msg) {
   return `<div class="card"><details class="geo-drop geo-drop-main" open>
@@ -579,9 +761,12 @@ async function toggleGeoConfig(main) {
     <div class="grid cols-2">
       <label>Heure par défaut (tous)<input id="gc-prise" type="time" value="${esc(c.priseDePoste || '')}"></label>
     </div>
+    ${(cfg.groups && cfg.groups.length)
+      ? `<p class="help" style="margin:.5rem 0 .2rem"><strong>Par groupe</strong> de chauffeurs (laisser vide = heure par défaut) :</p><div class="grid cols-2">${cfg.groups.map((gr) => `<label>${esc(gr.name)}<input type="time" data-prisegrp="${gr.id}" value="${esc((c.priseDePosteByGroup && c.priseDePosteByGroup[gr.id]) || '')}"></label>`).join('')}</div>`
+      : ''}
     ${(cfg.drivers && cfg.drivers.length)
-      ? `<p class="help" style="margin:.5rem 0 .2rem">Par chauffeur (laisser vide = heure par défaut) :</p><div class="grid cols-2">${cfg.drivers.map((dr) => `<label>${esc(dr.name)}<input type="time" data-prise="${dr.id}" value="${esc((c.priseDePosteByUser && c.priseDePosteByUser[dr.id]) || '')}"></label>`).join('')}</div>`
-      : '<p class="help">Associez les chauffeurs aux véhicules (Gestion des véhicules) pour définir une heure par chauffeur.</p>'}
+      ? `<p class="help" style="margin:.5rem 0 .2rem"><strong>Par chauffeur</strong> (prioritaire sur le groupe ; vide = heure du groupe ou par défaut) :</p><div class="grid cols-2">${cfg.drivers.map((dr) => `<label>${esc(dr.name)}<input type="time" data-prise="${dr.id}" value="${esc((c.priseDePosteByUser && c.priseDePosteByUser[dr.id]) || '')}"></label>`).join('')}</div>`
+      : '<p class="help">Associez les chauffeurs aux véhicules ou aux traceurs pour définir une heure individuelle.</p>'}
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
       <button class="btn ghost" id="gc-test">🔌 Tester la connexion</button>
       <button class="btn" id="gc-save">💾 Enregistrer</button>
@@ -590,7 +775,23 @@ async function toggleGeoConfig(main) {
   </div>`;
 
   let deviceMap = Object.assign({}, c.deviceMap);
+  let deviceUserMap = Object.assign({}, c.deviceUserMap);
+  const userOpts = (id) => `<option value="">— chauffeur —</option>` + (cfg.users || []).map((u) => `<option value="${u.id}" ${id === u.id ? 'selected' : ''}>${esc(u.name)}${u.groupName ? ' · ' + esc(u.groupName) : ''}</option>`).join('');
   const devBox = panel.querySelector('#gc-devices');
+  // Si des traceurs sont déjà associés, affiche le tableau d'attribution sans test.
+  const savedDevices = Object.keys(Object.assign({}, deviceMap, deviceUserMap));
+  const renderDevTable = (devices) => {
+    devBox.innerHTML = `<h3>Traceurs — associez un véhicule et un chauffeur inscrit</h3>
+      <p class="help">L'attribution à un chauffeur permet de croiser les données (retard de prise de poste, coût salarié, excès par chauffeur).</p>
+      <table class="report-table"><thead><tr><th>Traceur</th><th>IMEI</th><th>Véhicule</th><th>Chauffeur</th></tr></thead><tbody>
+      ${devices.map((dv) => `<tr><td><strong>${esc(dv.name || ('Traceur ' + dv.id))}</strong></td><td>${esc(dv.imei || '—')}</td>
+        <td><select data-dev="${dv.id}">${vehOpts(deviceMap[dv.id] || '')}</select></td>
+        <td><select data-devuser="${dv.id}">${userOpts(deviceUserMap[dv.id] || '')}</select></td></tr>`).join('')}
+      </tbody></table>`;
+    devBox.querySelectorAll('select[data-dev]').forEach((s) => s.onchange = () => { if (s.value) deviceMap[s.dataset.dev] = s.value; else delete deviceMap[s.dataset.dev]; });
+    devBox.querySelectorAll('select[data-devuser]').forEach((s) => s.onchange = () => { if (s.value) deviceUserMap[s.dataset.devuser] = s.value; else delete deviceUserMap[s.dataset.devuser]; });
+  };
+  if (savedDevices.length) renderDevTable(savedDevices.map((id) => ({ id, name: 'Traceur ' + id, imei: '' })));
 
   const collectConfig = () => ({
     email: panel.querySelector('#gc-email').value.trim(),
@@ -613,7 +814,9 @@ async function toggleGeoConfig(main) {
     vehicleFixedDays: Number(panel.querySelector('#gc-fdays').value) || 21.5,
     priseDePoste: panel.querySelector('#gc-prise').value || '',
     priseDePosteByUser: (() => { const m = {}; panel.querySelectorAll('[data-prise]').forEach((i) => { if (i.value) m[i.dataset.prise] = i.value; }); return m; })(),
+    priseDePosteByGroup: (() => { const m = {}; panel.querySelectorAll('[data-prisegrp]').forEach((i) => { if (i.value) m[i.dataset.prisegrp] = i.value; }); return m; })(),
     deviceMap,
+    deviceUserMap,
   });
 
   panel.querySelector('#gc-test').onclick = async () => {
@@ -621,14 +824,7 @@ async function toggleGeoConfig(main) {
     try {
       const r = await api('POST', '/admin/geoloc/test', { email: panel.querySelector('#gc-email').value.trim(), password: panel.querySelector('#gc-pass').value });
       if (!r.devices.length) { devBox.innerHTML = '<p class="help">Connexion réussie, aucun traceur trouvé.</p>'; return; }
-      devBox.innerHTML = `<h3>Traceurs détectés — associez à un véhicule</h3>
-        <table class="report-table"><thead><tr><th>Traceur</th><th>IMEI</th><th>Véhicule</th></tr></thead><tbody>
-        ${r.devices.map((dv) => `<tr><td><strong>${esc(dv.name)}</strong></td><td>${esc(dv.imei || '—')}</td>
-          <td><select data-dev="${dv.id}">${vehOpts(deviceMap[dv.id] || '')}</select></td></tr>`).join('')}
-        </tbody></table>`;
-      devBox.querySelectorAll('select[data-dev]').forEach((s) => s.onchange = () => {
-        if (s.value) deviceMap[s.dataset.dev] = s.value; else delete deviceMap[s.dataset.dev];
-      });
+      renderDevTable(r.devices);
       toast('Connexion PAJ réussie.', 'ok');
     } catch (e) { devBox.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
   };
