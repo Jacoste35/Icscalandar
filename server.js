@@ -2967,7 +2967,7 @@ app.post('/api/staff/payslips/parse', authRequired, adminRequired, async (req, r
   const files = (req.body && req.body.files) || [];
   if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'Aucun fichier fourni.' });
   const usersMin = db.users.filter((u) => u.status !== 'deleted').map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName }));
-  const balById = {}; db.users.forEach((u) => { balById[u.id] = u.balances || {}; });
+  const balById = {}, addrById = {}; db.users.forEach((u) => { balById[u.id] = u.balances || {}; addrById[u.id] = u.address || ''; });
   const results = [];
   for (const f of files.slice(0, 40)) {
     const fileName = String((f && f.name) || 'bulletin.pdf');
@@ -2987,7 +2987,7 @@ app.post('/api/staff/payslips/parse', authRequired, adminRequired, async (req, r
   }
   res.json({
     results,
-    users: usersMin.map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}`, balances: balById[u.id] || {} })),
+    users: usersMin.map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}`, balances: balById[u.id] || {}, address: addrById[u.id] || '' })),
   });
 });
 
@@ -3005,8 +3005,10 @@ app.post('/api/staff/payslips/apply', authRequired, adminRequired, async (req, r
     for (const k of ['congesN', 'congesN1', 'rcc', 'heuresSupp']) {
       if (it[k] !== undefined && it[k] !== '' && Number.isFinite(Number(it[k]))) { u.balances[k] = Number(it[k]); changed = true; }
     }
+    // Adresse postale lue sur le bulletin → fiche individuelle (donnée perso RGPD).
+    if (typeof it.address === 'string' && it.address.trim()) { u.address = it.address.trim(); changed = true; }
     if (it.congesN !== undefined && it.congesN !== '' && Number.isFinite(Number(it.congesN))) enableAccrual(u);
-    if (changed) applied.push({ userId: u.id, name: `${u.firstName} ${u.lastName}`, balances: u.balances });
+    if (changed) applied.push({ userId: u.id, name: `${u.firstName} ${u.lastName}`, balances: u.balances, address: u.address || '' });
   }
   await save();
   res.json({ applied });
