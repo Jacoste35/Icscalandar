@@ -1590,3 +1590,29 @@ td { color: var(--ink); }
   .dash-wk-tab-lbl { font-size: .78rem; }
   .dash-wk-panes { padding: .75rem .7rem .9rem; }
 }
+
+/* ======================================================================
+   MON ÉQUIPE — présents/absents de la semaine + bandeau « votre équipe »
+   ====================================================================== */
+.team-card-mine { border: 2px solid var(--brand); box-shadow: 0 14px 32px -20px rgba(20,66,126,.55); }
+.team-mine {
+  background: linear-gradient(135deg, #eef3fb, #f7faff); border: 1px solid #d6e2f4;
+  border-radius: 14px; padding: .8rem .9rem; margin-bottom: .9rem;
+}
+.team-mine-head { font-size: .98rem; }
+.team-mine-repl { margin-top: .5rem; }
+.team-repl-list { margin: .45rem 0 0; padding-left: 1.1rem; }
+.team-repl-list li { margin: .2rem 0; font-size: .92rem; }
+
+.team-pa { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; margin: .3rem 0 .2rem; }
+.team-pa-col { border: 1px solid var(--border); border-radius: 12px; padding: .55rem .65rem; background: #fff; }
+.team-pa-col.present { border-color: #bbf7d0; background: #f0fdf4; }
+.team-pa-col.absent { border-color: #fed7aa; background: #fff7ed; }
+.team-pa-h { font-weight: 750; font-size: .84rem; margin-bottom: .4rem; }
+.team-pa-chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+.team-pa-chip { font-size: .8rem; font-weight: 650; background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: .18rem .55rem; }
+.team-pa-col.present .team-pa-chip { border-color: #bbf7d0; }
+.team-pa-col.absent .team-pa-chip { border-color: #fed7aa; }
+@media (max-width: 560px) {
+  .team-pa { grid-template-columns: 1fr; }
+}

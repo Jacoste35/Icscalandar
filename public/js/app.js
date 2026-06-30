@@ -2947,6 +2947,21 @@ function plannedCount12w(members, events) {
   return events.filter((ev) => ids.has(ev.userId) && ev.category !== 'RET' && ev.startDate <= end && ev.endDate >= start).length;
 }
 
+// Présents / absents d'une équipe sur la semaine [ws, ws+5].
+function teamWeekSplit(members, events, ws) {
+  const ws0 = iso(ws), we0 = iso(addDays(ws, 5));
+  const absentIds = new Set(events.filter((ev) => ev.category !== 'RET' && ev.startDate <= we0 && ev.endDate >= ws0).map((ev) => ev.userId));
+  return { present: members.filter((m) => !absentIds.has(m.id)), absent: members.filter((m) => absentIds.has(m.id)) };
+}
+// Absences à venir d'une équipe nécessitant un remplaçant (congé/repos) et qui
+// n'en ont pas encore : ce sont les remplacements que le responsable doit organiser.
+function teamReplacementsToDo(members, events) {
+  const ids = new Set(members.map((m) => m.id));
+  const today = iso(new Date());
+  return events.filter((ev) => ids.has(ev.userId) && ['CP', 'RCC', 'RCP'].includes(ev.category) && ev.endDate >= today && !ev.replacedById)
+    .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+}
+
 async function renderTeam(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mon équipe</h1><p>Disponibilité des équipes, congés prévus et retards.</p></div></div>
     <div class="legend" style="margin-bottom:1rem">
@@ -2962,20 +2977,48 @@ async function renderTeam(main) {
     // Les responsables d'une équipe sont rattachés au tableau de leur équipe.
     const RESP_TO_TEAM = { grp_resp_gls: 'grp_gls', grp_resp_ciblex: 'grp_ciblex', grp_resp_fedex: 'grp_fedex' };
     const teamGroupOf = (m) => RESP_TO_TEAM[m.groupId] || m.groupId;
+    // Équipe du responsable connecté : il en fait partie (assimilé à son équipe).
+    const myTeamGid = State.user.role === 'responsable' ? teamGroupOf(State.user) : null;
     const byGroup = {};
     team.forEach((m) => { const k = teamGroupOf(m) || 'none'; (byGroup[k] = byGroup[k] || []).push(m); });
     const el = document.getElementById('team'); el.className = '';
+    const ws = startOfWeekMonday(new Date());
+    const wkLabel = `${pad(ws.getDate())}/${pad(ws.getMonth()+1)} → ${pad(addDays(ws,5).getDate())}/${pad(addDays(ws,5).getMonth()+1)}`;
     const groupCard = (g, members) => {
       members = members.slice().sort((a, b) => (a.role === 'responsable' ? 0 : 1) - (b.role === 'responsable' ? 0 : 1) || (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
       const n12 = plannedCount12w(members, events);
-      return `<div class="card">
+      const isMyTeam = !!(myTeamGid && g && g.id === myTeamGid);
+      // Présents / absents de la semaine en cours.
+      const { present, absent } = teamWeekSplit(members, events, ws);
+      const paChip = (m) => `<span class="team-pa-chip">${esc(m.firstName)} ${esc((m.lastName || '').charAt(0))}.${m.id === State.user.id ? ' (vous)' : ''}</span>`;
+      const presentAbsent = members.length ? `
+        <div class="team-pa">
+          <div class="team-pa-col present"><div class="team-pa-h">✅ Présents cette semaine (${present.length})</div><div class="team-pa-chips">${present.length ? present.map(paChip).join('') : '<span class="help">—</span>'}</div></div>
+          <div class="team-pa-col absent"><div class="team-pa-h">🌴 Absents cette semaine (${absent.length})</div><div class="team-pa-chips">${absent.length ? absent.map(paChip).join('') : '<span class="help">personne</span>'}</div></div>
+        </div>` : '';
+      // Bannière « votre équipe » : remplacements à organiser (responsable).
+      let myBanner = '';
+      if (isMyTeam) {
+        const repl = teamReplacementsToDo(members, events);
+        myBanner = `<div class="team-mine">
+          <div class="team-mine-head">👤 <strong>Vous êtes responsable de cette équipe</strong> — vous y êtes intégré.</div>
+          ${repl.length
+            ? `<div class="team-mine-repl"><span class="pill warn">${repl.length} remplacement(s) à organiser</span>
+                <ul class="team-repl-list">${repl.slice(0, 10).map((ev) => `<li><strong>${esc(ev.userName)}</strong> — ${esc(ev.code)} du ${fmtDate(ev.startDate)} au ${fmtDate(ev.endDate)}${ev.status === 'pending' ? ' <em>(en attente)</em>' : ''} → <strong>remplaçant à désigner</strong></li>`).join('')}</ul></div>`
+            : '<span class="pill ok">✅ Aucun remplacement à organiser pour le moment</span>'}
+        </div>`;
+      }
+      return `<div class="card${isMyTeam ? ' team-card-mine' : ''}">
+      ${myBanner}
       <h3>${n12} absence(s) à prévoir dans les 12 prochaines semaines — ${g?`<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>`:'Sans groupe'} <span class="help">${members.length} membre(s)</span></h3>
-      ${members.length?`<p class="help" style="margin-top:-.4rem">Disponibilité des 12 prochaines semaines :</p>${teamWeeksMini(members, events)}`:''}
+      <p class="help" style="margin-top:-.3rem">Semaine en cours (${wkLabel}) : qui est présent ou absent.</p>
+      ${presentAbsent}
+      ${members.length?`<p class="help" style="margin:.6rem 0 -.2rem">Disponibilité des 12 prochaines semaines :</p>${teamWeeksMini(members, events)}`:''}
       ${members.length===0?`<div class="empty">Aucun membre.</div>`:members.map((m) => {
         const ret = memberRetardChips(m.id, events);
         return `<div style="padding:.7rem 0;border-bottom:1px solid var(--border)">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap">
-            <strong>${g?`<span class="dot" style="background:${g.color}"></span> `:''}${esc(m.firstName)} ${esc(m.lastName)}</strong>
+            <strong>${g?`<span class="dot" style="background:${g.color}"></span> `:''}${esc(m.firstName)} ${esc(m.lastName)}${m.id === State.user.id ? ' <span class="help">(vous)</span>' : ''}</strong>
             <span class="help">${roleLabel(m.role)}${m.role==='responsable'?' (planning inclus)':''}</span>
           </div>
           ${ret?`<div style="margin-top:.35rem;display:flex;flex-wrap:wrap;gap:.3rem">${ret}</div>`:''}
@@ -2983,7 +3026,9 @@ async function renderTeam(main) {
         </div>`; }).join('')}
     </div>`; };
     const shown = new Set(Object.keys(RESP_TO_TEAM));
-    el.innerHTML = State.groups.filter((g) => !shown.has(g.id)).map((g) => groupCard(g, byGroup[g.id] || [])).join('')
+    // L'équipe du responsable connecté est affichée en premier.
+    const groups = State.groups.filter((g) => !shown.has(g.id)).sort((a, b) => (b.id === myTeamGid ? 1 : 0) - (a.id === myTeamGid ? 1 : 0));
+    el.innerHTML = groups.map((g) => groupCard(g, byGroup[g.id] || [])).join('')
       + (byGroup['none'] ? groupCard(null, byGroup['none']) : '');
   } catch (e) { document.getElementById('team').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
 }
