@@ -1486,6 +1486,13 @@ function conflictAlertHTML(events, team) {
 // Nombre maximum de congés simultanés (= nombre de chauffeurs pouvant assurer
 // les remplacements). Au-delà, certains ne pourront pas partir.
 const MAX_CONCURRENT_LEAVES = 2;
+// Accord du participe « enregistré(e) » selon le genre du motif d'absence
+// (déduit du premier mot du libellé : « absence/maladie » = féminin, sinon
+// masculin par défaut — « arrêt », « accident », « congé »…).
+function fGenderE(label) {
+  const w = String(label || '').trim().toLowerCase().split(/[\s'’]/)[0];
+  return ['absence', 'maladie', 'récupération', 'demande'].includes(w) ? 'e' : '';
+}
 function myLeaveRecapHTML(viewUser, events, team) {
   const today = iso(new Date());
   const cap = MAX_CONCURRENT_LEAVES;
@@ -1494,40 +1501,71 @@ function myLeaveRecapHTML(viewUser, events, team) {
     .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
   if (!mine.length) return '';
   const rows = mine.map((e) => {
+    const period = `du ${fmtDate(e.startDate)} au ${fmtDate(e.endDate)}`;
+    const approved = e.status === 'approved';
+    const cat = State.catByCode[e.category] || {};
+    const label = cat.label || e.category;            // ex. « Arrêt maladie », « Congé payé »
+    const labelLower = label ? label.charAt(0).toLowerCase() + label.slice(1) : 'absence';
+    // Seuls les vrais congés / repos posés (demandables) mobilisent un
+    // remplaçant : la logique de conflit ne vaut que pour eux. Les arrêts de
+    // travail, maladies et absences imposées sont des absences « subies » que
+    // l'on enregistre simplement (pas de conflit de planning ni de remplacement).
+    const planned = !!cat.requestable;
+    if (!planned) {
+      // Absence subie (arrêt maladie, accident du travail, absence familiale…) :
+      // on adapte le texte au type réel et on ne parle ni de conflit ni de
+      // remplacement. Pas de bouton « modifier mes dates » (non applicable).
+      const tone = 'ok';
+      const msg = approved
+        ? `Votre <strong>${esc(labelLower)}</strong> ${period} est bien <strong>enregistré${fGenderE(label)}</strong>. ✅`
+        : `Votre <strong>${esc(labelLower)}</strong> ${period} est <strong>en attente d'enregistrement</strong>.`;
+      return `<div class="leave-recap leave-${tone}"><div class="leave-recap-msg">${msg}</div></div>`;
+    }
     const others = new Set();
     (events || []).forEach((o) => {
       if (o.userId === viewUser.id || o.category === 'RET') return;
       if (!(o.status === 'pending' || o.status === 'approved')) return;
+      // Un remplaçant n'est mobilisé que par un autre congé/repos posé, pas par
+      // une absence subie d'un collègue.
+      const oc = State.catByCode[o.category];
+      if (oc && !oc.requestable) return;
       if (o.startDate <= e.endDate && o.endDate >= e.startDate) others.add(o.userId);
     });
     const n = others.size;                 // autres personnes sur la même période
     const concurrent = n + 1;              // total (vous compris)
-    const period = `du ${fmtDate(e.startDate)} au ${fmtDate(e.endDate)}`;
-    const approved = e.status === 'approved';
+    // Sujet grammatical adapté : « Vos congés … sont » pour les CP, sinon
+    // « Votre absence … est » (accord au singulier) pour les autres repos.
+    const isCP = e.category === 'CP';
+    const subjOk = isCP ? `Vos congés ${period} sont` : `Votre absence « ${esc(label)} » ${period} est`;
+    const subjPend = isCP ? `Votre demande de congés ${period} est` : `Votre demande « ${esc(label)} » ${period} est`;
+    const possConfirm = isCP ? 'confirmés' : 'confirmée';
     let tone, msg;
     if (n === 0) {
       tone = 'ok';
-      msg = approved ? `Vos congés ${period} sont <strong>confirmés</strong> — aucun conflit sur ces dates. ✅` : `Votre demande ${period} est <strong>en attente de confirmation</strong> — aucun conflit sur ces dates pour le moment. ✅`;
+      msg = approved ? `${subjOk} <strong>${possConfirm}</strong> — aucun conflit sur ces dates. ✅` : `${subjPend} <strong>en attente de confirmation</strong> — aucun conflit sur ces dates pour le moment. ✅`;
     } else if (concurrent <= cap) {
       if (approved) {
         // Congés déjà validés et dans la limite des remplacements : tout est sécurisé → vert.
         tone = 'ok';
-        msg = `Vos congés ${period} sont <strong>confirmés</strong> — vous êtes ${concurrent} au total sur cette période, soit la limite des <strong>${cap} remplacements</strong> possibles, mais votre absence est garantie. ✅`;
+        msg = `${subjOk} <strong>${possConfirm}</strong> — vous êtes ${concurrent} au total sur cette période, soit la limite des <strong>${cap} remplacements</strong> possibles, mais votre absence est garantie. ✅`;
       } else {
         tone = 'warn';
-        msg = `Pour vos congés ${period} : <strong>${n} autre personne</strong> a demandé la même période. Vous êtes ${concurrent} au total, soit la limite des <strong>${cap} remplacements</strong> possibles — vos congés restent en attente d'approbation. Vous pouvez nous soumettre une autre date pour plus de sécurité.`;
+        msg = `${subjPend} concernée par <strong>${n} autre personne</strong> sur la même période. Vous êtes ${concurrent} au total, soit la limite des <strong>${cap} remplacements</strong> possibles — votre absence reste en attente d'approbation. Vous pouvez nous soumettre une autre date pour plus de sécurité.`;
       }
     } else {
       tone = 'danger';
-      msg = `Conflit pour vos congés ${period} : <strong>${n} autres personnes</strong> ont demandé la même période (${concurrent} au total). Or seuls <strong>${cap} congés</strong> peuvent être accordés en même temps (${cap} remplaçants) : il est <strong>certain que l'un d'entre vous ne pourra pas partir</strong> à ces dates. Je vous remercie de bien vouloir modifier vos dates afin de m'aider à résoudre ce conflit de planning.`;
+      msg = `Conflit ${period} : <strong>${n} autres personnes</strong> ont demandé la même période (${concurrent} au total). Or seuls <strong>${cap} congés</strong> peuvent être accordés en même temps (${cap} remplaçants) : il est <strong>certain que l'un d'entre vous ne pourra pas partir</strong> à ces dates. Je vous remercie de bien vouloir modifier vos dates afin de m'aider à résoudre ce conflit de planning.`;
     }
     return `<div class="leave-recap leave-${tone}">
       <div class="leave-recap-msg">${msg}</div>
       <button class="btn ${tone === 'danger' ? 'danger' : 'ghost'} sm" data-leavemod="${e.id}" data-cat="${esc(e.category)}" data-pool="${esc(e.pool || '')}" data-s="${esc(e.startDate)}" data-e="${esc(e.endDate)}" data-reason="${esc(e.reason || '')}">✏️ Modifier mes dates</button>
     </div>`;
   }).join('');
-  return `<div class="card"><h3 style="margin:0 0 .4rem">📅 Mes demandes de congés</h3>
-    <p class="help" style="margin-top:-.2rem">Bonjour ${esc(viewUser.firstName)}, voici l'état de vos demandes (max. ${cap} congés simultanés). <span style="color:#166534">Vert</span> = aucun conflit · <span style="color:#b45309">Jaune</span> = à la limite · <span style="color:#b91c1c">Rouge</span> = conflit certain.</p>
+  // Le bloc peut contenir des congés posés ET des absences subies : titre neutre.
+  const onlyLeaves = mine.every((e) => (State.catByCode[e.category] || {}).requestable);
+  const title = onlyLeaves ? '📅 Mes demandes de congés' : '📅 Mes congés & absences à venir';
+  return `<div class="card"><h3 style="margin:0 0 .4rem">${title}</h3>
+    <p class="help" style="margin-top:-.2rem">Bonjour ${esc(viewUser.firstName)}, voici l'état de vos congés et absences à venir (max. ${cap} congés simultanés). <span style="color:#166534">Vert</span> = aucun conflit · <span style="color:#b45309">Jaune</span> = à la limite · <span style="color:#b91c1c">Rouge</span> = conflit certain.</p>
     ${rows}</div>`;
 }
 
