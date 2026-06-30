@@ -561,6 +561,7 @@ app.get('/api/calendar', authRequired, (req, res) => {
         categoryLabel: cat ? cat.label : code,
         categoryColor: cat ? cat.color : '#64748b',
         status: r.status,
+        pool: r.pool || null,
         startDate: r.startDate,
         endDate: r.endDate,
         days: r.days,

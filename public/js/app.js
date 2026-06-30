@@ -1003,6 +1003,8 @@ async function renderDashboard(main) {
 
     // Alerte conflits de dates dans mon groupe
     const conflictPanel = conflictAlertHTML(events, team);
+    // Récap personnel des demandes de congés (statut + conflit + modification).
+    const myLeavePanel = isPresident ? '' : myLeaveRecapHTML(viewUser, events, team);
 
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
     const colleaguesPanel = colleaguesUpcomingHTML(team, events);
@@ -1022,6 +1024,7 @@ async function renderDashboard(main) {
         ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h`)}
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
       </div></div>`}
+      ${myLeavePanel}
       ${philo}
       ${myDocsPanel}
       ${messagesPanel}
@@ -1104,6 +1107,8 @@ function makeDashCollapsible(scope) {
 function bindDashboardActions(scope) {
   // Liens de navigation insérés dans les panneaux d'accueil (ex. carte géoloc).
   scope.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  // Modifier une demande de congés depuis le récap d'accueil.
+  scope.querySelectorAll('[data-leavemod]').forEach((b) => b.onclick = () => openRequestModal({ id: b.dataset.leavemod, category: b.dataset.cat, pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: b.dataset.reason || '' }));
   // Démarre le panneau géoloc auto-actualisé (encadrement).
   if (typeof geolocStartDashboard === 'function' && scope.querySelector('#dash-geoloc')) geolocStartDashboard();
   // Mes documents : consulter, accuser réception (signature), attestation.
@@ -1348,6 +1353,40 @@ function conflictAlertHTML(events, team) {
       ${uniq.slice(0, 12).map((c) => { const g = groupById(c.gid); return `<li>${g?esc(g.name)+' : ':''}${esc(c.names.join(' & '))} en même temps du ${fmtDate(c.s)} au ${fmtDate(c.e)}</li>`; }).join('')}
     </ul>
   </div>`;
+}
+
+// Accueil salarié : récap de SES demandes de congés à venir avec statut de
+// conflit (vert = aucun, jaune = possible, rouge = certain) + bouton modifier.
+function myLeaveRecapHTML(viewUser, events, team) {
+  const today = iso(new Date());
+  const groupOf = {}; (team || []).forEach((m) => { groupOf[m.id] = m.groupId; });
+  const myGroup = viewUser.groupId;
+  const mine = (events || []).filter((e) => e.userId === viewUser.id && e.category !== 'RET' && e.endDate >= today && (e.status === 'pending' || e.status === 'approved'))
+    .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+  if (!mine.length) return '';
+  const rows = mine.map((e) => {
+    const others = new Set();
+    (events || []).forEach((o) => {
+      if (o.userId === viewUser.id || o.category === 'RET') return;
+      if (groupOf[o.userId] !== myGroup) return;
+      if (!(o.status === 'pending' || o.status === 'approved')) return;
+      if (o.startDate <= e.endDate && o.endDate >= e.startDate) others.add(o.userId);
+    });
+    const n = others.size;
+    const period = `du ${fmtDate(e.startDate)} au ${fmtDate(e.endDate)}`;
+    const approved = e.status === 'approved';
+    let tone, msg;
+    if (n === 0) { tone = 'ok'; msg = approved ? `Vos congés ${period} sont <strong>confirmés</strong> — aucun conflit sur ces dates. ✅` : `Votre demande ${period} est <strong>en attente de confirmation</strong> — aucun conflit sur ces dates pour le moment. ✅`; }
+    else if (n === 1) { tone = 'warn'; msg = `Un conflit pourrait subsister pour vos congés ${period} : <strong>1 autre personne</strong> de votre groupe a demandé la même période. ${approved ? 'Vos congés sont confirmés mais à surveiller' : 'Vos congés sont toujours en attente d\'approbation'}. Vous pouvez nous soumettre une autre date.`; }
+    else { tone = 'danger'; msg = `Conflit pour vos congés ${period} : <strong>${n} autres personnes</strong> ont demandé la même période. Il est <strong>certain que tout le monde ne pourra pas partir</strong> à ces dates — merci de modifier vos dates, sinon l'un d'entre vous n'aura pas la date souhaitée.`; }
+    return `<div class="leave-recap leave-${tone}">
+      <div class="leave-recap-msg">${msg}</div>
+      <button class="btn ${tone === 'danger' ? 'danger' : 'ghost'} sm" data-leavemod="${e.id}" data-cat="${esc(e.category)}" data-pool="${esc(e.pool || '')}" data-s="${esc(e.startDate)}" data-e="${esc(e.endDate)}" data-reason="${esc(e.reason || '')}">✏️ Modifier mes dates</button>
+    </div>`;
+  }).join('');
+  return `<div class="card"><h3 style="margin:0 0 .4rem">📅 Mes demandes de congés</h3>
+    <p class="help" style="margin-top:-.2rem">Bonjour ${esc(viewUser.firstName)}, voici l'état de vos demandes. <span style="color:#166534">Vert</span> = aucun conflit · <span style="color:#b45309">Jaune</span> = conflit possible · <span style="color:#b91c1c">Rouge</span> = conflit certain.</p>
+    ${rows}</div>`;
 }
 
 // Congés à venir des collègues du même groupe (anti-doublon de semaine).
@@ -2347,7 +2386,7 @@ const PMT_DURATIONS = {
   mat_jum: { label: 'Maternité jumeaux (34 semaines)', days: 238 },
   mat_tri: { label: 'Maternité triplés ou + (46 semaines)', days: 322 },
 };
-async function openRequestModal() {
+async function openRequestModal(prefill) {
   const selectable = State.categories.filter((c) => c.requestable);
   const b = State.user.balances;
   const soldeExtra = (c) => c.code === 'RCP' ? ` — solde : ${b.heuresSupp} h` : c.code === 'RCC' ? ` — solde : ${b.rcc} h` : '';
@@ -2356,8 +2395,9 @@ async function openRequestModal() {
   try { allEvents = (await api('GET', '/calendar')).events; allTeam = (await api('GET', '/team')).team; } catch (e) {}
   const myRespIds = allTeam.filter((m) => m.role === 'responsable' && m.groupId === State.user.groupId).map((m) => m.id);
   modal({
-    title: 'Nouvelle demande',
+    title: prefill ? 'Modifier ma demande de congés' : 'Nouvelle demande',
     bodyHTML: `
+      ${prefill ? '<div class="alert info" style="margin-bottom:.6rem">Modifiez vos dates puis renvoyez : votre ancienne demande sera remplacée par la nouvelle.</div>' : ''}
       <form id="form-req">
         <label>Catégorie</label>
         <select name="category" required>
@@ -2438,6 +2478,14 @@ async function openRequestModal() {
         } else preview.textContent = '';
       };
       refreshPool();
+      // Pré-remplissage (modification d'une demande existante).
+      if (prefill) {
+        if (prefill.category) { f.category.value = prefill.category; refreshPool(); }
+        if (prefill.pool && f.pool) f.pool.value = prefill.pool;
+        if (prefill.startDate) f.startDate.value = prefill.startDate;
+        if (prefill.endDate) f.endDate.value = prefill.endDate;
+        if (prefill.reason && f.reason) f.reason.value = prefill.reason;
+      }
       f.category.onchange = () => { refreshPool(); update(); };
       if (f.pmtType) f.pmtType.onchange = () => { computePmtEnd(); update(); };
       if (f.fractionnement) f.fractionnement.onchange = () => { f.endDate.readOnly = false; computePmtEnd(); update(); };
@@ -2446,8 +2494,12 @@ async function openRequestModal() {
         if (!f.startDate.value || !f.endDate.value) { toast('Renseignez les dates.', 'err'); return; }
         try {
           await api('POST', '/requests', { category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value, fractionnement: f.fractionnement ? f.fractionnement.value : null });
-          closeModal(); toast('Demande envoyée à l\'administrateur.', 'ok');
-          if (State.view === 'requests') renderRequests(document.getElementById('main'));
+          // Modification : on supprime l'ancienne demande après la nouvelle.
+          if (prefill && prefill.id) { try { await api('DELETE', '/requests/' + prefill.id); } catch (e2) {} }
+          closeModal(); toast(prefill ? 'Nouvelle demande envoyée — l\'ancienne a été remplacée.' : 'Demande envoyée à l\'administrateur.', 'ok');
+          const main = document.getElementById('main');
+          if (State.view === 'requests') renderRequests(main);
+          else if (State.view === 'dashboard') renderDashboard(main);
         } catch (e) {
           toast(e.message, 'err');
           // Si le serveur suggère une date de fin maximale, on l'applique.
@@ -5791,8 +5843,8 @@ async function renderHours(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des heures</h1>
     <p>Suivi des amplitudes et du temps de travail des chauffeurs.</p></div></div>
     <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-htab="hsup" class="active">Gestion des heures supplémentaires</button>
-      <button data-htab="resume">Résumé des amplitudes</button>
+      <button data-htab="resume" class="active">Résumé des amplitudes</button>
+      <button data-htab="hsup">Gestion des heures supplémentaires</button>
       <button data-htab="import">Import rapport d'activité</button>
       <button data-htab="saisie">Saisie manuelle</button>
       <button data-htab="bulletins">Bulletins de salaire</button>
@@ -5801,7 +5853,7 @@ async function renderHours(main) {
   const tabs = main.querySelector('#hr-tabs');
   tabs.querySelectorAll('[data-htab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); hrTab(b.dataset.htab); });
   await loadHours();
-  hrTab('hsup');
+  hrTab('resume');
 }
 async function loadHours() { _hours = await api('GET', '/staff/work-hours'); }
 function hrTab(tab) {

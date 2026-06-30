@@ -119,6 +119,10 @@ function geoVehCardHTML(p) {
   const fuelLine = ((st === 'orange' || st === 'depot') && p.stats && p.stats.litersDay != null)
     ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil consommés aujourd'hui (estimé)</div>` : '';
   const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
+  // Premier et dernier mouvement de la journée + groupe du véhicule.
+  const lastMove = p.moving ? null : (p.finalStopAt || p.lastMovingAt);
+  const moveLine = (p.activeSince || lastMove) ? `<div class="geo-moves">🕒 1ᵉʳ départ <strong>${p.activeSince ? gTime(p.activeSince) : '—'}</strong> · dernier mouvement <strong>${p.moving ? 'en cours' : (lastMove ? gTime(lastMove) : '—')}</strong></div>` : '';
+  const groupLine = p.groupName ? `<div class="geo-group">👥 Groupe : <strong>${esc(p.groupName)}</strong>${p.driverName ? ` · 👤 ${esc(p.driverName)}` : ''}</div>` : (p.driverName ? `<div class="geo-group">👤 ${esc(p.driverName)}</div>` : '');
   // Odomètre : réel (remonté par le traceur) sinon relevé de la flotte (mis à
   // jour par l'import des rapports d'activité / Mobilic). Rien si aucun des deux.
   const odo = p.odometer || {};
@@ -133,6 +137,8 @@ function geoVehCardHTML(p) {
     ${p.plate && p.vehicleName ? `<div class="geo-sub">${esc(p.plate)}</div>` : ''}
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
+    ${groupLine}
+    ${moveLine}
     ${fuelLine}
     ${odoHtml}
     ${lateHtml}
@@ -219,11 +225,12 @@ function geolocCostHTML(positions) {
     return `<div class="geo-cost-row">
       <div class="geo-cost-head"><strong>${esc(geoVehLabel(p))}</strong>${c.closed ? ' <span class="geo-count">immobilisé</span>' : ' <span class="geo-count alt">en cours</span>'}<span class="geo-cost-total">${euroFmt(c.total)}</span></div>
       <div class="geo-cost-bar">${geoCostBar(c)}</div>
-      <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h · ${c.km} km · ${litFmt(c.liters)} — Salarié <strong>${euroFmt(c.salarie)}</strong> · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong>${c.vehiculeFixe ? ` <span class="help">(dont leasing+assurance ${euroFmt(c.vehiculeFixe)})</span>` : ''}</div>
+      <div class="help">${esc(c.driverName || 'chauffeur non affecté')} · ${c.hours} h payées${c.amplitude && c.amplitude > c.hours ? ` <span title="amplitude véhicule">(amplitude ${c.amplitude} h)</span>` : ''} · ${c.km} km · ${litFmt(c.liters)}</div>
+      <div class="geo-cost-detail">Salarié <strong>${euroFmt(c.salarie)}</strong>${c.salBrut != null ? ` <span class="help">(brut ${euroFmt(c.salBrut)} · net ≈ ${euroFmt(c.salNet)} · chargé ${euroFmt(c.salCharge)} · ${c.taux ? euroFmt(c.taux) + '/h' : ''})</span>` : ''} · Carburant <strong>${euroFmt(c.carburant)}</strong> · Véhicule <strong>${euroFmt(c.vehicule)}</strong>${c.vehiculeFixe ? ` <span class="help">(dont leasing+assurance ${euroFmt(c.vehiculeFixe)})</span>` : ''}</div>
     </div>`;
   }).join('');
   const chart = geoSvgBars(geoCostChartData(items));
-  return `<p class="help">Total flotte aujourd'hui : <strong>${euroFmt(grand.total)}</strong> — cumul jusqu'au retour au dépôt ou 18h.</p>
+  return `<p class="help">Total flotte aujourd'hui : <strong>${euroFmt(grand.total)}</strong> — cumul jusqu'au dernier mouvement (ou 18h). Le pôle salarié = heures réellement payées (amplitude − pause, plafonnée) × coût horaire chargé.</p>
     <div class="geo-pdf-row"><button class="btn ghost sm" data-geopdf-cost="1">📄 Exporter (tableau + graphique)</button></div>
     <div class="geo-chart-wrap geo-chart-pc"><div class="geo-chart-title">Classement — du plus cher au moins cher</div>${chart}</div>
     <div class="geo-cost-legend">${GEO_POLES.map(([k, lbl, col]) => `<span><i style="background:${col}"></i>${lbl} ${euroFmt(grand[k])}</span>`).join('')}</div>
