@@ -599,6 +599,7 @@ function renderDocumentsGate() {
 
 function renderApp() {
   const u = State.user;
+  document.body.classList.remove('nav-locked'); // referme tout verrou de tiroir au re-rendu
   // Pages de garde au premier accès : CGU puis règlement intérieur (version en vigueur).
   if (!u.cguAccepted) { renderCGU(); return; }
   if (!reglementUpToDate(u)) { renderReglementGate(); return; }
@@ -630,6 +631,7 @@ function renderApp() {
     </aside>
     <main class="main" id="main"></main>
   </div>
+  <div class="nav-backdrop" id="nav-backdrop"></div>
   <nav class="bottom-nav" id="bottom-nav">
     <button data-view="dashboard" class="${State.view === 'dashboard' ? 'active' : ''}"><span class="bn-ico">🏠</span>Accueil</button>
     <button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
@@ -645,13 +647,22 @@ function renderApp() {
     if (open) _navOpen.add(id); else _navOpen.delete(id);
   });
   document.getElementById('logout').onclick = () => logout();
+  // Tiroir de navigation (mobile) : ouvert/fermé depuis la barre du bas (« Menu »),
+  // fermé en touchant le voile ou en choisissant une rubrique. Plus de barre en haut.
+  const setNav = (open) => {
+    const sb = document.querySelector('.sidebar'); const bd = document.getElementById('nav-backdrop');
+    if (sb) sb.classList.toggle('nav-open', open);
+    if (bd) bd.classList.toggle('show', open);
+    document.body.classList.toggle('nav-locked', open);
+  };
   const toggle = document.getElementById('nav-toggle');
-  if (toggle) toggle.onclick = () => document.querySelector('.sidebar').classList.toggle('nav-open');
-  // Barre basse (mobile) : le bouton « Menu » ouvre/ferme le tiroir latéral.
+  if (toggle) toggle.onclick = () => setNav(!document.querySelector('.sidebar').classList.contains('nav-open'));
   const bnMenu = document.getElementById('bn-menu');
-  if (bnMenu) bnMenu.onclick = () => { const sb = document.querySelector('.sidebar'); sb.classList.toggle('nav-open'); if (sb.classList.contains('nav-open')) sb.scrollIntoView({ block: 'start' }); };
-  // En navigation depuis la barre basse, on referme le tiroir s'il était ouvert.
-  $app.querySelectorAll('.bottom-nav [data-view]').forEach((b) => b.addEventListener('click', () => document.querySelector('.sidebar').classList.remove('nav-open')));
+  if (bnMenu) bnMenu.onclick = () => setNav(!document.querySelector('.sidebar').classList.contains('nav-open'));
+  const backdrop = document.getElementById('nav-backdrop');
+  if (backdrop) backdrop.onclick = () => setNav(false);
+  // Choix d'une rubrique → fermeture du tiroir (le re-rendu s'en charge aussi).
+  $app.querySelectorAll('.sidebar [data-view], .bottom-nav [data-view]').forEach((b) => b.addEventListener('click', () => setNav(false)));
   renderView();
   if (u.role === 'admin') refreshAdminBadge();
 }
@@ -932,14 +943,17 @@ async function renderDashboard(main) {
         <div class="dash-date">${esc(heroDate)}</div>
       </div>
       <div class="dash-hero-actions">
-        <button class="hero-chip" data-herov="calendar">📅 Mon planning</button>
+        <button class="hero-chip" data-herov="team">📅 Mon planning</button>
         ${inPreview ? '' : '<button class="hero-chip" id="hero-leave">🌴 Poser un congé</button>'}
         <button class="hero-chip" data-herov="mydata">👤 Mon profil</button>
+        ${(isStaff() && !inPreview) ? '<button class="hero-chip" data-herov="vehmgmt">🚐 Contrôle VUL</button>' : ''}
+        ${(isStaff() && !inPreview) ? '<button class="hero-chip" id="hero-avert">⚠️ Avertissement</button>' : ''}
       </div>
     </section>
     <div id="dash-body" class="empty">Chargement…</div>`;
   main.querySelectorAll('[data-herov]').forEach((b) => b.onclick = () => { State.view = b.dataset.herov; renderApp(); });
   const heroLeave = main.querySelector('#hero-leave'); if (heroLeave) heroLeave.onclick = () => openRequestModal();
+  const heroAvert = main.querySelector('#hero-avert'); if (heroAvert) heroAvert.onclick = () => { _docMgmtTab = 'gen'; State.view = 'docmgmt'; renderApp(); };
   try {
     const today = new Date();
     await ensureHolidays(today.getFullYear());
@@ -1752,8 +1766,7 @@ function hToDays(h) { return `≈ ${(Math.round((Number(h) / HPERDAY) * 10) / 10
 async function renderCalendar(main) {
   const staff = isStaff();
   const admin = State.user.role === 'admin';
-  // Sur téléphone, on ouvre par défaut la vue Agenda (la plus lisible sans effort).
-  if (!State._calModeInit) { State._calModeInit = true; if (window.matchMedia && window.matchMedia('(max-width: 860px)').matches) State.cal.mode = 'agenda'; }
+  // Vue par défaut : « Mois » façon Calendrier iPhone (lisible sur tous les écrans).
   main.innerHTML = `<div class="page-head"><div><h1>Mon Planning</h1>
     <p>Présences et absences de tous les salariés inscrits.</p></div>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap">
