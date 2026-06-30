@@ -852,15 +852,34 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .geo-rate-red { background: #fee2e2; color: #b91c1c; }
 .geo-rate-na { background: #f1f5f9; color: #64748b; }
 
-/* Accueil — sections repliables (accordéon) */
+/* Accueil — sections repliables (accordéon) avec en-tête visible + KPI */
 .dash-acc { margin: 0 0 .85rem; }
-.dash-acc > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: .55rem; font-weight: 700; font-size: 1rem; color: var(--text); padding: .65rem .9rem; background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 2px rgba(15,23,42,.05); }
+.dash-acc > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: .6rem; font-size: 1.02rem; color: var(--text); padding: .7rem .85rem; background: #fff; border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 3px rgba(15,23,42,.06); transition: background .12s, box-shadow .12s; }
 .dash-acc > summary::-webkit-details-marker { display: none; }
-.dash-acc > summary::before { content: '▸'; color: var(--muted); font-size: .85em; transition: transform .15s; flex: 0 0 auto; }
-.dash-acc[open] > summary::before { transform: rotate(90deg); }
-.dash-acc[open] > summary { border-radius: 12px 12px 0 0; border-bottom: none; }
-.dash-acc > .card { margin: 0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: none; }
-.dash-acc > summary:hover { background: #f8fafc; }
+.dash-acc > summary:hover { background: #f8fafc; box-shadow: 0 2px 8px rgba(15,23,42,.10); }
+.dash-chev { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; background: #eef2ff; color: var(--brand); display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; font-weight: 800; line-height: 1; transition: transform .18s, background .18s, color .18s; }
+.dash-acc[open] .dash-chev { transform: rotate(90deg); background: var(--brand); color: #fff; }
+.dash-title { flex: 1; font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dash-kpi { flex: 0 0 auto; font-size: .8rem; font-weight: 800; border-radius: 999px; padding: .2rem .65rem; white-space: nowrap; }
+.dash-kpi.tone-warn { background: #fee2e2; color: #b91c1c; }
+.dash-kpi.tone-info { background: #eff6ff; color: #1d4ed8; }
+.dash-kpi.tone-ok { background: #dcfce7; color: #166534; }
+.dash-acc[open] > summary { border-radius: 14px 14px 0 0; border-bottom: none; }
+.dash-acc > .card { margin: 0; border-top: none; border-radius: 0 0 14px 14px; box-shadow: none; }
+
+/* Sur ordinateur : sections repliées en grille (plusieurs côte à côte) ;
+   la section ouverte passe en pleine largeur pour révéler le détail. */
+@media (min-width: 769px) {
+  #dash-body { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); align-items: start; }
+  #dash-body > :not(.dash-acc) { grid-column: 1 / -1; }   /* aperçu, géoloc, etc. en pleine largeur */
+  #dash-body > .dash-acc { margin: 0; }
+  #dash-body > .dash-acc[open] { grid-column: 1 / -1; }   /* section ouverte = pleine largeur */
+}
+
+/* Chevrons plus visibles sur les autres menus déroulants (géoloc…). */
+.geo-drop > summary::before { content: '›'; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #eef2ff; color: var(--brand); font-size: 1.05rem; font-weight: 800; transition: transform .18s; }
+.geo-drop[open] > summary::before { transform: rotate(90deg); }
+.geo-drop-main > summary::before { background: rgba(255,255,255,.22); color: #fff; }
 
 /* Géolocalisation — coût d'utilisation par pôle */
 .geo-cost-legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .8rem; margin: .3rem 0; }

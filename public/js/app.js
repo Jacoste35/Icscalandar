@@ -936,6 +936,18 @@ async function renderDashboard(main) {
 function dashAccState() { try { return JSON.parse(localStorage.getItem('ics_dash_acc') || '{}'); } catch (e) { return {}; } }
 function dashAccSave(s) { try { localStorage.setItem('ics_dash_acc', JSON.stringify(s)); } catch (e) {} }
 function slugTitle(t) { return String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48); }
+// Indicateur KPI résumant une carte (visible même repliée).
+function dashKpi(card) {
+  const alerts = card.querySelectorAll('.alert').length;
+  const statVals = card.querySelectorAll('.stat .value');
+  const rows = card.querySelectorAll('table tbody tr').length;
+  const msgs = card.querySelectorAll('.msg-item').length;
+  if (statVals.length) return { text: statVals[0].textContent.replace(/\s+/g, ' ').trim(), tone: 'info' };
+  if (alerts) return { text: alerts + (alerts > 1 ? ' alertes' : ' alerte'), tone: 'warn' };
+  if (msgs) return { text: msgs + (msgs > 1 ? ' messages' : ' message'), tone: 'info' };
+  if (rows) return { text: rows + (rows > 1 ? ' lignes' : ' ligne'), tone: 'info' };
+  return null;
+}
 function makeDashCollapsible(scope) {
   const state = dashAccState();
   // Sur téléphone, tout est fermé par défaut pour simplifier l'affichage ;
@@ -947,11 +959,12 @@ function makeDashCollapsible(scope) {
     const h = el.querySelector('h1, h2, h3, h4');
     if (!h) return;                                                      // sans titre : on laisse tel quel
     const key = slugTitle(h.textContent);
+    const kpi = dashKpi(el);
     const det = document.createElement('details');
     det.className = 'dash-acc';
     det.open = key in state ? !!state[key] : !isMobile;                  // mobile : fermé par défaut
     const sum = document.createElement('summary');
-    sum.innerHTML = h.innerHTML;
+    sum.innerHTML = `<span class="dash-chev" aria-hidden="true">›</span><span class="dash-title">${h.innerHTML}</span>${kpi ? `<span class="dash-kpi tone-${kpi.tone}">${esc(kpi.text)}</span>` : ''}`;
     h.remove();
     el.parentNode.insertBefore(det, el);
     det.appendChild(sum);
