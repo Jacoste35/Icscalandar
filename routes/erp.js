@@ -558,51 +558,108 @@ function mount(app, deps) {
   }));
 
   /* ---- Documents adressés aux salariés + accusé de réception ---------- */
-  // Admin : valide et adresse un document à un salarié.
+  // Statuts intermédiaires : un document préparé par un RESPONSABLE n'est pas
+  // envoyé directement — il attend la validation d'un administrateur.
+  // Types disciplinaires consignés au dossier à l'envoi (la convocation à la
+  // mise à pied compte ; la notification qui suit ne re-compte pas la sanction).
+  const DISC_TYPES = { avertissement: 'Avertissement disciplinaire', mise_a_pied_disciplinaire: 'Mise à pied disciplinaire', mise_a_pied_conservatoire: 'Mise à pied conservatoire' };
+  // Consigne la sanction au dossier disciplinaire (au moment de l'envoi réel).
+  const consignSanction = (data, doc) => {
+    if (!DISC_TYPES[doc.type]) return;
+    if (Array.isArray(data.sanctions) && data.sanctions.some((s) => s.docId === doc.id)) return; // déjà consignée
+    const sev = discipline.severityOf(doc.motif || '');
+    if (!Array.isArray(data.sanctions)) data.sanctions = [];
+    data.sanctions.push({
+      id: erp.eid('san'), userId: doc.userId, userName: doc.userName, type: DISC_TYPES[doc.type], motif: doc.motif || '',
+      gravite: sev.gravite, date: new Date().toISOString().slice(0, 10),
+      docId: doc.id, createdBy: doc.createdBy, createdByName: doc.createdByName, createdAt: new Date().toISOString(),
+    });
+  };
+  // Envoi effectif au salarié (statut « sent » + consignation + notification push).
+  const deliverDoc = (data, doc) => {
+    doc.status = 'sent'; doc.viewedAt = null;
+    consignSanction(data, doc);
+    push.fire(push.notifyUser(data, save, doc.userId, {
+      title: '📄 Nouveau document à consulter',
+      body: `${doc.label} — à lire et accuser réception dans l'application.`,
+      url: '/', tag: 'doc-' + doc.id,
+    }));
+  };
+
+  // Encadrement : prépare un document. Admin → envoi immédiat. Responsable →
+  // mis en attente de validation par un administrateur (jamais d'envoi direct).
   r.post('/documents/issue', guardStaff, withData(async (req, res, data) => {
     const { userId, type, vars, html: rawHtml, label } = req.body || {};
     const u = (data.users || []).find((x) => x.id === userId);
     if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
     const tpl = data.settings.erpTemplates[type];
     const inner = rawHtml || (tpl ? templates.render(tpl.body, Object.assign({ company: data.settings.company, date: new Date().toLocaleDateString('fr-FR') }, vars || {})) : '');
+    const isAdmin = req.user.role === 'admin';
     const doc = {
       id: erp.eid('doc'), userId, userName: `${u.firstName} ${u.lastName}`,
       type: type || 'document', label: label || (tpl && tpl.label) || 'Document', html: inner,
+      motif: (vars && vars.motif) || '',
       createdAt: new Date().toISOString(), createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`,
-      status: 'sent', viewedAt: null, ackedAt: null, ackBy: null, ackName: null, ackRef: null,
+      status: isAdmin ? 'sent' : 'pending_approval', viewedAt: null, ackedAt: null, ackBy: null, ackName: null, ackRef: null,
+      approvedBy: null, approvedByName: null, approvedAt: null, rejectedReason: null,
     };
     data.erp.documents.push(doc);
-    // Document disciplinaire adressé → consigné automatiquement au dossier
-    // disciplinaire du salarié (compteur d'avertissements, escalade).
-    const DISC = { avertissement: 'Avertissement disciplinaire', mise_a_pied_disciplinaire: 'Mise à pied disciplinaire', mise_a_pied_conservatoire: 'Mise à pied conservatoire' };
-    if (DISC[type]) {
-      const motif = (vars && vars.motif) || '';
-      const sev = discipline.severityOf(motif);
-      if (!Array.isArray(data.sanctions)) data.sanctions = [];
-      data.sanctions.push({
-        id: erp.eid('san'), userId, userName: doc.userName, type: DISC[type], motif,
-        gravite: sev.gravite, date: new Date().toISOString().slice(0, 10),
-        docId: doc.id, createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`,
-        createdAt: new Date().toISOString(),
-      });
+    if (isAdmin) {
+      // Administrateur : validation immédiate et envoi au salarié.
+      doc.approvedBy = req.user.id; doc.approvedByName = doc.createdByName; doc.approvedAt = doc.createdAt;
+      deliverDoc(data, doc);
+      audit.logAction(data, { ...actor(req), action: 'document.issue', entity: doc.label, detail: doc.userName });
+    } else {
+      // Responsable : envoi soumis à l'approbation d'un administrateur.
+      audit.logAction(data, { ...actor(req), action: 'document.submit', entity: doc.label, detail: doc.userName });
+      push.fire(push.notifyUsers(data, save, push.adminIds(data), {
+        title: '🛡️ Document à valider',
+        body: `${doc.createdByName} a préparé « ${doc.label} » pour ${doc.userName}. À valider avant envoi.`,
+        url: '/', tag: 'docval-' + doc.id,
+      }));
     }
-    audit.logAction(data, { ...actor(req), action: 'document.issue', entity: doc.label, detail: doc.userName });
     await save();
-    // Push : prévient le salarié qu'un document lui a été adressé (accusé requis).
-    push.fire(push.notifyUser(data, save, userId, {
-      title: '📄 Nouveau document à consulter',
-      body: `${doc.label} — à lire et accuser réception dans l'application.`,
-      url: '/', tag: 'doc-' + doc.id,
-    }));
-    res.json({ document: { id: doc.id, label: doc.label, userName: doc.userName, status: doc.status } });
+    res.json({ document: { id: doc.id, label: doc.label, userName: doc.userName, status: doc.status }, pending: !isAdmin });
   }));
-  // Admin : suivi de tous les documents adressés (lu/reçu).
+
+  // Administrateur : valide un document préparé par un responsable → envoi réel.
+  r.post('/documents/:id/approve', guard, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Document introuvable' });
+    if (doc.status !== 'pending_approval' && doc.status !== 'rejected') return res.status(400).json({ error: 'Ce document n\'est pas en attente de validation.' });
+    doc.approvedBy = req.user.id; doc.approvedByName = `${req.user.firstName} ${req.user.lastName}`; doc.approvedAt = new Date().toISOString(); doc.rejectedReason = null;
+    deliverDoc(data, doc);
+    audit.logAction(data, { ...actor(req), action: 'document.approve', entity: doc.label, detail: doc.userName });
+    // Informe le responsable qui l'a préparé que son document a été envoyé.
+    if (doc.createdBy && doc.createdBy !== req.user.id) {
+      push.fire(push.notifyUser(data, save, doc.createdBy, { title: '✅ Document validé', body: `« ${doc.label} » pour ${doc.userName} a été validé et envoyé.`, url: '/', tag: 'docval-' + doc.id }));
+    }
+    await save();
+    res.json({ ok: true, status: doc.status });
+  }));
+
+  // Administrateur : refuse un document préparé par un responsable (avec motif).
+  r.post('/documents/:id/reject', guard, withData(async (req, res, data) => {
+    const doc = data.erp.documents.find((d) => d.id === req.params.id);
+    if (!doc) return res.status(404).json({ error: 'Document introuvable' });
+    if (doc.status !== 'pending_approval') return res.status(400).json({ error: 'Ce document n\'est pas en attente de validation.' });
+    doc.status = 'rejected'; doc.rejectedReason = String((req.body && req.body.reason) || '').slice(0, 500);
+    doc.approvedBy = null; doc.approvedByName = null; doc.approvedAt = null;
+    audit.logAction(data, { ...actor(req), action: 'document.reject', entity: doc.label, detail: doc.userName });
+    if (doc.createdBy && doc.createdBy !== req.user.id) {
+      push.fire(push.notifyUser(data, save, doc.createdBy, { title: '⛔ Document refusé', body: `« ${doc.label} » pour ${doc.userName} a été refusé par l'administrateur${doc.rejectedReason ? ' : ' + doc.rejectedReason : '.'}`, url: '/', tag: 'docval-' + doc.id }));
+    }
+    await save();
+    res.json({ ok: true, status: doc.status });
+  }));
+
+  // Encadrement : suivi de tous les documents (préparés / en attente / envoyés).
   r.get('/documents', guardStaff, withData(async (req, res, data) => {
-    res.json({ documents: data.erp.documents.slice().reverse().map((d) => ({ id: d.id, userId: d.userId, userName: d.userName, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt, ackName: d.ackName })) });
+    res.json({ documents: data.erp.documents.slice().reverse().map((d) => ({ id: d.id, userId: d.userId, userName: d.userName, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt, ackName: d.ackName, createdBy: d.createdBy, createdByName: d.createdByName || null, approvedByName: d.approvedByName || null, rejectedReason: d.rejectedReason || null })) });
   }));
-  // Salarié : ses propres documents (authRequired seul).
+  // Salarié : ses propres documents (uniquement ceux réellement envoyés).
   r.get('/my-documents', authRequired, withData(async (req, res, data) => {
-    const mine = data.erp.documents.filter((d) => d.userId === req.user.id).slice().reverse()
+    const mine = data.erp.documents.filter((d) => d.userId === req.user.id && d.status !== 'pending_approval' && d.status !== 'rejected').slice().reverse()
       .map((d) => ({ id: d.id, label: d.label, type: d.type, createdAt: d.createdAt, status: d.status, viewedAt: d.viewedAt || null, ackedAt: d.ackedAt }));
     res.json({ documents: mine });
   }));
@@ -622,6 +679,7 @@ function mount(app, deps) {
   r.post('/documents/:id/seen', authRequired, withData(async (req, res, data) => {
     const doc = data.erp.documents.find((d) => d.id === req.params.id);
     if (!doc || doc.userId !== req.user.id) return res.status(404).json({ error: 'Document introuvable' });
+    if (doc.status === 'pending_approval' || doc.status === 'rejected') return res.status(404).json({ error: 'Document introuvable' });
     if (!doc.viewedAt) { doc.viewedAt = new Date().toISOString(); if (doc.status === 'sent') doc.status = 'read'; await save(); }
     res.json({ ok: true, viewedAt: doc.viewedAt });
   }));
@@ -629,9 +687,16 @@ function mount(app, deps) {
   r.get('/documents/:id/view', authRequired, withData(async (req, res, data) => {
     const doc = data.erp.documents.find((d) => d.id === req.params.id);
     if (!doc) return res.status(404).send('Document introuvable');
-    if (req.user.role !== 'admin' && doc.userId !== req.user.id) return res.status(403).send('Accès refusé');
+    const pending = doc.status === 'pending_approval' || doc.status === 'rejected';
+    // Document en attente de validation : visible par l'admin et le responsable
+    // qui l'a préparé, jamais par le salarié destinataire tant qu'il n'est pas validé.
+    if (pending) {
+      if (req.user.role !== 'admin' && doc.createdBy !== req.user.id) return res.status(403).send('Document en attente de validation.');
+    } else if (req.user.role !== 'admin' && doc.userId !== req.user.id) {
+      return res.status(403).send('Accès refusé');
+    }
     // Le destinataire qui ouvre son document : on horodate la première lecture.
-    if (doc.userId === req.user.id && req.user.role !== 'admin' && !doc.viewedAt) {
+    if (!pending && doc.userId === req.user.id && req.user.role !== 'admin' && !doc.viewedAt) {
       doc.viewedAt = new Date().toISOString(); if (doc.status === 'sent') doc.status = 'read'; await save();
     }
     res.type('html').send(printableDoc(doc.label, doc.html));
@@ -641,6 +706,7 @@ function mount(app, deps) {
     const doc = data.erp.documents.find((d) => d.id === req.params.id);
     if (!doc) return res.status(404).json({ error: 'Document introuvable' });
     if (doc.userId !== req.user.id) return res.status(403).json({ error: 'Document non destiné à ce compte' });
+    if (doc.status === 'pending_approval' || doc.status === 'rejected') return res.status(403).json({ error: 'Document non disponible.' });
     if (doc.status !== 'acked') {
       doc.status = 'acked'; doc.ackedAt = new Date().toISOString();
       doc.ackBy = req.user.id; doc.ackName = `${req.user.firstName} ${req.user.lastName}`; doc.ackRef = erp.eid('sig');

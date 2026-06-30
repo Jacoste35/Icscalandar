@@ -1048,11 +1048,13 @@ async function renderDashboard(main) {
       geolocPanel = '<div id="dash-geoloc"><div class="card" style="padding:0;overflow:hidden;border:2px solid #14427e;border-radius:14px">'
         + '<div style="padding:.85rem 1rem;background:linear-gradient(135deg,#14427e,#2563eb);color:#fff;font-weight:800;font-size:1.05rem">🛰️ Géolocalisation des chauffeurs <span style="font-weight:400;opacity:.85;font-size:.85rem">— chargement…</span></div></div></div>';
     }
-    let kmAnomalyPanel = '', licenciementPanel = '';
+    let kmAnomalyPanel = '', licenciementPanel = '', docValidationPanel = '';
     if (isAdmin) {
       try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
       try { const { anomalies } = await api('GET', '/staff/km-anomalies'); kmAnomalyPanel = kmAnomalyHTML(anomalies); } catch (e) {}
       try { const { files } = await api('GET', '/admin/erp/documents/disciplinary-files'); licenciementPanel = licenciementHTML((files || []).filter((f) => f.level === 'licenciement')); } catch (e) {}
+      // Documents préparés par un responsable, en attente de validation admin.
+      try { const { documents } = await api('GET', '/admin/erp/documents'); docValidationPanel = docValidationHTML((documents || []).filter((d) => d.status === 'pending_approval')); } catch (e) {}
     }
 
     // Documents adressés au salarié (à accuser réception) — visible de tous.
@@ -1119,7 +1121,7 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${previewBar}
-      ${dashGroup('📌 À ne pas manquer', licenciementPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
+      ${dashGroup('📌 À ne pas manquer', licenciementPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
       ${dashGroup('🧮 Mon espace', compteursCard, anc, myLeavePanel, weekSuggestPanel, retardCards)}
       ${dashGroup('🚚 Exploitation &amp; véhicules', geolocPanel, kmAnomalyPanel, stockAlertPanel, needsMaintPanel, disciplinePanel, vehPendingPanel, entretiensPanel, vehicleWarnPanel)}
       ${dashGroup('👥 Mon équipe', priorityPanel, classement, colleaguesPanel)}
@@ -1239,6 +1241,19 @@ function bindDashboardActions(scope) {
   scope.querySelectorAll('[data-mydocack]').forEach((b) => b.onclick = async () => {
     if (!confirm('Je certifie sur l\'honneur avoir reçu et lu ce document.\n\nEn validant, vous le signez électroniquement (date et heure enregistrées).')) return;
     try { const r = await api('POST', '/admin/erp/documents/' + b.dataset.mydocack + '/ack'); toast('Réception accusée et signée le ' + (r.stamp || '') + '.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  // Validation administrateur des documents préparés par un responsable.
+  scope.querySelectorAll('[data-docview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.docview + '/view'));
+  scope.querySelectorAll('[data-docapprove]').forEach((b) => b.onclick = async () => {
+    if (!confirm(`Valider et envoyer « ${b.dataset.lbl} » à ${b.dataset.usr} ? Le salarié devra en accuser réception.`)) return;
+    try { await api('POST', '/admin/erp/documents/' + b.dataset.docapprove + '/approve', {}); toast('Document validé et envoyé au salarié.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-docreject]').forEach((b) => b.onclick = async () => {
+    const reason = prompt(`Refuser « ${b.dataset.lbl} ». Motif (transmis au responsable, facultatif) :`, '');
+    if (reason === null) return;
+    try { await api('POST', '/admin/erp/documents/' + b.dataset.docreject + '/reject', { reason }); toast('Document refusé.', 'ok'); renderDashboard(document.getElementById('main')); }
     catch (e) { toast(e.message, 'err'); }
   });
   // Ajouter / modifier le remplaçant directement depuis le planning d'accueil.
@@ -1686,6 +1701,19 @@ function myDocumentsHTML(docs) {
       <tbody>${docs.map((d) => `<tr><td>${esc(d.label)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
         <td>${d.status === 'acked' ? `<span class="pill ok">signé le ${fmtDateTime(d.ackedAt)}</span>` : '<span class="pill warn">à accuser réception</span>'}</td>
         <td style="white-space:nowrap"><button class="btn ghost sm" data-mydocview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ghost sm" data-mydocatt="${d.id}">Attestation</button>` : ` <button class="btn ok sm" data-mydocack="${d.id}">✍️ J'accuse réception</button>`}</td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+
+// Accueil (admin) : documents préparés par un responsable, en attente de
+// validation. Ils ne sont pas envoyés au salarié tant que l'admin n'a pas validé.
+function docValidationHTML(list) {
+  if (!list || !list.length) return '';
+  return `<div class="card" style="border-left:5px solid #f59e0b">
+    <h3 style="margin:0 0 .3rem">🛡️ Documents à valider avant envoi (${list.length})</h3>
+    <p class="help" style="margin-top:0">Préparés par un responsable. Vérifiez-les puis validez l'envoi au salarié, ou refusez. Tant que ce n'est pas validé, le salarié ne les reçoit pas.</p>
+    <div class="table-wrap"><table class="veh-table"><thead><tr><th>Salarié</th><th>Document</th><th>Préparé par</th><th></th></tr></thead>
+      <tbody>${list.map((d) => `<tr><td><strong>${esc(d.userName)}</strong></td><td>${esc(d.label)}</td><td>${esc(d.createdByName || '—')}</td>
+        <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button> <button class="btn ok sm" data-docapprove="${d.id}" data-lbl="${esc(d.label)}" data-usr="${esc(d.userName)}">✅ Valider</button> <button class="btn warn sm" data-docreject="${d.id}" data-lbl="${esc(d.label)}">⛔ Refuser</button></td></tr>`).join('')}</tbody></table></div>
   </div>`;
 }
 
@@ -4350,10 +4378,33 @@ async function docMgmtSent(main) {
   const body = document.getElementById('dm-body'); if (!body) return; body.className = '';
   let docs;
   try { docs = (await api('GET', '/admin/erp/documents')).documents; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
-  if (!docs.length) { body.innerHTML = '<div class="alert info">Aucun document envoyé pour le moment.</div>'; return; }
-  // Regroupement par salarié (un tableau individuel chacun).
+  if (!docs.length) { body.innerHTML = '<div class="alert info">Aucun document pour le moment.</div>'; return; }
+  const isAdmin = State.user.role === 'admin';
+  // Documents en attente de validation administrateur (préparés par un responsable).
+  const pendingDocs = docs.filter((d) => d.status === 'pending_approval');
+  const rejectedDocs = docs.filter((d) => d.status === 'rejected');
+  const otherDocs = docs.filter((d) => d.status !== 'pending_approval' && d.status !== 'rejected');
+
+  // Bloc « à valider » mis en avant (admin = actions ; responsable = suivi).
+  let validBlock = '';
+  if (pendingDocs.length || rejectedDocs.length) {
+    const prow = (d) => `<tr>
+        <td>${esc(d.userName)}</td><td>${esc(d.label)}</td>
+        <td>${esc(d.createdByName || '—')}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
+        <td>${d.status === 'rejected' ? `<span class="pill danger">⛔ refusé</span>${d.rejectedReason ? `<div class="help">${esc(d.rejectedReason)}</div>` : ''}` : '<span class="pill warn">⏳ en attente</span>'}</td>
+        <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${isAdmin ? ` <button class="btn ok sm" data-docapprove="${d.id}" data-lbl="${esc(d.label)}" data-usr="${esc(d.userName)}">✅ Valider &amp; envoyer</button>${d.status === 'pending_approval' ? ` <button class="btn warn sm" data-docreject="${d.id}" data-lbl="${esc(d.label)}">⛔ Refuser</button>` : ''}` : ''} <button class="btn danger sm" data-doccancel="${d.id}" data-lbl="${esc(d.label)}">✕</button></td>
+      </tr>`;
+    const list = pendingDocs.concat(rejectedDocs);
+    validBlock = `<details class="card" open style="border:2px solid #f59e0b">
+      <summary><strong>🛡️ À valider avant envoi</strong> <span class="pill warn">${pendingDocs.length} en attente</span></summary>
+      <p class="help" style="margin:.4rem 0">${isAdmin ? 'Ces documents ont été préparés par un responsable. Ils ne seront envoyés au salarié qu\'après votre validation.' : 'Vos documents préparés, en attente de validation par un administrateur. Ils ne sont pas encore envoyés au salarié.'}</p>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Salarié</th><th>Document</th><th>Préparé par</th><th>Le</th><th>Statut</th><th></th></tr></thead>
+      <tbody>${list.map(prow).join('')}</tbody></table></div></details>`;
+  }
+
+  // Documents réellement envoyés, regroupés par salarié.
   const byUser = {};
-  docs.forEach((d) => { (byUser[d.userName || '—'] = byUser[d.userName || '—'] || []).push(d); });
+  otherDocs.forEach((d) => { (byUser[d.userName || '—'] = byUser[d.userName || '—'] || []).push(d); });
   const names = Object.keys(byUser).sort();
   const docRow = (d) => `<tr>
       <td>${esc(d.label)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
@@ -4361,17 +4412,30 @@ async function docMgmtSent(main) {
       <td>${d.viewedAt ? fmtDateTime(d.viewedAt) : '—'}</td><td>${d.ackedAt ? fmtDateTime(d.ackedAt) : '—'}</td>
       <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation</button>` : ''} <button class="btn danger sm" data-doccancel="${d.id}" data-lbl="${esc(d.label)}">✕</button></td>
     </tr>`;
-  body.innerHTML = `<p class="help" style="margin-top:0">Documents adressés, classés par salarié. Vous pouvez annuler un envoi (✕) : le document et la signature éventuelle sont retirés.</p>` + names.map((n) => {
+  const sentBlock = names.length ? `<p class="help" style="margin-top:0">Documents adressés, classés par salarié. Vous pouvez annuler un envoi (✕) : le document et la signature éventuelle sont retirés.</p>` + names.map((n) => {
     const list = byUser[n].slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     return `<details class="card" open><summary><strong>${esc(n)}</strong> <span class="help">${list.length} document(s)</span></summary>
       <div class="table-wrap" style="margin-top:.6rem"><table class="veh-table"><thead><tr><th>Document</th><th>Émis le</th><th>Statut</th><th>Lu le</th><th>Signé le</th><th></th></tr></thead>
       <tbody>${list.map(docRow).join('')}</tbody></table></div></details>`;
-  }).join('');
+  }).join('') : '<div class="alert info">Aucun document envoyé pour le moment.</div>';
+
+  body.innerHTML = validBlock + sentBlock;
   body.querySelectorAll('[data-docview]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.docview + '/view'));
   body.querySelectorAll('[data-att]').forEach((b) => b.onclick = () => erpOpenHtml('GET', '/admin/erp/documents/' + b.dataset.att + '/attestation'));
+  body.querySelectorAll('[data-docapprove]').forEach((b) => b.onclick = async () => {
+    if (!confirm(`Valider et envoyer « ${b.dataset.lbl} » à ${b.dataset.usr} ? Le salarié devra en accuser réception.`)) return;
+    try { await api('POST', '/admin/erp/documents/' + b.dataset.docapprove + '/approve', {}); toast('Document validé et envoyé au salarié.', 'ok'); docMgmtSent(main); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-docreject]').forEach((b) => b.onclick = async () => {
+    const reason = prompt(`Refuser « ${b.dataset.lbl} ». Motif (transmis au responsable, facultatif) :`, '');
+    if (reason === null) return;
+    try { await api('POST', '/admin/erp/documents/' + b.dataset.docreject + '/reject', { reason }); toast('Document refusé.', 'ok'); docMgmtSent(main); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   body.querySelectorAll('[data-doccancel]').forEach((b) => b.onclick = async () => {
-    if (!confirm(`Annuler et supprimer l'envoi de « ${b.dataset.lbl} » ? Cette action est irréversible.`)) return;
-    try { await api('DELETE', '/admin/erp/documents/' + b.dataset.doccancel); toast('Envoi annulé.', 'ok'); docMgmtSent(main); }
+    if (!confirm(`Annuler et supprimer « ${b.dataset.lbl} » ? Cette action est irréversible.`)) return;
+    try { await api('DELETE', '/admin/erp/documents/' + b.dataset.doccancel); toast('Document supprimé.', 'ok'); docMgmtSent(main); }
     catch (e) { toast(e.message, 'err'); }
   });
 }
@@ -4499,7 +4563,7 @@ async function docMgmtGen(main) {
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
         <button class="btn accent" id="dm-gen">Aperçu</button>
         <button class="btn" id="dm-pdf">⬇️ Exporter en PDF</button>
-        <button class="btn ok" id="dm-issue" style="display:none">✅ Valider & adresser au salarié</button>
+        <button class="btn ok" id="dm-issue" style="display:none">${State.user.role === 'admin' ? '✅ Valider &amp; adresser au salarié' : '📤 Soumettre à l\'administrateur'}</button>
       </div>
       <p class="help">Les faits sont rédigés automatiquement à partir du motif ; un encart vous demande de compléter les éléments variables (dates, véhicule, description). Le brouillon reste éditable avant export. Cadre : CCN Transports routiers IDCC 16.</p>
     </div>
@@ -4659,9 +4723,16 @@ async function docMgmtGen(main) {
   body.querySelector('#dm-issue').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
     const r = await finalizeHtml(); if (!r) return;
-    if (!confirm('Adresser ce document au salarié ? Il devra en accuser réception dans l\'application.')) return;
-    try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: r.type, html: r.html, label: r.label, vars: { motif: effMotif() } }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
-    catch (e) { toast(e.message, 'err'); }
+    const isAdmin = State.user.role === 'admin';
+    const ask = isAdmin
+      ? 'Adresser ce document au salarié ? Il devra en accuser réception dans l\'application.'
+      : 'Soumettre ce document à l\'administrateur pour validation ? Il ne sera envoyé au salarié qu\'après son approbation.';
+    if (!confirm(ask)) return;
+    try {
+      const res = await api('POST', '/admin/erp/documents/issue', { userId: uid, type: r.type, html: r.html, label: r.label, vars: { motif: effMotif() } });
+      toast(res && res.pending ? 'Document soumis à l\'administrateur pour validation.' : 'Document adressé au salarié.', 'ok');
+      renderDocMgmt(main);
+    } catch (e) { toast(e.message, 'err'); }
   };
   // Pré-remplissage depuis un dossier disciplinaire (faute grave → conservatoire).
   if (_docGenPrefill) {
@@ -7374,7 +7445,7 @@ async function adminDocSuivi(body) {
     <p class="help">Chaque document généré et adressé apparaît ici. Le salarié le retrouve à l'ouverture de l'application et certifie sur l'honneur l'avoir reçu et lu (signature électronique horodatée). L'attestation est alors disponible.</p>
     ${docs.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Document</th><th>Salarié</th><th>Émis le</th><th>Statut</th><th>Lu le</th><th>Signé le</th><th></th></tr></thead><tbody>${docs.map((d) => `<tr>
       <td>${esc(d.label)}</td><td>${esc(d.userName)}</td><td>${fmtDate((d.createdAt || '').slice(0, 10))}</td>
-      <td>${d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : (d.viewedAt || d.status === 'read') ? '<span class="pill warn">lu, non signé — à relancer</span>' : '<span class="pill danger">non ouvert</span>'}</td>
+      <td>${d.status === 'pending_approval' ? '<span class="pill warn">⏳ à valider (admin)</span>' : d.status === 'rejected' ? '<span class="pill danger">⛔ refusé</span>' : d.status === 'acked' ? '<span class="pill ok">lu &amp; signé</span>' : (d.viewedAt || d.status === 'read') ? '<span class="pill warn">lu, non signé — à relancer</span>' : '<span class="pill danger">non ouvert</span>'}</td>
       <td>${d.viewedAt ? fmtDateTime(d.viewedAt) : '—'}</td>
       <td>${d.ackedAt ? fmtDateTime(d.ackedAt) : '—'}</td>
       <td style="white-space:nowrap"><button class="btn ghost sm" data-docview="${d.id}">Voir</button>${d.status === 'acked' ? ` <button class="btn ok sm" data-att="${d.id}">Attestation PDF</button>` : ''}</td>
