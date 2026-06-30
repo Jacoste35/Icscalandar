@@ -741,9 +741,16 @@ function fuelAnalyseTab(body, d) {
     <div class="fuel-kpi"><div class="fk-val">${(s.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres (total)</div><div class="fk-sub">${s.count || 0} pleins</div></div>
     <div class="fuel-kpi"><div class="fk-val">${euro2(s.ttc || 0)}</div><div class="fk-lbl">Dépense TTC</div><div class="fk-sub">HT ${euro2(s.ht || 0)}</div></div>
   </div>`;
+  const alertRow = (a) => {
+    const head = `<div class="al-main"><span class="al-veh">${esc(a.vehicle)}</span> ${a.date ? `<span class="help">${esc(a.date)}</span> ` : ''}${esc(a.text)}${a.driver ? ` <span class="al-drv">👤 ${esc(a.driver)}</span>` : ''}</div>`;
+    const actions = !d.isAdmin ? '' : a.decision
+      ? `<div class="al-actions"><span class="al-badge al-${a.decision}">${a.decision === 'fraud' ? '🚩 Fraude confirmée' : '✓ Faux positif'}</span> <button class="btn ghost sm" data-aundo="${esc(a.key)}">annuler</button></div>`
+      : `<div class="al-actions"><button class="btn danger sm" data-afraud="${esc(a.key)}">🚩 Fraude confirmée</button> <button class="btn ghost sm" data-afalse="${esc(a.key)}">✓ Faux positif</button></div>`;
+    return `<li class="al-${a.level}${a.decision ? ' al-done' : ''}">${head}${actions}</li>`;
+  };
   const alertsBlock = an.alerts && an.alerts.length ? `<details class="card fuel-alerts" open>
-      <summary><strong>🚨 Alertes à contrôler (${an.alertCount})</strong> <span class="help">surconsommation ou vol potentiel — vérifiez le chauffeur concerné</span></summary>
-      <ul class="fuel-alert-list">${an.alerts.map((a) => `<li class="al-${a.level}"><span class="al-veh">${esc(a.vehicle)}</span> ${a.date ? `<span class="help">${esc(a.date)}</span> ` : ''}${esc(a.text)}${a.driver ? ` <span class="al-drv">👤 ${esc(a.driver)}</span>` : ''}</li>`).join('')}</ul>
+      <summary><strong>🚨 Alertes à contrôler (${an.alertCount})</strong> <span class="help">surconsommation ou vol potentiel — confirmez la fraude ou marquez un faux positif</span></summary>
+      <ul class="fuel-alert-list">${an.alerts.map(alertRow).join('')}</ul>
     </details>` : `<div class="alert ok">✅ Aucune surconsommation anormale détectée (réf. ${an.refConso} L/100, seuil +${an.threshold}%).</div>`;
   // --- Graphique + tableau PAR CHAUFFEUR (30 jours glissants) ---
   const drivers = da.drivers || [];
@@ -794,6 +801,10 @@ function fuelAnalyseTab(body, d) {
 
   body.innerHTML = cards + alertsBlock + driverBlock + vehBlock + txns;
   if (d.isAdmin) {
+    const decide = async (key, status) => { try { await api('POST', '/staff/fuel/alert-decision', { key, status }); toast(status === 'fraud' ? 'Fraude confirmée.' : status === 'false_positive' ? 'Marquée faux positif.' : 'Décision annulée.', 'ok'); loadCarburant(); } catch (e) { toast(e.message, 'err'); } };
+    body.querySelectorAll('[data-afraud]').forEach((b) => b.onclick = () => decide(b.dataset.afraud, 'fraud'));
+    body.querySelectorAll('[data-afalse]').forEach((b) => b.onclick = () => decide(b.dataset.afalse, 'false_positive'));
+    body.querySelectorAll('[data-aundo]').forEach((b) => b.onclick = () => decide(b.dataset.aundo, ''));
     body.querySelectorAll('[data-fueldel]').forEach((b) => b.onclick = async () => {
       if (!confirm('Supprimer cette transaction ?')) return;
       try { await api('DELETE', '/staff/fuel/' + b.dataset.fueldel); loadCarburant(); } catch (e) { toast(e.message, 'err'); }
