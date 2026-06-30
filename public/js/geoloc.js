@@ -68,19 +68,20 @@ function geolocSplit(positions) {
 }
 
 // Résumé coloré du statut réel des véhicules (en tournée / arrêts / dépôt).
-function geoStatusChips(active, depot) {
+// onDark : pastilles lisibles sur fond foncé (en-tête bleu de l'accueil) —
+// pilule blanche translucide + point coloré, au lieu de texte coloré sur bleu.
+function geoStatusChips(active, depot, onDark) {
   const counts = { green: 0, yellow: 0, orange: 0, grey: 0 };
   (active || []).forEach((p) => { const s = p.lat == null ? 'grey' : p.status; counts[s] = (counts[s] || 0) + 1; });
-  const chip = (s, n) => {
-    if (!n) return '';
-    const m = GEO_STATUS[s];
-    return `<span class="geo-chip" style="background:${m.color}1a;color:${m.color}">${m.dot} ${n} ${m.short}</span>`;
-  };
-  let html = chip('green', counts.green) + chip('yellow', counts.yellow) + chip('orange', counts.orange) + chip('grey', counts.grey);
-  if (!active || !active.length) html = '<span class="geo-chip">aucun en activité</span>';
-  if (depot && depot.length) html += `<span class="geo-chip" style="background:#2563eb1a;color:#2563eb">🏠 ${depot.length} au dépôt</span>`;
+  const chip = (color, label) => onDark
+    ? `<span class="geo-chip geo-chip-d"><i class="geo-chip-dot" style="background:${color}"></i>${label}</span>`
+    : `<span class="geo-chip" style="background:${color}1a;color:${color}"><i class="geo-chip-dot" style="background:${color}"></i>${label}</span>`;
+  const stChip = (s, n) => { if (!n) return ''; const m = GEO_STATUS[s]; return chip(m.color, `${n} ${m.short}`); };
+  let html = stChip('green', counts.green) + stChip('yellow', counts.yellow) + stChip('orange', counts.orange) + stChip('grey', counts.grey);
+  if (!active || !active.length) html = chip('#94a3b8', 'aucun en activité');
+  if (depot && depot.length) html += chip('#2563eb', `${depot.length} au dépôt`);
   const lateN = (active || []).filter((p) => p.late).length;
-  if (lateN) html += `<span class="geo-chip" style="background:#fee2e2;color:#b91c1c">⏰ ${lateN} en retard prise de poste</span>`;
+  if (lateN) html += chip('#dc2626', `${lateN} en retard prise de poste`);
   return html;
 }
 
@@ -355,9 +356,16 @@ function geolocDashboardHTML(d) {
   const err = d.error ? `<div class="alert warn" style="margin:.4rem 0">${esc(d.error)}</div>` : '';
   // Ouvert par défaut sur ordinateur (mis en avant) ; replié sur téléphone.
   const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
-  return `<div class="card">
+  return `<div class="card geo-dashcard">
     <details class="geo-drop geo-drop-main" id="geodrop-main"${isMobile ? '' : ' open'}>
-      <summary><span class="geo-main-title">🛰️ Géolocalisation des chauffeurs</span> ${geoStatusChips(active, depot)}</summary>
+      <summary>
+        <span class="geo-main-row">
+          <span class="geo-main-icon">🛰️</span>
+          <span class="geo-main-title">Géolocalisation des chauffeurs</span>
+          <span class="geo-main-chev" aria-hidden="true">›</span>
+        </span>
+        <span class="geo-main-chips">${geoStatusChips(active, depot, true)}</span>
+      </summary>
       <div style="display:flex;justify-content:flex-end;margin:.3rem 0 .2rem"><button class="btn ghost sm" data-view="geoloc">Ouvrir la carte →</button></div>
       ${err}
       ${geolocLiveTableHTML(d.positions || [])}
