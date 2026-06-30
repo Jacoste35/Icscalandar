@@ -1357,10 +1357,13 @@ function conflictAlertHTML(events, team) {
 
 // Accueil salarié : récap de SES demandes de congés à venir avec statut de
 // conflit (vert = aucun, jaune = possible, rouge = certain) + bouton modifier.
+// Nombre maximum de congés simultanés (= nombre de chauffeurs pouvant assurer
+// les remplacements). Au-delà, certains ne pourront pas partir.
+const MAX_CONCURRENT_LEAVES = 2;
 function myLeaveRecapHTML(viewUser, events, team) {
   const today = iso(new Date());
-  const groupOf = {}; (team || []).forEach((m) => { groupOf[m.id] = m.groupId; });
-  const myGroup = viewUser.groupId;
+  const cap = MAX_CONCURRENT_LEAVES;
+  // Les congés sont réservables par TOUS les utilisateurs (pas seulement le groupe).
   const mine = (events || []).filter((e) => e.userId === viewUser.id && e.category !== 'RET' && e.endDate >= today && (e.status === 'pending' || e.status === 'approved'))
     .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
   if (!mine.length) return '';
@@ -1368,24 +1371,31 @@ function myLeaveRecapHTML(viewUser, events, team) {
     const others = new Set();
     (events || []).forEach((o) => {
       if (o.userId === viewUser.id || o.category === 'RET') return;
-      if (groupOf[o.userId] !== myGroup) return;
       if (!(o.status === 'pending' || o.status === 'approved')) return;
       if (o.startDate <= e.endDate && o.endDate >= e.startDate) others.add(o.userId);
     });
-    const n = others.size;
+    const n = others.size;                 // autres personnes sur la même période
+    const concurrent = n + 1;              // total (vous compris)
     const period = `du ${fmtDate(e.startDate)} au ${fmtDate(e.endDate)}`;
     const approved = e.status === 'approved';
     let tone, msg;
-    if (n === 0) { tone = 'ok'; msg = approved ? `Vos congés ${period} sont <strong>confirmés</strong> — aucun conflit sur ces dates. ✅` : `Votre demande ${period} est <strong>en attente de confirmation</strong> — aucun conflit sur ces dates pour le moment. ✅`; }
-    else if (n === 1) { tone = 'warn'; msg = `Un conflit pourrait subsister pour vos congés ${period} : <strong>1 autre personne</strong> de votre groupe a demandé la même période. ${approved ? 'Vos congés sont confirmés mais à surveiller' : 'Vos congés sont toujours en attente d\'approbation'}. Vous pouvez nous soumettre une autre date.`; }
-    else { tone = 'danger'; msg = `Conflit pour vos congés ${period} : <strong>${n} autres personnes</strong> ont demandé la même période. Il est <strong>certain que tout le monde ne pourra pas partir</strong> à ces dates — merci de modifier vos dates, sinon l'un d'entre vous n'aura pas la date souhaitée.`; }
+    if (n === 0) {
+      tone = 'ok';
+      msg = approved ? `Vos congés ${period} sont <strong>confirmés</strong> — aucun conflit sur ces dates. ✅` : `Votre demande ${period} est <strong>en attente de confirmation</strong> — aucun conflit sur ces dates pour le moment. ✅`;
+    } else if (concurrent <= cap) {
+      tone = 'warn';
+      msg = `Pour vos congés ${period} : <strong>${n} autre personne</strong> a demandé la même période. Vous êtes ${concurrent} au total, soit la limite des <strong>${cap} remplacements</strong> possibles — vos congés ${approved ? 'sont confirmés mais à surveiller' : 'restent en attente d\'approbation'}. Vous pouvez nous soumettre une autre date pour plus de sécurité.`;
+    } else {
+      tone = 'danger';
+      msg = `Conflit pour vos congés ${period} : <strong>${n} autres personnes</strong> ont demandé la même période (${concurrent} au total). Or seuls <strong>${cap} congés</strong> peuvent être accordés en même temps (${cap} remplaçants) : il est <strong>certain que l'un d'entre vous ne pourra pas partir</strong> à ces dates. Merci de vraiment modifier vos dates pour m'aider à résoudre ce conflit.`;
+    }
     return `<div class="leave-recap leave-${tone}">
       <div class="leave-recap-msg">${msg}</div>
       <button class="btn ${tone === 'danger' ? 'danger' : 'ghost'} sm" data-leavemod="${e.id}" data-cat="${esc(e.category)}" data-pool="${esc(e.pool || '')}" data-s="${esc(e.startDate)}" data-e="${esc(e.endDate)}" data-reason="${esc(e.reason || '')}">✏️ Modifier mes dates</button>
     </div>`;
   }).join('');
   return `<div class="card"><h3 style="margin:0 0 .4rem">📅 Mes demandes de congés</h3>
-    <p class="help" style="margin-top:-.2rem">Bonjour ${esc(viewUser.firstName)}, voici l'état de vos demandes. <span style="color:#166534">Vert</span> = aucun conflit · <span style="color:#b45309">Jaune</span> = conflit possible · <span style="color:#b91c1c">Rouge</span> = conflit certain.</p>
+    <p class="help" style="margin-top:-.2rem">Bonjour ${esc(viewUser.firstName)}, voici l'état de vos demandes (max. ${cap} congés simultanés). <span style="color:#166534">Vert</span> = aucun conflit · <span style="color:#b45309">Jaune</span> = à la limite · <span style="color:#b91c1c">Rouge</span> = conflit certain.</p>
     ${rows}</div>`;
 }
 
@@ -4194,8 +4204,14 @@ async function docMgmtGen(main) {
     const uid = body.querySelector('#dm-user').value; const u = (meta.users || []).find((x) => x.id === uid);
     const motif = effMotif();
     const mp = (_discCtx && _discCtx.miseAPied) || {};
+    // Rappel des avertissements déjà notifiés (dates + motifs) pour les mises à pied.
+    const sanc = (_discCtx && _discCtx.sanctions) || [];
+    const av = sanc.filter((s) => /avertissement/i.test(s.type || ''));
+    const historique = av.length
+      ? `Pour mémoire, les avertissements suivants vous ont déjà été notifiés et versés à votre dossier disciplinaire : ${av.map((s) => `le ${s.date ? fmtDate(s.date) : '—'}${s.motif ? ` (${s.motif})` : ''}`).join(' ; ')}.`
+      : '';
     return {
-      motif, faits,
+      motif, faits, historique,
       miseAPied: mp,
       retards: { count: selectedRetards().length, dates: selectedRetards() },
       salarie: u ? { fullName: u.name, lastName: (u.lastName || u.name.split(' ').slice(-1)[0] || '').toUpperCase(), civilite: 'Monsieur', address: u.address || '', birthDate: u.birthDate || '', hireDate: u.hireDate || '', poste: 'conducteur VL ≤ 3,5 T', coefficient: '110M' } : {},
@@ -4276,6 +4292,10 @@ const MOTIF_FACTS = {
   "Insubordination / refus d'exécuter une tâche": "Le [date], vous avez refusé d'exécuter [tâche demandée] qui relevait de vos fonctions, malgré la demande explicite de votre responsable.",
   'Utilisation non autorisée du véhicule de service': "Le [date], vous avez utilisé le [matériel / véhicule] à des fins non autorisées, en dehors du cadre de vos missions.",
   'Non-respect des temps de conduite et de repos': "Le [date], il a été constaté un non-respect des temps de conduite et de repos réglementaires sur [véhicule], en infraction avec la réglementation sociale européenne.",
+  "Véhicule non propre à l'intérieur": "Le [date], lors d'un contrôle du véhicule [matériel / véhicule] qui vous est confié, il a été constaté un défaut manifeste de propreté de l'habitacle (saleté, détritus, absence d'entretien intérieur). L'entretien courant de propreté du véhicule relève de vos obligations ; cet état nuit aux conditions d'hygiène de travail et à l'image de l'entreprise auprès de la clientèle.",
+  "Véhicule non propre à l'extérieur": "Le [date], il a été constaté que le véhicule [matériel / véhicule] qui vous est confié présentait un défaut manifeste de propreté extérieure (carrosserie sale, non lavée). La propreté extérieure du véhicule, qui porte l'image de l'entreprise auprès des clients et du public, relève de vos obligations d'entretien courant.",
+  "Véhicule non propre à l'intérieur et à l'extérieur": "Le [date], lors d'un contrôle du véhicule [matériel / véhicule] qui vous est confié, il a été constaté un défaut manifeste de propreté, tant à l'intérieur de l'habitacle (saleté, détritus) qu'à l'extérieur (carrosserie sale, non lavée). L'entretien courant de propreté du véhicule relève de vos obligations ; cet état nuit aux conditions d'hygiène de travail et à l'image de l'entreprise auprès de la clientèle.",
+  'Non-entretien mécanique du véhicule malgré voyants / bruits (mise en danger)': "Le [date], malgré la présence de [voyant(s) / bruit(s) anormal(aux)] signalant une anomalie mécanique sur le véhicule [matériel / véhicule], vous avez poursuivi son utilisation sans en informer l'entreprise ni faire procéder à la vérification nécessaire. Ce manquement à votre obligation de signalement et d'entretien préventif a exposé le véhicule à un risque de casse et votre sécurité — ainsi que celle des autres usagers de la route — à un danger.",
 };
 function motifFacts(motif) {
   return MOTIF_FACTS[motif] || "Le [date], il a été constaté les faits suivants : [description des faits], constitutifs d'un manquement à vos obligations contractuelles.";
