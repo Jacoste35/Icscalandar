@@ -1089,6 +1089,7 @@ async function renderDashboard(main) {
       ${myLeavePanel}
       ${weekSuggestPanel}
       ${calSyncPanel}
+      ${isPresident ? '' : '<div id="dash-push"></div>'}
       ${philo}
       ${myDocsPanel}
       ${messagesPanel}
@@ -1108,6 +1109,8 @@ async function renderDashboard(main) {
       ${weekCards}`;
     // Rend chaque section de l'accueil repliable (ouvrir/masquer à la demande).
     makeDashCollapsible(dashBody);
+    // Notifications push : remplit le panneau dédié (selon l'état d'abonnement).
+    if (!_previewMode) renderPushPanel();
     // Sélecteur d'aperçu (toujours actif pour l'admin).
     const psel = dashBody.querySelector('#dash-preview');
     if (psel) psel.onchange = () => { _previewUserId = psel.value || null; renderDashboard(document.getElementById('main')); };
@@ -1625,6 +1628,54 @@ function licenciementHTML(list) {
       <tbody>${list.map((f) => `<tr><td><strong>${esc(f.userName)}</strong></td><td class="help">${esc(f.groupName)}</td><td style="text-align:center">${f.warningCount}${f.miseCount ? ` +${f.miseCount} MAP` : ''}</td><td class="help">${esc(f.reason)}</td><td><button class="btn accent sm" data-prepmap="${f.userId}" data-motif="${esc((f.dominant && (f.dominant.repMotif || f.dominant.motif)) || '')}">⚖️ Préparer la mise à pied</button></td></tr>`).join('')}</tbody></table></div>
     <div style="margin-top:.5rem"><button class="btn ghost sm" data-view="docmgmt-dossiers">Ouvrir les dossiers disciplinaires →</button></div>
   </div>`;
+}
+
+// --- Notifications push (PWA) -------------------------------------------
+function urlB64ToUint8(base64) {
+  const pad = '='.repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64); const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+let _pushCfg = null;
+async function renderPushPanel() {
+  const el = document.getElementById('dash-push'); if (!el) return;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { el.innerHTML = ''; return; }
+  let cfg; try { cfg = await api('GET', '/push/config'); } catch (e) { el.innerHTML = ''; return; }
+  _pushCfg = cfg;
+  if (!cfg.enabled || !cfg.publicKey) { el.innerHTML = ''; return; }
+  const reg = await navigator.serviceWorker.ready.catch(() => null);
+  const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  const on = !!sub;
+  const denied = Notification.permission === 'denied';
+  el.innerHTML = `<div class="card" style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;border-left:5px solid ${on ? 'var(--ok)' : 'var(--brand-2)'}">
+    <div style="flex:1;min-width:200px"><h3 style="margin:0 0 .2rem">🔔 Notifications</h3>
+      <p class="help" style="margin:0">${denied ? 'Les notifications sont bloquées dans les réglages de votre navigateur — réautorisez-les pour les activer.' : on ? 'Activées sur cet appareil : congés validés, documents adressés, annonces…' : 'Recevez les alertes importantes (congés, documents, planning), même application fermée.'}</p></div>
+    ${denied ? '' : `<button class="btn ${on ? 'ghost' : 'accent'}" id="push-toggle">${on ? 'Désactiver' : 'Activer les notifications'}</button>`}
+  </div>`;
+  const btn = el.querySelector('#push-toggle');
+  if (btn) btn.onclick = () => (on ? pushDisable() : pushEnable());
+}
+async function pushEnable() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('Notifications non autorisées.', 'warn'); return renderPushPanel(); }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(_pushCfg.publicKey) });
+    await api('POST', '/me/push-subscribe', sub.toJSON ? sub.toJSON() : sub);
+    toast('Notifications activées sur cet appareil. ✅', 'ok');
+  } catch (e) { toast('Activation impossible : ' + e.message, 'err'); }
+  renderPushPanel();
+}
+async function pushDisable() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) { const ep = sub.endpoint; await sub.unsubscribe().catch(() => {}); await api('POST', '/me/push-unsubscribe', { endpoint: ep }); }
+    toast('Notifications désactivées sur cet appareil.', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  renderPushPanel();
 }
 
 function dashWeekCard(title, weekStart, events, isCurrent, isPast) {

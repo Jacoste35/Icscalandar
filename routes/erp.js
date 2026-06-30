@@ -22,6 +22,7 @@ const closing = require('../lib/erp/closing');
 const ik = require('../lib/erp/ik');
 const docsign = require('../lib/erp/docsign');
 const discipline = require('../lib/erp/discipline');
+const push = require('../lib/push');
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -587,6 +588,12 @@ function mount(app, deps) {
     }
     audit.logAction(data, { ...actor(req), action: 'document.issue', entity: doc.label, detail: doc.userName });
     await save();
+    // Push : prévient le salarié qu'un document lui a été adressé (accusé requis).
+    push.fire(push.notifyUser(data, save, userId, {
+      title: '📄 Nouveau document à consulter',
+      body: `${doc.label} — à lire et accuser réception dans l'application.`,
+      url: '/', tag: 'doc-' + doc.id,
+    }));
     res.json({ document: { id: doc.id, label: doc.label, userName: doc.userName, status: doc.status } });
   }));
   // Admin : suivi de tous les documents adressés (lu/reçu).
