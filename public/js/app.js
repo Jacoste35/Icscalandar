@@ -1133,7 +1133,16 @@ function makeDashCollapsible(scope) {
 // Câblage des actions de la page d'accueil (messagerie, accusés, « J'ai lu »).
 function bindDashboardActions(scope) {
   // Liens de navigation insérés dans les panneaux d'accueil (ex. carte géoloc).
-  scope.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  scope.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => {
+    const v = b.dataset.view;
+    if (v === 'docmgmt-dossiers') { _docMgmtTab = 'dossiers'; State.view = 'docmgmt'; } else { State.view = v; }
+    renderApp();
+  });
+  // Préparer la mise à pied (faute grave) directement depuis l'alerte d'accueil.
+  scope.querySelectorAll('[data-prepmap]').forEach((b) => b.onclick = () => {
+    _docGenPrefill = { userId: b.dataset.prepmap, motif: b.dataset.motif || '', type: 'mise_a_pied_conservatoire' };
+    _docMgmtTab = 'gen'; State.view = 'docmgmt'; renderApp();
+  });
   // Modifier une demande de congés depuis le récap d'accueil.
   scope.querySelectorAll('[data-leavemod]').forEach((b) => b.onclick = () => openRequestModal({ id: b.dataset.leavemod, category: b.dataset.cat, pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: b.dataset.reason || '' }));
   // Démarre le panneau géoloc auto-actualisé (encadrement).
@@ -1513,9 +1522,9 @@ function licenciementHTML(list) {
   return `<div class="card" style="border-left:5px solid var(--danger)">
     <h3 style="margin:0 0 .3rem">⚖️ Procédure de licenciement à engager (${list.length})</h3>
     <p class="help" style="margin-top:0">Dossier disciplinaire au niveau « faute grave » : convoquez le salarié à un entretien préalable. Ouvrez son dossier dans <strong>Gestion des procédures → Dossiers disciplinaires</strong>.</p>
-    <div class="table-wrap"><table><thead><tr><th>Salarié</th><th>Groupe</th><th style="text-align:center">Avert.</th><th>Motif / raison</th></tr></thead>
-      <tbody>${list.map((f) => `<tr><td><strong>${esc(f.userName)}</strong></td><td class="help">${esc(f.groupName)}</td><td style="text-align:center">${f.warningCount}${f.miseCount ? ` +${f.miseCount} MAP` : ''}</td><td class="help">${esc(f.reason)}</td></tr>`).join('')}</tbody></table></div>
-    <div style="margin-top:.5rem"><button class="btn accent sm" data-view="docmgmt">Ouvrir les dossiers disciplinaires →</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Salarié</th><th>Groupe</th><th style="text-align:center">Avert.</th><th>Motif / raison</th><th></th></tr></thead>
+      <tbody>${list.map((f) => `<tr><td><strong>${esc(f.userName)}</strong></td><td class="help">${esc(f.groupName)}</td><td style="text-align:center">${f.warningCount}${f.miseCount ? ` +${f.miseCount} MAP` : ''}</td><td class="help">${esc(f.reason)}</td><td><button class="btn accent sm" data-prepmap="${f.userId}" data-motif="${esc((f.dominant && (f.dominant.repMotif || f.dominant.motif)) || '')}">⚖️ Préparer la mise à pied</button></td></tr>`).join('')}</tbody></table></div>
+    <div style="margin-top:.5rem"><button class="btn ghost sm" data-view="docmgmt-dossiers">Ouvrir les dossiers disciplinaires →</button></div>
   </div>`;
 }
 
@@ -2267,6 +2276,7 @@ async function renderMyData(main) {
           <tr><th>Nom</th><td>${esc(user.firstName)} ${esc(user.lastName)}</td></tr>
           ${user.username?`<tr><th>Nom de compte</th><td>${esc(user.username)}</td></tr>`:''}
           <tr><th>Email</th><td>${user.email?esc(user.email):'<em>—</em>'}</td></tr>
+          <tr><th>Adresse postale</th><td>${user.address?esc(user.address):'<em>—</em>'} <span class="help">(donnée personnelle — visible par vous et l'administrateur uniquement)</span></td></tr>
           <tr><th>Téléphone</th><td><span style="display:inline-flex;gap:.4rem;align-items:center"><input id="md-phone" value="${user.phone?esc(user.phone):''}" placeholder="06 12 34 56 78" style="max-width:200px"><button class="btn sm" id="md-phone-save">Enregistrer</button></span></td></tr>
           <tr><th>Groupe de travail</th><td>${g ? `<span class="group-chip" style="background:${g.color}">${esc(g.name)}</span>` : '<em>Non attribué</em>'}</td></tr>
           <tr><th>Rôle</th><td>${roleLabel(user.role)}</td></tr>
@@ -4039,6 +4049,23 @@ async function erpOpenHtml(method, path, body) {
 
 // --- Gestion documentaire (génération + PDF des courriers/contrats) ----------
 let _docMgmtTab = 'gen';
+// Pré-remplissage de l'onglet « Générer » depuis un dossier disciplinaire
+// (faute grave → mise à pied conservatoire prête à générer).
+let _docGenPrefill = null;
+const JOURS_FR = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+// « lundi 7 juillet 2026 » à partir d'une date ISO (yyyy-mm-dd).
+function frLongDate(iso) {
+  if (!iso) return '';
+  const d = parseISO(iso); if (isNaN(d)) return iso;
+  return `${JOURS_FR[d.getDay()]} ${d.getDate()} ${MOIS_FR[d.getMonth()]} ${d.getFullYear()}`;
+}
+// « 10 h 30 » à partir d'une heure HH:MM.
+function frHour(hm) {
+  if (!hm) return '';
+  const m = String(hm).match(/^(\d{1,2}):(\d{2})$/); if (!m) return hm;
+  return m[2] === '00' ? `${+m[1]} h` : `${+m[1]} h ${m[2]}`;
+}
 async function renderDocMgmt(main) {
   if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des procédures</h1>
@@ -4104,11 +4131,16 @@ async function docMgmtDossiers(main) {
   files.forEach((f) => { counts[f.level] = (counts[f.level] || 0) + 1; });
   const sevRows = Object.entries(sev).sort((a, b) => a[1].gravite - b[1].gravite || a[1].seuil - b[1].seuil)
     .map(([m, s]) => `<tr><td>${esc(m)}</td><td style="text-align:center">${esc(gl[s.gravite] || s.gravite)}</td><td style="text-align:center">${s.seuil}</td><td style="text-align:center">${s.seuil + 1}ᵉ manquement</td></tr>`).join('');
+  // Une barre de progression PAR cas d'avertissement (famille de motifs). Les
+  // motifs de même nature s'additionnent vers la mise à pied.
   const progBar = (f) => {
-    if (!f.dominant) return f.level === 'vierge' ? '<span class="help">—</span>' : '';
-    const { count, seuil, gravite } = f.dominant;
-    const pct = seuil > 0 ? Math.min(100, Math.round(count / seuil * 100)) : 100;
-    return `<div class="disc-bar"><span style="width:${pct}%;background:${DISC_LEVEL[f.level].color}"></span></div><span class="help">${count}/${seuil}${gravite >= 4 ? ' · très grave' : ''} — ${esc(f.dominant.motif)}</span>`;
+    if (!f.motifs || !f.motifs.length) return f.level === 'vierge' ? '<span class="help">—</span>' : '';
+    return f.motifs.map((m) => {
+      const pct = m.seuil > 0 ? Math.min(100, Math.round(m.count / m.seuil * 100)) : 100;
+      const col = m.gravite >= 4 ? '#7f1d1d' : (m.eligible ? '#b91c1c' : (m.gravite >= 3 ? '#d97706' : '#2563eb'));
+      const detail = (m.members && m.members.length > 1) ? ` <span class="help">— ${m.members.map((x) => `${esc(x.motif)} ×${x.count}`).join(', ')}</span>` : '';
+      return `<div class="disc-prog"><div class="disc-bar"><span style="width:${pct}%;background:${col}"></span></div><span class="help"><strong>${esc(m.motif)}</strong> — ${m.count}/${m.seuil}${m.eligible ? ' ✅ mise à pied proportionnée' : ''}${m.gravite >= 4 ? ' · très grave' : ''}</span>${detail}</div>`;
+    }).join('');
   };
   body.innerHTML = `
     <div class="grid cols-4">
@@ -4137,15 +4169,26 @@ function discFileModal(f, gl) {
   if (!f) return;
   gl = gl || {};
   const sanc = f.sanctions.length ? f.sanctions.slice().reverse().map((s) => `<tr><td>${esc(s.date || '')}</td><td>${esc(s.type)}</td><td>${esc(s.motif || '—')}</td></tr>`).join('') : '<tr><td colspan="3"><span class="help">Aucune sanction au dossier.</span></td></tr>';
-  const motifRows = f.motifs.map((m) => `<tr><td>${esc(m.motif)}</td><td style="text-align:center">${esc(gl[m.gravite] || m.gravite)}</td><td style="text-align:center">${m.count}/${m.seuil}</td><td style="text-align:center">${m.eligible ? '✅ éligible' : '—'}</td></tr>`).join('');
+  const motifRows = f.motifs.map((m) => { const det = (m.members && m.members.length > 1) ? `<div class="help">${m.members.map((x) => `${esc(x.motif)} ×${x.count}`).join(', ')}</div>` : ''; return `<tr><td>${esc(m.motif)}${det}</td><td style="text-align:center">${esc(gl[m.gravite] || m.gravite)}</td><td style="text-align:center">${m.count}/${m.seuil}</td><td style="text-align:center">${m.eligible ? '✅ éligible' : '—'}</td></tr>`; }).join('');
+  // Mise à pied prête à générer : conservatoire (faute grave) ou disciplinaire.
+  const canMAP = (f.level === 'licenciement' || f.level === 'mise_a_pied') && f.dominant;
+  const mapType = f.level === 'licenciement' ? 'mise_a_pied_conservatoire' : 'mise_a_pied_disciplinaire';
+  const mapLbl = f.level === 'licenciement' ? '⚖️ Préparer la mise à pied conservatoire' : '⚖️ Préparer la mise à pied disciplinaire';
   modal({
     title: 'Dossier disciplinaire — ' + f.userName,
     bodyHTML: `
       <div class="alert ${f.level === 'licenciement' ? 'warn' : 'info'}"><strong>${esc(f.nextStep)}</strong> — ${esc(f.reason)}</div>
       <h4 style="margin:.6rem 0 .3rem">Historique des sanctions</h4>
       <div class="table-wrap"><table class="veh-table"><thead><tr><th>Date</th><th>Type</th><th>Motif</th></tr></thead><tbody>${sanc}</tbody></table></div>
-      ${f.motifs.length ? `<h4 style="margin:.7rem 0 .3rem">Progression par motif</h4><div class="table-wrap"><table class="veh-table"><thead><tr><th>Motif</th><th style="text-align:center">Gravité</th><th style="text-align:center">Avert./seuil</th><th style="text-align:center">Mise à pied</th></tr></thead><tbody>${motifRows}</tbody></table></div>` : ''}`,
-    footHTML: `<button class="btn ghost" data-close>Fermer</button>`,
+      ${f.motifs.length ? `<h4 style="margin:.7rem 0 .3rem">Progression par motif (familles cumulées)</h4><div class="table-wrap"><table class="veh-table"><thead><tr><th>Motif</th><th style="text-align:center">Gravité</th><th style="text-align:center">Avert./seuil</th><th style="text-align:center">Mise à pied</th></tr></thead><tbody>${motifRows}</tbody></table></div>` : ''}`,
+    footHTML: `${canMAP ? `<button class="btn accent" id="disc-genmap">${mapLbl}</button>` : ''}<button class="btn ghost" data-close>Fermer</button>`,
+    onMount: (ov) => {
+      const b = ov.querySelector('#disc-genmap');
+      if (b) b.onclick = () => {
+        _docGenPrefill = { userId: f.userId, motif: (f.dominant && f.dominant.repMotif) || (f.dominant && f.dominant.motif) || '', type: mapType };
+        _docMgmtTab = 'gen'; closeModal(); State.view = 'docmgmt'; renderApp();
+      };
+    },
   });
 }
 
@@ -4155,9 +4198,16 @@ async function docMgmtGen(main) {
   let templates, meta, docOpts;
   try { templates = (await api('GET', '/admin/erp/templates')).templates; meta = await api('GET', '/admin/erp/meta'); docOpts = await api('GET', '/admin/erp/doc-options'); }
   catch (e) { document.getElementById('dm-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
-  const motifs = docOpts.motifs || [], faitsList = docOpts.faits || [];
+  const sev = docOpts.severity || {};
+  // Motifs classés du plus léger au plus grave (gravité croissante ; à gravité
+  // égale, le seuil le plus élevé — donc le plus tolérant — passe en premier).
+  const motifs = (docOpts.motifs || []).slice().sort((a, b) => {
+    const sa = sev[a] || { gravite: 2, seuil: 2 }, sb = sev[b] || { gravite: 2, seuil: 2 };
+    return (sa.gravite - sb.gravite) || (sb.seuil - sa.seuil) || a.localeCompare(b);
+  });
+  const faitsList = docOpts.faits || [];
   // Seuls les documents disciplinaires sont proposés (avertissement + mises à pied).
-  const DISC_TYPES = ['avertissement', 'mise_a_pied_disciplinaire', 'mise_a_pied_conservatoire'];
+  const DISC_TYPES = ['avertissement', 'mise_a_pied_disciplinaire', 'notification_mise_a_pied_disciplinaire', 'mise_a_pied_conservatoire'];
   const typeOpts = DISC_TYPES.filter((k) => templates[k]).map((k) => {
     const cond = k !== 'avertissement';
     return `<option value="${k}"${cond ? ' disabled data-cond="1"' : ''}>${esc(templates[k].label)}${cond ? ' — (verrouillé)' : ''}</option>`;
@@ -4194,35 +4244,84 @@ async function docMgmtGen(main) {
     </div>
     <div id="dm-preview"></div>`;
   const effMotif = () => { const s = body.querySelector('#dm-motif-sel'); return s.value === '__free__' ? body.querySelector('#dm-motif-free').value.trim() : s.value; };
-  let _discCtx = null;
+  let _discCtx = null, _final = null;
   const selectedRetards = () => [...body.querySelectorAll('.dm-ret:checked')].map((c) => c.value);
-  // Pré-remplit un placeholder connu [token].
-  const prefillFor = (tok) => { const t = tok.toLowerCase(); if (/v[ée]hicule|mat[ée]riel/.test(t)) return (_discCtx && _discCtx.vehicle) || ''; if (/date/.test(t)) return new Date().toLocaleDateString('fr-FR'); return ''; };
-  // Détecte les [tokens] restant à compléter et ouvre un popup ; renvoie le
-  // texte des faits complété (ou null si annulé).
-  const fillPlaceholders = (faits) => new Promise((resolve) => {
-    const toks = []; const re = /\[([^\]]+)\]/g; let m; while ((m = re.exec(faits))) { if (!toks.includes(m[0])) toks.push(m[0]); }
-    if (!toks.length) { resolve(faits); return; }
-    const rows = toks.map((tk, i) => `<div style="margin:.45rem 0"><label>${esc(tk)}</label><input id="ph-${i}" value="${esc(prefillFor(tk))}" placeholder="à compléter"></div>`).join('');
+  // Étiquette d'un véhicule de la flotte : type (12/14 m³) + immatriculation.
+  const vehVolume = (m) => { const x = String(m || '').match(/(\d+)\s*m³|(\d+)\s*m3/i); return x ? `${x[1] || x[2]} m³` : ''; };
+  const vehLabel = (v) => { const vol = vehVolume(v.model); const plate = v.plate || v.name || ''; return (vol ? vol + ' — ' : '') + plate; };
+  // Énumération à la française : « a, b et c ».
+  const frList = (arr) => (arr.length <= 1 ? (arr[0] || '') : arr.slice(0, -1).join(', ') + ' et ' + arr[arr.length - 1]);
+  // Construit l'éditeur adapté à un [token] détecté dans le document.
+  const tokenField = (tok, i) => {
+    const t = tok.toLowerCase();
+    if (/v[ée]hicule|mat[ée]riel/.test(t)) {
+      const cur = (_discCtx && _discCtx.vehicle) || '';
+      const opts = (meta.vehicles || []).map((v) => { const lab = vehLabel(v); const sel = cur && (cur === v.name || (v.plate && cur.indexOf(v.plate) >= 0)) ? ' selected' : ''; return `<option value="${esc(lab)}"${sel}>${esc(lab)}</option>`; }).join('');
+      return `<select id="tk-${i}"><option value="">— choisir un véhicule —</option>${opts}</select>`;
+    }
+    if (/voyant|bruit/.test(t)) {
+      return `<div class="tk-checks">${VEHICLE_ISSUES.map((it) => `<label class="tk-check"><input type="checkbox" class="tk-c-${i}" value="${esc(it.label)}"> ${esc(it.label)}</label>`).join('')}</div>`;
+    }
+    if (/heure/.test(t)) return `<input type="time" id="tk-${i}">`;
+    if (/date/.test(t)) return `<input type="date" id="tk-${i}">`;
+    return `<input id="tk-${i}" placeholder="à compléter">`;
+  };
+  // Récupère la valeur saisie pour un [token] (mise en forme française).
+  const tokenValue = (tok, i, ov) => {
+    const t = tok.toLowerCase();
+    if (/voyant|bruit/.test(t)) { const vals = [...ov.querySelectorAll('.tk-c-' + i + ':checked')].map((c) => c.value); return frList(vals); }
+    const el = ov.querySelector('#tk-' + i); const raw = el ? (el.value || '').trim() : ''; if (!raw) return '';
+    if (/heure/.test(t)) return frHour(raw);
+    if (/date/.test(t)) return /jour/.test(t) ? frLongDate(raw) : fmtDate(raw);
+    return raw;
+  };
+  // Menu contextuel : demande TOUTES les données entre [crochets] restant dans le
+  // document rendu (véhicule, voyants, dates, heure, lieu…). Renvoie le HTML
+  // finalisé (ou null si annulé).
+  const fillDocTokens = (toks, html) => new Promise((resolve) => {
+    const rows = toks.map((tk, i) => `<div class="tk-row"><label>${esc(tk)}</label>${tokenField(tk, i)}</div>`).join('');
     modal({
-      title: 'Compléter les informations du document',
-      bodyHTML: `<p class="help">Renseignez les éléments variables détectés dans les faits. Les valeurs déjà connues (véhicule attribué, date du jour) sont pré-remplies.</p>${rows}`,
-      footHTML: `<button class="btn ghost" id="ph-cancel">Annuler</button><button class="btn accent" id="ph-ok">Insérer dans le document</button>`,
+      title: 'Compléter le document avant envoi',
+      bodyHTML: `<p class="help">Renseignez chaque information entre crochets repérée dans le document (véhicule, dates, heure, lieu de convocation…). Tout champ laissé vide restera entre crochets.</p>${rows}`,
+      footHTML: `<button class="btn ghost" id="tk-cancel">Annuler</button><button class="btn accent" id="tk-ok">Insérer dans le document</button>`,
       onMount: (ov) => {
-        ov.querySelector('#ph-cancel').onclick = () => { closeModal(); resolve(null); };
-        ov.querySelector('#ph-ok').onclick = () => { let out = faits; toks.forEach((tk, i) => { const val = (ov.querySelector('#ph-' + i).value || '').trim() || tk; out = out.split(tk).join(val); }); closeModal(); resolve(out); };
+        ov.querySelector('#tk-cancel').onclick = () => { closeModal(); resolve(null); };
+        ov.querySelector('#tk-ok').onclick = () => {
+          let out = html;
+          toks.forEach((tk, i) => { const val = tokenValue(tk, i, ov) || tk; out = out.split(tk).join(val); });
+          closeModal(); resolve(out);
+        };
       },
     });
   });
-  // Construit le texte des faits (motif → phrase type, dates de retard, popup).
-  const buildFaits = async () => {
+  // Texte des faits, [tokens] intacts (sauf retards déjà connus du calendrier).
+  const buildRawFaits = () => {
     const motif = effMotif();
     let faits = motifFacts(motif);
     if (/retard/i.test(motif)) {
       const dates = selectedRetards();
       if (dates.length) { const txt = dates.map((d) => fmtDate(d)).join(', '); faits = faits.split('[dates]').join(txt).split('[date]').join(txt); }
     }
-    return fillPlaceholders(faits);
+    return faits;
+  };
+  // Signature de l'état du formulaire (pour ne pas re-demander les crochets si
+  // rien n'a changé entre l'aperçu, le PDF et l'envoi).
+  const sigOf = () => JSON.stringify([typeSel.value, effMotif(), body.querySelector('#dm-user').value, selectedRetards()]);
+  // Rend le document côté serveur puis ouvre le menu contextuel des crochets.
+  const finalizeHtml = async () => {
+    const motif = effMotif(); if (!motif) { toast('Choisissez un motif.', 'err'); return null; }
+    const type = typeSel.value;
+    if (_final && _final.sig === sigOf()) {
+      const pv = body.querySelector('#dm-preview [contenteditable]');
+      return { html: pv ? pv.innerHTML : _final.html, label: _final.label, type: _final.type };
+    }
+    let html, label;
+    try { const r = await api('POST', '/admin/erp/documents/render', { type, vars: collectVars(buildRawFaits()) }); html = r.html; label = r.label; }
+    catch (e) { toast(e.message, 'err'); return null; }
+    const toks = []; const re = /\[([^\]]+)\]/g; let m; while ((m = re.exec(html))) { if (!toks.includes(m[0])) toks.push(m[0]); }
+    if (toks.length) { const filled = await fillDocTokens(toks, html); if (filled == null) return null; html = filled; }
+    _final = { sig: sigOf(), html, label, type };
+    return { html, label, type };
   };
   const collectVars = (faits) => {
     const uid = body.querySelector('#dm-user').value; const u = (meta.users || []).find((x) => x.id === uid);
@@ -4244,21 +4343,26 @@ async function docMgmtGen(main) {
   };
   // Met à jour le dossier disciplinaire (compteur, éligibilité mises à pied, retards).
   const optD = body.querySelector('#dm-type option[value="mise_a_pied_disciplinaire"]');
+  const optN = body.querySelector('#dm-type option[value="notification_mise_a_pied_disciplinaire"]');
   const optC = body.querySelector('#dm-type option[value="mise_a_pied_conservatoire"]');
   const typeSel = body.querySelector('#dm-type');
   const refreshContext = async () => {
     const uid = body.querySelector('#dm-user').value; const motif = effMotif();
     const ctxEl = body.querySelector('#dm-ctx'); const rw = body.querySelector('#dm-retards-wrap');
+    _final = null;
     if (!uid || !motif) {
       _discCtx = null; ctxEl.textContent = 'Sélectionnez un salarié et un motif.';
-      if (optD) optD.disabled = true; if (optC) optC.disabled = true; rw.style.display = 'none'; return;
+      if (optD) optD.disabled = true; if (optN) optN.disabled = true; if (optC) optC.disabled = true; rw.style.display = 'none'; return;
     }
     try { _discCtx = await api('GET', '/admin/erp/documents/disciplinary-context?userId=' + encodeURIComponent(uid) + '&motif=' + encodeURIComponent(motif)); }
     catch (e) { _discCtx = null; ctxEl.textContent = 'Contexte indisponible.'; return; }
     const mp = _discCtx.miseAPied || {};
     const allowDisc = !!mp.proposed && /disciplinaire/i.test(mp.type || '') && (mp.gravite || 0) < 4;
     const allowCons = !!mp.proposed && ((mp.gravite || 0) >= 4 || /conservatoire/i.test(mp.type || ''));
-    if (optD) { optD.disabled = !allowDisc; optD.textContent = 'Mise à pied disciplinaire' + (allowDisc ? ` — ${mp.jours} jour(s) proposé(s)` : ' — (verrouillé)'); }
+    // La notification ne s'ouvre qu'après l'envoi de la convocation (mise à pied disciplinaire).
+    const hasDiscMise = (_discCtx.sanctions || []).some((s) => /mise (à|a) pied disciplinaire/i.test(s.type || ''));
+    if (optD) { optD.disabled = !allowDisc; optD.textContent = 'Mise à pied disciplinaire — convocation' + (allowDisc ? ` (${mp.jours} j proposé(s))` : ' — (verrouillé)'); }
+    if (optN) { optN.disabled = !hasDiscMise; optN.textContent = 'Notification de la mise à pied disciplinaire' + (hasDiscMise ? '' : ' — (après envoi de la convocation)'); }
     if (optC) { optC.disabled = !allowCons; optC.textContent = 'Mise à pied conservatoire' + (allowCons ? ' — disponible' : ' — (verrouillé)'); }
     if (typeSel.options[typeSel.selectedIndex] && typeSel.options[typeSel.selectedIndex].disabled) { typeSel.value = 'avertissement'; }
     ctxEl.innerHTML = `<strong>${_discCtx.warningCount}</strong> avertissement(s) au dossier · gravité ${esc(mp.graviteLabel || '—')} · ${mp.proposed ? `mise à pied <strong>${esc(mp.type || '')}</strong>${mp.jours ? ` (${mp.jours} j)` : ''} désormais proportionnée` : `mise à pied non encore proportionnée (seuil ${mp.seuil != null ? mp.seuil : '—'})`}${_discCtx.vehicle ? ` · véhicule : ${esc(_discCtx.vehicle)}` : ''}`;
@@ -4284,25 +4388,34 @@ async function docMgmtGen(main) {
   body.querySelector('#dm-type').addEventListener('change', syncBtns);
   syncBtns();
   body.querySelector('#dm-gen').onclick = async () => {
-    if (!effMotif()) { toast('Choisissez un motif.', 'err'); return; }
-    const faits = await buildFaits(); if (faits == null) return;
-    try { const { html } = await api('POST', '/admin/erp/documents/render', { type: body.querySelector('#dm-type').value, vars: collectVars(faits) });
-      body.querySelector('#dm-preview').innerHTML = `<div class="card"><div contenteditable="true" style="background:#fff;color:#111;padding:18px;border-radius:8px;outline:none">${html}</div></div>`;
-    } catch (e) { toast(e.message, 'err'); }
+    const r = await finalizeHtml(); if (!r) return;
+    body.querySelector('#dm-preview').innerHTML = `<div class="card"><div contenteditable="true" style="background:#fff;color:#111;padding:18px;border-radius:8px;outline:none">${r.html}</div></div>`;
   };
   body.querySelector('#dm-pdf').onclick = async () => {
-    if (!effMotif()) { toast('Choisissez un motif.', 'err'); return; }
-    const faits = await buildFaits(); if (faits == null) return;
-    erpOpenHtml('POST', '/admin/erp/documents/print', { type: body.querySelector('#dm-type').value, vars: collectVars(faits) });
+    const r = await finalizeHtml(); if (!r) return;
+    erpOpenHtml('POST', '/admin/erp/documents/print', { html: r.html, title: r.label });
   };
   body.querySelector('#dm-issue').onclick = async () => {
     const uid = body.querySelector('#dm-user').value; if (!uid) { toast('Sélectionnez un salarié.', 'err'); return; }
-    if (!effMotif()) { toast('Choisissez un motif.', 'err'); return; }
-    const faits = await buildFaits(); if (faits == null) return;
+    const r = await finalizeHtml(); if (!r) return;
     if (!confirm('Adresser ce document au salarié ? Il devra en accuser réception dans l\'application.')) return;
-    try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: body.querySelector('#dm-type').value, vars: collectVars(faits) }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
+    try { await api('POST', '/admin/erp/documents/issue', { userId: uid, type: r.type, html: r.html, label: r.label, vars: { motif: effMotif() } }); toast('Document adressé au salarié.', 'ok'); renderDocMgmt(main); }
     catch (e) { toast(e.message, 'err'); }
   };
+  // Pré-remplissage depuis un dossier disciplinaire (faute grave → conservatoire).
+  if (_docGenPrefill) {
+    const pf = _docGenPrefill; _docGenPrefill = null;
+    if (pf.userId) body.querySelector('#dm-user').value = pf.userId;
+    if (pf.motif) {
+      const sel = body.querySelector('#dm-motif-sel');
+      if ([...sel.options].some((o) => o.value === pf.motif)) sel.value = pf.motif;
+      else { sel.value = '__free__'; body.querySelector('#dm-motif-freewrap').style.display = 'block'; body.querySelector('#dm-motif-free').value = pf.motif; }
+    }
+    syncBtns();
+    await refreshContext();
+    if (pf.type) { const o = [...typeSel.options].find((x) => x.value === pf.type); if (o && !o.disabled) typeSel.value = pf.type; syncBtns(); }
+    toast('Dossier chargé : complétez les crochets puis générez le document.', 'ok');
+  }
 }
 
 // Phrases-type des faits selon le motif (avec [placeholders] à compléter).
@@ -5976,6 +6089,8 @@ function bullRenderReview(results) {
     }).join('');
     const src = (r.lines || []).length ? `<details style="margin-top:.4rem"><summary class="help">Voir les lignes lues</summary><pre style="white-space:pre-wrap;font-size:.75rem;color:#475569">${esc(r.lines.join('\n'))}</pre></details>` : '';
     const err = r.error ? `<div class="alert warn" style="margin:.3rem 0">Lecture partielle : ${esc(r.error)}</div>` : '';
+    const curAddr = (_bullUsers.find((u) => u.id === r.matchedUserId) || {}).address || '';
+    const addrDet = r.address ? '<span class="pill" style="background:#3b82f622;color:#3b82f6">lu</span>' : '<span class="help">non détecté</span>';
     return `<div class="card bull-card" data-i="${i}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
         <strong>📄 ${esc(r.fileName)}</strong> ${bullConfBadge(r.confidence)}
@@ -5983,6 +6098,9 @@ function bullRenderReview(results) {
       ${err}
       <div class="erp-row" style="margin:.5rem 0"><label>Salarié<br><select data-user style="min-width:220px">${userOpts(r.matchedUserId)}</select></label></div>
       <div class="grid cols-2">${rows}</div>
+      <label style="display:block;margin:.4rem 0">🏠 Adresse postale (donnée perso — visible admin uniquement) ${addrDet}<br>
+        <span class="help">actuelle : <b data-curaddr>${curAddr ? esc(curAddr) : '—'}</b></span>
+        <input data-addr type="text" value="${esc(r.address || curAddr || '')}" placeholder="N° rue, code postal ville" style="width:100%"></label>
       ${src}
     </div>`;
   }).join('') + `<div style="margin-top:1rem"><button class="btn accent" id="bull-apply">✅ Valider et appliquer aux comptes</button></div>`;
@@ -5994,6 +6112,7 @@ function bullRenderReview(results) {
       const u = _bullUsers.find((x) => x.id === sel.value);
       const bal = (u && u.balances) || {};
       card.querySelectorAll('[data-cur]').forEach((sp) => { const k = sp.dataset.cur; sp.textContent = bal[k] != null ? bal[k] : '—'; });
+      const ca = card.querySelector('[data-curaddr]'); if (ca) ca.textContent = (u && u.address) ? u.address : '—';
     };
   });
   wrap.querySelector('#bull-apply').onclick = bullApply;
@@ -6007,6 +6126,7 @@ async function bullApply() {
     if (!userId) continue;
     const it = { userId };
     card.querySelectorAll('[data-f]').forEach((inp) => { if (inp.value !== '') it[inp.dataset.f] = Number(inp.value); });
+    const addr = card.querySelector('[data-addr]'); if (addr && addr.value.trim()) it.address = addr.value.trim();
     items.push(it);
   }
   if (!items.length) { toast('Associez au moins un bulletin à un salarié.', 'warn'); return; }

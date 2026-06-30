@@ -160,9 +160,10 @@ function mount(app, deps) {
     await save();
     res.json({ ok: true });
   }));
-  // Options de génération : motifs RH + « faits » types (listes éditables).
+  // Options de génération : motifs RH + « faits » types (listes éditables) +
+  // barème de gravité (pour classer les motifs du plus léger au plus grave).
   r.get('/doc-options', guardStaff, withData(async (req, res, data) => {
-    res.json({ motifs: data.settings.docMotifs || [], faits: data.settings.docFaits || [] });
+    res.json({ motifs: data.settings.docMotifs || [], faits: data.settings.docFaits || [], severity: discipline.MOTIF_SEVERITY });
   }));
   r.post('/doc-options/motif', guardStaff, withData(async (req, res, data) => {
     const m = String((req.body || {}).motif || '').trim();
@@ -239,9 +240,22 @@ function mount(app, deps) {
       const list = sanctions.filter((s) => s.userId === u.id).slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
       const warnings = list.filter(isWarn);
       const mises = list.filter(isMise);
-      const byMotif = {};
-      warnings.forEach((s) => { const m = s.motif || '(non précisé)'; const sev = discipline.severityOf(m); (byMotif[m] = byMotif[m] || { motif: m, count: 0, gravite: sev.gravite, seuil: sev.seuil }).count++; });
-      const motifs = Object.values(byMotif).map((m) => ({ ...m, eligible: m.count >= m.seuil, remaining: Math.max(0, m.seuil - m.count) }));
+      // Regroupement par FAMILLE de motifs : les avertissements de même nature
+      // s'additionnent vers la mise à pied (gravité = la plus forte, seuil = le
+      // plus bas parmi les membres). On conserve le détail par motif (members).
+      const byFam = {};
+      warnings.forEach((s) => {
+        const m = s.motif || '(non précisé)';
+        const fam = discipline.motifFamily(m);
+        const sev = discipline.severityOf(m);
+        const e = byFam[fam] = byFam[fam] || { motif: discipline.familyLabel(m), family: fam, count: 0, gravite: 0, seuil: Infinity, members: {} };
+        e.count++; e.gravite = Math.max(e.gravite, sev.gravite); e.seuil = Math.min(e.seuil, sev.seuil);
+        e.members[m] = (e.members[m] || 0) + 1;
+      });
+      const motifs = Object.values(byFam).map((m) => {
+        const seuil = m.seuil === Infinity ? 2 : m.seuil;
+        return { motif: m.motif, family: m.family, gravite: m.gravite, seuil, count: m.count, eligible: m.count >= seuil, remaining: Math.max(0, seuil - m.count), members: Object.entries(m.members).map(([mm, c]) => ({ motif: mm, count: c })) };
+      });
       motifs.sort((a, b) => (b.gravite - a.gravite) || ((b.count - b.seuil) - (a.count - a.seuil)) || (b.count - a.count));
       const dom = motifs[0] || null;
       let level = 'vierge', nextStep = '—', reason = 'Dossier vierge : aucune sanction.';
@@ -249,10 +263,12 @@ function mount(app, deps) {
         const hasG4 = warnings.some((s) => (s.gravite || discipline.severityOf(s.motif).gravite) >= 4) || motifs.some((m) => m.gravite >= 4);
         if (hasG4) { level = 'licenciement'; nextStep = 'Licenciement pour faute grave'; reason = "Faute d'une gravité (très grave) justifiant une mise à pied conservatoire immédiate et l'engagement d'une procédure de licenciement."; }
         else if (dom && dom.eligible) {
-          const lastMise = mises.filter((s) => (s.motif || '') === dom.motif).slice(-1)[0];
-          const warnAfter = lastMise && warnings.some((s) => s.motif === dom.motif && String(s.date || '') > String(lastMise.date || ''));
+          // Récidive appréciée au niveau de la FAMILLE de motifs (même nature).
+          const famMatch = (mm) => discipline.familyLabel(mm) === dom.motif || (mm || '') === dom.motif;
+          const lastMise = mises.filter((s) => famMatch(s.motif || '')).slice(-1)[0];
+          const warnAfter = lastMise && warnings.some((s) => famMatch(s.motif || '') && String(s.date || '') > String(lastMise.date || ''));
           if (lastMise && warnAfter) { level = 'licenciement'; nextStep = 'Licenciement pour faute grave (récidive)'; reason = `Réitération de « ${dom.motif} » après une mise à pied disciplinaire déjà notifiée.`; }
-          else { const mp = discipline.computeMiseAPied({ warningCount: dom.count, motif: dom.motif }); level = 'mise_a_pied'; nextStep = 'Mise à pied disciplinaire' + (mp.jours ? ` (${mp.jours} j)` : ''); reason = `${dom.count} avertissement(s) pour « ${dom.motif} » : le seuil de ${dom.seuil} est atteint — une mise à pied est désormais proportionnée.`; }
+          else { const mp = discipline.computeMiseAPied({ warningCount: dom.count, motif: dom.motif, gravite: dom.gravite, seuil: dom.seuil }); level = 'mise_a_pied'; nextStep = 'Mise à pied disciplinaire' + (mp.jours ? ` (${mp.jours} j)` : ''); reason = `${dom.count} avertissement(s) pour « ${dom.motif} » : le seuil de ${dom.seuil} est atteint — une mise à pied est désormais proportionnée.`; }
         } else {
           level = 'avertissement'; nextStep = 'Avertissement'; reason = dom ? `${dom.count}/${dom.seuil} avertissement(s) pour « ${dom.motif} » avant qu'une mise à pied soit proportionnée.` : 'Sanction(s) au dossier.';
         }
@@ -261,8 +277,8 @@ function mount(app, deps) {
         userId: u.id, userName: `${u.firstName} ${u.lastName}`, groupName: (groupsById[u.groupId] || {}).name || 'Sans groupe',
         warningCount: warnings.length, miseCount: mises.length, total: list.length,
         sanctions: list.map((s) => ({ type: s.type, motif: s.motif || '', gravite: s.gravite || discipline.severityOf(s.motif).gravite, date: s.date })),
-        motifs: motifs.map((m) => ({ motif: m.motif, gravite: m.gravite, seuil: m.seuil, count: m.count, eligible: m.eligible })),
-        dominant: dom ? { motif: dom.motif, count: dom.count, seuil: dom.seuil, gravite: dom.gravite } : null,
+        motifs: motifs.map((m) => ({ motif: m.motif, family: m.family, gravite: m.gravite, seuil: m.seuil, count: m.count, eligible: m.eligible, members: m.members })),
+        dominant: dom ? { motif: dom.motif, count: dom.count, seuil: dom.seuil, gravite: dom.gravite, repMotif: (dom.members.slice().sort((a, b) => discipline.severityOf(b.motif).gravite - discipline.severityOf(a.motif).gravite)[0] || {}).motif || dom.motif } : null,
         level, nextStep, reason,
       };
     }).sort((a, b) => { const order = { licenciement: 0, mise_a_pied: 1, avertissement: 2, vierge: 3 }; return (order[a.level] - order[b.level]) || (b.total - a.total) || a.userName.localeCompare(b.userName); });
@@ -319,9 +335,13 @@ function mount(app, deps) {
   /* ---- Méta (formulaires : salariés détaillés, véhicules, contrats) --- */
   r.get('/meta', guardStaff, withData(async (req, res, data) => {
     const groupsById = Object.fromEntries((data.groups || []).map((g) => [g.id, g]));
+    // RGPD : l'adresse personnelle et la date de naissance ne sont exposées qu'à
+    // l'administrateur (le responsable n'y a pas accès, même via la génération
+    // de documents). Les autres ne voient jamais ces données.
+    const isAdmin = req.user && req.user.role === 'admin';
     res.json({
-      users: (data.users || []).map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, name: `${u.firstName} ${u.lastName}`, hireDate: u.hireDate || '', address: u.address || '', birthDate: u.birthDate || '', groupId: u.groupId || null, groupName: (groupsById[u.groupId] || {}).name || 'Sans groupe' })),
-      vehicles: (data.vehicles || []).map((v) => ({ id: v.id, name: v.name, plate: v.plate })),
+      users: (data.users || []).map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, name: `${u.firstName} ${u.lastName}`, hireDate: u.hireDate || '', address: isAdmin ? (u.address || '') : '', birthDate: isAdmin ? (u.birthDate || '') : '', groupId: u.groupId || null, groupName: (groupsById[u.groupId] || {}).name || 'Sans groupe' })),
+      vehicles: (data.vehicles || []).filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '', model: v.model || '' })),
       contracts: (data.contracts || []).map((c) => ({ id: c.id, client: c.client || c.name || '', pricePerPoint: c.pricePerPoint })),
       tenderParams: data.settings.tenderParams || {},
     });
