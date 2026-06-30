@@ -979,6 +979,10 @@ button, a, .btn, .sidebar nav button, .nav-group-head, .view-switch button { -we
 .fuel-alert-list .al-badge.al-false_positive { background: #dcfce7; color: #166534; }
 .fuel-alert-list .al-veh { font-weight: 800; }
 .fuel-alert-list .al-drv { font-weight: 700; }
+.fuel-fp-box { margin-top: .6rem; font-size: .84rem; padding: .45rem .7rem; border-radius: 8px; background: #f0fdf4; border: 1px dashed #86efac; color: #166534; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+/* Projection (valeur fictive / indicative) : fond translucide pour la distinguer du réel. */
+.fuel-proj { display: inline-block; font-size: .76rem; font-weight: 800; border-radius: 999px; padding: .15rem .55rem; background: rgba(245, 158, 11, .18); color: #92400e; border: 1px dashed rgba(245, 158, 11, .55); }
+.fuel-row-proj { background: rgba(245, 158, 11, .07); }
 
 /* Géolocalisation — gasoil consommé du jour (arrêt prolongé) */
 .geo-fuelday { margin-top: .35rem; font-size: .82rem; background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; border-radius: 6px; padding: .25rem .5rem; }

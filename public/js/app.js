@@ -437,15 +437,15 @@ function navSections() {
   // Ressources Humaines
   const rh = [];
   if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' });
-  if (admin) rh.push({ id: 'hours', icon: '⏱️', label: 'Gestion des heures' });
-  if (admin) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des procédures' });
+  if (admin || staff) rh.push({ id: 'hours', icon: '⏱️', label: 'Gestion des heures' });
+  if (admin || staff) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des procédures' });
   if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
   // Exploitation & Transport
   const exp = [];
   // Gestion des Tournées masquée pour le moment (à la demande).
   // if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
   if (admin || staff) exp.push({ id: 'geoloc', icon: '🛰️', label: 'Géolocalisation' });
-  if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Carburant' });
+  if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Gestion du carburant' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
   if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
   if (admin) exp.push({ id: 'stocks', icon: '🛠️', label: 'Suivi entretiens & stock' });
@@ -704,7 +704,7 @@ const euro2 = (n) => (Math.round((n || 0) * 100) / 100).toLocaleString('fr-FR', 
 let _fuelTab = 'analyse';
 async function renderCarburant(main) {
   if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>⛽ Carburant</h1>
+  main.innerHTML = `<div class="page-head"><div><h1>⛽ Gestion du carburant</h1>
     <p>Analyse de la consommation par chauffeur, détection des surconsommations & vols, et pilotage des cartes AS 24.</p></div></div>
     <div class="view-switch" id="fuel-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-ftab="analyse" class="active">📊 Analyse</button>
@@ -735,43 +735,65 @@ function fuelAnalyseTab(body, d) {
   const consoVals = an.vehicles.map((v) => v.realConso).filter((x) => x != null);
   const fleetConso = consoVals.length ? Math.round(consoVals.reduce((a, b) => a + b, 0) / consoVals.length * 10) / 10 : null;
   const kpiTone = nAlert ? 'tone-alert' : nWarn ? 'tone-warn' : 'tone-ok';
+  const s30 = d.summary30 || {}, sy = d.summaryYear || {}, year = d.year || '';
   const cards = `<div class="fuel-kpi-grid">
     <div class="fuel-kpi"><div class="fk-val">${fleetConso != null ? fleetConso + ' <small>L/100</small>' : '—'}</div><div class="fk-lbl">Conso moyenne flotte</div><div class="fk-sub">référence ${an.refConso} L/100</div></div>
     <div class="fuel-kpi ${kpiTone}"><div class="fk-val">${an.alertCount}</div><div class="fk-lbl">Alertes surconso / vol</div><div class="fk-sub">${nAlert} véhicule(s) en alerte</div></div>
-    <div class="fuel-kpi"><div class="fk-val">${(s.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres (total)</div><div class="fk-sub">${s.count || 0} pleins</div></div>
-    <div class="fuel-kpi"><div class="fk-val">${euro2(s.ttc || 0)}</div><div class="fk-lbl">Dépense TTC</div><div class="fk-sub">HT ${euro2(s.ht || 0)}</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${(s30.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres — 30 jours</div><div class="fk-sub">${s30.count || 0} pleins</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${(sy.liters || 0).toLocaleString('fr-FR')} <small>L</small></div><div class="fk-lbl">Litres — année ${esc(String(year))}</div><div class="fk-sub">${sy.count || 0} pleins</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${euro2(s30.ttc || 0)}</div><div class="fk-lbl">Dépense — 30 jours</div><div class="fk-sub">HT ${euro2(s30.ht || 0)}</div></div>
+    <div class="fuel-kpi"><div class="fk-val">${euro2(sy.ttc || 0)}</div><div class="fk-lbl">Dépense — année ${esc(String(year))}</div><div class="fk-sub">HT ${euro2(sy.ht || 0)}</div></div>
   </div>`;
   const alertRow = (a) => {
     const head = `<div class="al-main"><span class="al-veh">${esc(a.vehicle)}</span> ${a.date ? `<span class="help">${esc(a.date)}</span> ` : ''}${esc(a.text)}${a.driver ? ` <span class="al-drv">👤 ${esc(a.driver)}</span>` : ''}</div>`;
-    const actions = !d.isAdmin ? '' : a.decision
-      ? `<div class="al-actions"><span class="al-badge al-${a.decision}">${a.decision === 'fraud' ? '🚩 Fraude confirmée' : '✓ Faux positif'}</span> <button class="btn ghost sm" data-aundo="${esc(a.key)}">annuler</button></div>`
+    const actions = !d.isAdmin ? '' : a.decision === 'fraud'
+      ? `<div class="al-actions"><span class="al-badge al-fraud">🚩 Fraude confirmée</span> <button class="btn ghost sm" data-aundo="${esc(a.key)}">annuler</button></div>`
       : `<div class="al-actions"><button class="btn danger sm" data-afraud="${esc(a.key)}">🚩 Fraude confirmée</button> <button class="btn ghost sm" data-afalse="${esc(a.key)}">✓ Faux positif</button></div>`;
-    return `<li class="al-${a.level}${a.decision ? ' al-done' : ''}">${head}${actions}</li>`;
+    return `<li class="al-${a.level}${a.decision === 'fraud' ? ' al-done' : ''}">${head}${actions}</li>`;
   };
-  const alertsBlock = an.alerts && an.alerts.length ? `<details class="card fuel-alerts" open>
+  const allAlerts = an.alerts || [];
+  const fps = allAlerts.filter((a) => a.decision === 'false_positive');
+  const shown = allAlerts.filter((a) => a.decision !== 'false_positive'); // en attente + fraudes
+  // Les faux positifs sont regroupés dans une seule case (pas de liste détaillée).
+  const fpBox = (d.isAdmin && fps.length) ? `<div class="fuel-fp-box">✓ <strong>${fps.length}</strong> alerte(s) classée(s) en faux positif <button class="btn ghost sm" id="fuel-fp-reset">rétablir</button></div>` : '';
+  const alertsBlock = (shown.length || fps.length) ? `<details class="card fuel-alerts" open>
       <summary><strong>🚨 Alertes à contrôler (${an.alertCount})</strong> <span class="help">surconsommation ou vol potentiel — confirmez la fraude ou marquez un faux positif</span></summary>
-      <ul class="fuel-alert-list">${an.alerts.map(alertRow).join('')}</ul>
+      ${shown.length ? `<ul class="fuel-alert-list">${shown.map(alertRow).join('')}</ul>` : '<p class="help" style="margin:.4rem 0 0">Aucune alerte en attente. ✅</p>'}
+      ${fpBox}
     </details>` : `<div class="alert ok">✅ Aucune surconsommation anormale détectée (réf. ${an.refConso} L/100, seuil +${an.threshold}%).</div>`;
   // --- Graphique + tableau PAR CHAUFFEUR (30 jours glissants) ---
   const drivers = da.drivers || [];
   const chart = drivers.length ? geoSvgBars(drivers.map((x, i, arr) => ({ label: x.key, value: x.costHT, valueLabel: euro2(x.costHT), color: geoRankColor(i, arr.length) }))) : '';
   const consoCellD = (x) => x.realConso == null ? '<span class="help">km AS 24 manquant</span>'
     : `<strong style="color:${x.deviationPct > an.threshold ? '#b91c1c' : x.deviationPct > an.threshold / 2 ? '#b45309' : '#166534'}">${x.realConso} L/100</strong> <span class="help">(${x.deviationPct >= 0 ? '+' : ''}${x.deviationPct}%)</span>`;
+  const arrow = (p) => p == null ? '' : (p > 0 ? `<span style="color:#b91c1c">▲ +${p}%</span>` : p < 0 ? `<span style="color:#166534">▼ ${p}%</span>` : '<span class="help">→ 0%</span>');
+  // Cellule d'évolution mois précédent → mois en cours (coût & conso).
+  const monthCell = (x) => {
+    const m = x.month || {}; if (!m.curMonth) return '<span class="help">—</span>';
+    const cost = `Coût : ${euro2(m.prevCostHT || 0)} → <strong>${euro2(m.curCostHT || 0)}</strong> ${arrow(m.dCostPct)}`;
+    const conso = (m.curConso != null || m.prevConso != null) ? `<div>Conso : ${m.prevConso != null ? m.prevConso + ' L/100' : '—'} → <strong>${m.curConso != null ? m.curConso + ' L/100' : '—'}</strong> ${arrow(m.dConsoPct)}</div>` : '';
+    return `<div class="help" style="font-size:.78rem"><div>${cost}</div>${conso}</div>`;
+  };
+  // Indicateur : réel (30 j complets) ou projection (fictif, fond translucide).
   const indicCell = (x) => {
-    let html = x.complete ? `<span class="pill ok">30 j complets</span>` : `<span class="pill draft" title="${x.windowDays} j de données">≈ estimation ${euro2(x.estCostHT30)}/30j</span>`;
+    let html;
+    if (!x.projected) html = `<span class="pill ok">30 j complets</span>`;
+    else html = `<span class="fuel-proj" title="${x.windowDays} j de données — valeur indicative">≈ projection ${euro2(x.estCostHT30)}/30j${x.projBasis === 'gps' && x.weeklyKm ? ` · ${x.weeklyKm} km/sem GPS` : ''}</span>`;
     if (x.compare) html += `<div class="help" style="margin-top:.2rem">${x.compare.status === 'alert' ? '⚠️' : '✅'} Projection ${x.compare.status === 'alert' ? 'à revoir' : 'tenue'} : prévu ${euro2(x.compare.projectedCostHT)} → réel ${euro2(x.compare.realCostHT)} (${x.compare.deviationPct >= 0 ? '+' : ''}${x.compare.deviationPct}%)</div>`;
     return html;
   };
+  const moLbl = drivers[0] && drivers[0].month ? `${esc(drivers[0].month.prevMonth || '')} → ${esc(drivers[0].month.curMonth || '')}` : 'mois préc. → en cours';
   const driverBlock = `<div class="card"><h3 style="margin-top:0">📊 Analyse km / consommation & attribution chauffeur</h3>
-    <p class="help">Sur 30 jours glissants (jusqu'au ${da.asOf ? esc(da.asOf) : '—'}). Consommation « tank-to-tank » d'après le kilométrage des pleins. Si la période est incomplète, le coût est <strong>projeté sur 30 j</strong> ; au prochain import, la projection est confrontée au réel.</p>
+    <p class="help">Sur 30 jours glissants (jusqu'au ${da.asOf ? esc(da.asOf) : '—'}). Consommation « tank-to-tank » d'après le kilométrage des pleins. Une période incomplète est <strong>projetée sur 30 j</strong> à partir des km GPS de la semaine (affichée en <span class="fuel-proj">translucide</span> = indicatif) ; au prochain import, la projection est confrontée au réel.</p>
     ${chart ? `<div class="geo-chart-wrap"><div class="geo-chart-title">Coût HT par chauffeur (30 j)</div>${chart}</div>` : ''}
-    ${drivers.length ? `<div class="table-wrap"><table class="report-table"><thead><tr><th>Chauffeur</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres</th><th style="text-align:right">Conso réelle</th><th style="text-align:right">Coût HT</th><th>Indicateur</th></tr></thead>
-      <tbody>${drivers.map((x) => `<tr>
+    ${drivers.length ? `<div class="table-wrap"><table class="report-table"><thead><tr><th>Chauffeur</th><th style="text-align:center">Pleins</th><th style="text-align:right">Litres 30j</th><th style="text-align:right">Conso réelle</th><th style="text-align:right">Coût HT 30j</th><th>Évolution (${moLbl})</th><th>Indicateur</th></tr></thead>
+      <tbody>${drivers.map((x) => `<tr class="${x.projected ? 'fuel-row-proj' : ''}">
         <td><strong>${esc(x.key)}</strong></td>
         <td style="text-align:center">${x.fills}</td>
         <td style="text-align:right">${x.liters.toLocaleString('fr-FR')} L</td>
         <td style="text-align:right">${consoCellD(x)}</td>
         <td style="text-align:right"><strong>${euro2(x.costHT)}</strong></td>
+        <td>${monthCell(x)}</td>
         <td>${indicCell(x)}</td>
       </tr>`).join('')}</tbody></table></div>` : '<div class="alert info">Aucune donnée chauffeur. Importez un export AS 24 et associez les cartes aux chauffeurs dans Paramètres.</div>'}
   </div>`;
@@ -819,6 +841,11 @@ function fuelAnalyseTab(body, d) {
     body.querySelectorAll('[data-afraud]').forEach((b) => b.onclick = () => decide(b.dataset.afraud, 'fraud'));
     body.querySelectorAll('[data-afalse]').forEach((b) => b.onclick = () => decide(b.dataset.afalse, 'false_positive'));
     body.querySelectorAll('[data-aundo]').forEach((b) => b.onclick = () => decide(b.dataset.aundo, ''));
+    const fpReset = body.querySelector('#fuel-fp-reset');
+    if (fpReset) fpReset.onclick = async () => {
+      if (!confirm(`Rétablir les ${fps.length} alerte(s) classée(s) faux positif ?`)) return;
+      try { for (const a of fps) await api('POST', '/staff/fuel/alert-decision', { key: a.key, status: '' }); toast('Alertes rétablies.', 'ok'); loadCarburant(); } catch (e) { toast(e.message, 'err'); }
+    };
     body.querySelectorAll('[data-fueldel]').forEach((b) => b.onclick = async () => {
       if (!confirm('Supprimer cette transaction ?')) return;
       try { await api('DELETE', '/staff/fuel/' + b.dataset.fueldel); loadCarburant(); } catch (e) { toast(e.message, 'err'); }
@@ -2968,19 +2995,8 @@ let _veh = null; // cache des données de flotte pour la vue encadrement
 async function renderVehicleManagement(main) {
   if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des véhicules</h1>
-    <p>Suivi de la flotte, alertes d'entretien, signalements et tours de véhicule.</p></div></div>
-    <div class="view-switch" id="veh-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-vtab="tour" class="active">Tour du véhicule</button>
-      <button data-vtab="suivi">Suivi & alertes</button>
-      <button data-vtab="pending">Demandes concernant les véhicules en attente <span id="veh-pending-badge"></span></button>
-    </div>
+    <p>Tour du véhicule (état des lieux, propreté, équipements, documents). Le suivi & les alertes et les demandes sont dans « Suivi des entretiens et du stock ».</p></div></div>
     <div id="veh-body" class="empty">Chargement…</div>`;
-  const tabs = main.querySelector('#veh-tabs');
-  tabs.querySelectorAll('[data-vtab]').forEach((b) => b.onclick = () => {
-    tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
-    b.classList.add('active');
-    vehTab(b.dataset.vtab);
-  });
   await loadFleet();
   vehTab('tour');
 }
@@ -2997,7 +3013,11 @@ async function loadFleet() {
 }
 
 function vehTab(tab) {
-  const body = document.getElementById('veh-body'); if (!body) return; body.className = '';
+  // « Suivi » et « Demandes » ont été déplacés dans « Suivi des entretiens et du
+  // stock » : si la page véhicules n'est pas affichée, on rend dans le module Stock.
+  let body = document.getElementById('veh-body');
+  if (!body && (tab === 'suivi' || tab === 'pending')) { body = document.getElementById('stk-body'); if (body) _stockTab = tab; }
+  if (!body) return; body.className = '';
   if (!_veh) { body.innerHTML = `<div class="alert warn">Données indisponibles.</div>`; return; }
   if (tab === 'suivi') return vehTabSuivi(body);
   if (tab === 'pending') return vehTabPending(body);
@@ -3815,7 +3835,9 @@ async function renderStocks(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Suivi des entretiens et du stock</h1>
     <p>Entretiens des véhicules, stock de pièces et consommables, et coût réel d'exploitation.</p></div></div>
     <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
-      <button data-stab="costs" class="active">Coûts par véhicule</button>
+      <button data-stab="pending" class="active">Demandes concernant les véhicules <span id="veh-pending-badge"></span></button>
+      <button data-stab="suivi">Suivi & alertes</button>
+      <button data-stab="costs">Coûts par véhicule</button>
       <button data-stab="parts">Stock de pièces & consommables</button>
       <button data-stab="categories">Catégories de pièces</button>
     </div>
@@ -3826,12 +3848,14 @@ async function renderStocks(main) {
     b.classList.add('active'); stockTab(b.dataset.stab);
   });
   await loadFleet();
-  stockTab('costs');
+  stockTab('pending');
 }
 
 function stockTab(tab) {
   _stockTab = tab;
   const body = document.getElementById('stk-body'); if (!body) return; body.className = '';
+  if (tab === 'pending') return vehTabPending(body);
+  if (tab === 'suivi') return vehTabSuivi(body);
   if (tab === 'parts') return stockParts(body);
   if (tab === 'categories') return stockCategories(body);
   if (tab === 'costs') return stockCosts(body);
@@ -4016,7 +4040,7 @@ async function erpOpenHtml(method, path, body) {
 // --- Gestion documentaire (génération + PDF des courriers/contrats) ----------
 let _docMgmtTab = 'gen';
 async function renderDocMgmt(main) {
-  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des procédures</h1>
     <p>Générez vos procédures disciplinaires, suivez les envois et l'état du dossier disciplinaire de chaque salarié.</p></div></div>
     <div class="view-switch" id="dm-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
@@ -5859,15 +5883,17 @@ function hFmt(h) { const n = Number(h) || 0; const hh = Math.floor(n); const mm 
 function isoWeekStart(d) { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); x.setHours(0, 0, 0, 0); return x; }
 
 async function renderHours(main) {
-  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  // Les responsables n'ont accès qu'au « Résumé des amplitudes » pour le moment.
+  const fullAccess = State.user.role === 'admin';
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des heures</h1>
     <p>Suivi des amplitudes et du temps de travail des chauffeurs.</p></div></div>
     <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-htab="resume" class="active">Résumé des amplitudes</button>
-      <button data-htab="hsup">Gestion des heures supplémentaires</button>
+      ${fullAccess ? `<button data-htab="hsup">Gestion des heures supplémentaires</button>
       <button data-htab="import">Import rapport d'activité</button>
       <button data-htab="saisie">Saisie manuelle</button>
-      <button data-htab="bulletins">Bulletins de salaire</button>
+      <button data-htab="bulletins">Bulletins de salaire</button>` : ''}
     </div>
     <div id="hr-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#hr-tabs');

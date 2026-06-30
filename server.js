@@ -2740,7 +2740,7 @@ function computeHours(start, end, breakMin) {
   return { amplitude: Math.round((amp / 60) * 100) / 100, worked: Math.round((worked / 60) * 100) / 100 };
 }
 
-app.get('/api/staff/work-hours', authRequired, adminRequired, (req, res) => {
+app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
   const db = getData();
   // Par défaut on renvoie TOUT l'historique (les HSUP et le résumé doivent voir
   // tous les mois importés) ; `from` permet de restreindre si besoin.
@@ -3286,10 +3286,36 @@ function fuelAnalysis(db) {
 // Analyse par CHAUFFEUR sur 30 jours glissants (fenêtre se terminant à la
 // dernière transaction connue). Quand la fenêtre est incomplète, projette la
 // consommation sur 30 j ; à l'import suivant, compare la projection au réel.
+// Km moyens par semaine et par chauffeur, déduits de la géolocalisation (archive
+// fuelEstimates). Sert à projeter la consommation attendue sur 30 jours.
+function gpsWeeklyKmByDriver(db) {
+  const est = db.fuelEstimates || [];
+  const out = {};
+  if (!est.length) return out;
+  const allD = est.map((e) => e.date).filter(Boolean).sort();
+  const last = allD[allD.length - 1];
+  const from = new Date(new Date(last + 'T00:00:00Z').getTime() - 55 * 86400000).toISOString().slice(0, 10); // 8 semaines
+  const by = {};
+  est.forEach((e) => { if (!e.date || e.date < from) return; const k = (e.driverName || '').trim(); if (!k) return; const r = by[k] || (by[k] = { km: 0, min: e.date, max: e.date }); r.km += e.km || 0; if (e.date < r.min) r.min = e.date; if (e.date > r.max) r.max = e.date; });
+  Object.keys(by).forEach((k) => { const r = by[k]; const span = Math.max(7, (new Date(r.max) - new Date(r.min)) / 86400000 + 1); out[k] = r.km / (span / 7); });
+  return out;
+}
+// Statistiques d'un lot de transactions (litres, coût HT, conso tank-to-tank).
+function fuelTxnStats(txns) {
+  let liters = 0, costHT = 0, vk = 0, vl = 0;
+  for (let i = 0; i < txns.length; i++) {
+    const t = txns[i]; liters += t.liters || 0; costHT += t.amountHT || 0;
+    if (i > 0) { const p = txns[i - 1]; const dk = (t.km || 0) - (p.km || 0); if ((p.km || 0) > 0 && (t.km || 0) > 0 && dk > 1 && dk < 2000 && (t.liters || 0) > 0) { vk += dk; vl += t.liters; } }
+  }
+  return { liters, costHT, km: vk, conso: vk > 0 ? vl / vk * 100 : null, fills: txns.length };
+}
+function prevMonthOf(ym) { const [y, m] = ym.split('-').map(Number); const d = new Date(Date.UTC(y, m - 2, 1)); return d.toISOString().slice(0, 7); }
+
 function fuelDriverAnalysis(db) {
   const round2 = (n) => Math.round((n || 0) * 100) / 100;
   const round1 = (n) => Math.round((n || 0) * 10) / 10;
   const kpi = db.settings.fuelKpi || {};
+  const cfg = db.settings.pajgps || {};
   const refConso = Number(kpi.refConso) || 11;
   const thrPct = Math.max(Number(kpi.threshold) || 15, 10);
   const driverMap = db.settings.fuelDriverMap || {};
@@ -3298,24 +3324,37 @@ function fuelDriverAnalysis(db) {
   const allDates = db.fuel.map((t) => t.date).filter(Boolean).sort();
   const lastDate = allDates.length ? allDates[allDates.length - 1] : new Date().toISOString().slice(0, 10);
   const cutoff = new Date(new Date(lastDate + 'T00:00:00Z').getTime() - 29 * 86400000).toISOString().slice(0, 10);
+  const curMonth = lastDate.slice(0, 7), prevMonth = prevMonthOf(curMonth);
+  const gpsKm = gpsWeeklyKmByDriver(db);
+  // Tous les pleins regroupés par chauffeur (pour mois en cours / précédent).
+  const allByDriver = {};
+  for (const t of db.fuel) { if (!t.date) continue; (allByDriver[keyOf(t)] || (allByDriver[keyOf(t)] = [])).push(t); }
   const groups = {};
   for (const t of db.fuel) { if (!t.date || t.date < cutoff) continue; (groups[keyOf(t)] || (groups[keyOf(t)] = [])).push(t); }
   const store = db.settings.fuelProjections || {};
   const drivers = Object.keys(groups).map((k) => {
     const txns = groups[k].slice().sort((a, b) => String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
-    let liters = 0, costHT = 0, validKm = 0, validLiters = 0;
-    for (let i = 0; i < txns.length; i++) {
-      const t = txns[i]; liters += t.liters || 0; costHT += t.amountHT || 0;
-      if (i > 0) { const p = txns[i - 1]; const dk = (t.km || 0) - (p.km || 0); if ((p.km || 0) > 0 && (t.km || 0) > 0 && dk > 1 && dk < 2000 && (t.liters || 0) > 0) { validKm += dk; validLiters += t.liters; } }
-    }
-    const realConso = validKm > 0 ? validLiters / validKm * 100 : null;
+    const s = fuelTxnStats(txns);
+    const liters = s.liters, costHT = s.costHT, realConso = s.conso;
     const ds = txns.map((t) => t.date).sort();
     const windowDays = ds.length ? Math.round((new Date(ds[ds.length - 1]) - new Date(ds[0])) / 86400000) + 1 : 1;
     const complete = windowDays >= 28;
-    const factor = (complete || windowDays <= 0) ? 1 : 30 / windowDays;
-    const estLiters30 = round1(liters * factor), estCostHT30 = round2(costHT * factor);
-    // Comparaison : si la projection précédente était incomplète et que la
-    // fenêtre est désormais complète, on confronte projeté vs réel.
+    const pricePerL = liters > 0 ? costHT / liters : null;
+    // Projection 30 j : prioritairement à partir des km GPS de la semaine ×
+    // conso de référence ; sinon mise à l'échelle de la fenêtre.
+    const weeklyKm = gpsKm[k] || null;
+    let estLiters30, estCostHT30, projBasis;
+    if (!complete && weeklyKm && pricePerL) {
+      const km30 = weeklyKm * 30 / 7;
+      estLiters30 = round1(km30 * refConso / 100);
+      estCostHT30 = round2(estLiters30 * pricePerL);
+      projBasis = 'gps';
+    } else {
+      const factor = (complete || windowDays <= 0) ? 1 : 30 / windowDays;
+      estLiters30 = round1(liters * factor); estCostHT30 = round2(costHT * factor);
+      projBasis = complete ? null : 'window';
+    }
+    // Comparaison projeté vs réel (mémorisée à l'import).
     const stored = store[k];
     let liveCompare = null;
     if (stored && stored.basisDays < 28 && complete && stored.projCostHT > 0) {
@@ -3323,14 +3362,27 @@ function fuelDriverAnalysis(db) {
       liveCompare = { projectedCostHT: round2(stored.projCostHT), realCostHT: round2(costHT), deviationPct: dev, status: Math.abs(dev) > thrPct ? 'alert' : 'ok' };
     }
     const compare = (stored && stored.lastCompare) ? stored.lastCompare : liveCompare;
+    // Comparatif mois en cours / mois précédent (litres, coût, conso).
+    const allTx = (allByDriver[k] || []).slice().sort((a, b) => String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
+    const cur = fuelTxnStats(allTx.filter((t) => t.date.slice(0, 7) === curMonth));
+    const prev = fuelTxnStats(allTx.filter((t) => t.date.slice(0, 7) === prevMonth));
+    const pct = (a, b) => (b > 0 ? Math.round((a - b) / b * 100) : null);
     return {
       key: k, fills: txns.length, liters: round1(liters), costHT: round2(costHT),
       realConso: realConso != null ? round1(realConso) : null,
       deviationPct: realConso != null ? Math.round((realConso - refConso) / refConso * 100) : null,
-      windowDays, complete, estLiters30, estCostHT30, refConso, compare,
+      windowDays, complete, projected: !complete, projBasis, weeklyKm: weeklyKm != null ? round1(weeklyKm) : null,
+      estLiters30, estCostHT30, refConso, compare,
+      month: {
+        curMonth, prevMonth,
+        curLiters: round1(cur.liters), curCostHT: round2(cur.costHT), curConso: cur.conso != null ? round1(cur.conso) : null,
+        prevLiters: round1(prev.liters), prevCostHT: round2(prev.costHT), prevConso: prev.conso != null ? round1(prev.conso) : null,
+        dCostPct: pct(cur.costHT, prev.costHT), dLitersPct: pct(cur.liters, prev.liters),
+        dConsoPct: (cur.conso != null && prev.conso != null && prev.conso > 0) ? Math.round((cur.conso - prev.conso) / prev.conso * 100) : null,
+      },
     };
   }).sort((a, b) => b.costHT - a.costHT);
-  return { asOf: lastDate, windowFrom: cutoff, refConso, drivers };
+  return { asOf: lastDate, windowFrom: cutoff, curMonth, prevMonth, refConso, drivers };
 }
 // À l'import : fige la projection de chaque chauffeur (réel si fenêtre complète,
 // sinon estimation sur 30 j) et mémorise la dernière comparaison disponible.
@@ -3400,9 +3452,18 @@ app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
     b.liters += t.liters || 0; b.ttc += t.amountTTC || 0; b.count += 1;
   }
   const round2 = (n) => Math.round((n || 0) * 100) / 100;
+  // Synthèses distinctes : 30 jours glissants vs année civile en cours.
+  const dates = db.fuel.map((t) => t.date).filter(Boolean).sort();
+  const lastD = dates.length ? dates[dates.length - 1] : new Date().toISOString().slice(0, 10);
+  const cut30 = new Date(new Date(lastD + 'T00:00:00Z').getTime() - 29 * 86400000).toISOString().slice(0, 10);
+  const year = lastD.slice(0, 4);
+  const agg = (pred) => { const a = { count: 0, liters: 0, ht: 0, ttc: 0 }; for (const t of db.fuel) { if (!t.date || !pred(t.date)) continue; a.count++; a.liters += t.liters || 0; a.ht += t.amountHT || 0; a.ttc += t.amountTTC || 0; } return { count: a.count, liters: round2(a.liters), ht: round2(a.ht), ttc: round2(a.ttc) }; };
+  const summary30 = agg((d) => d >= cut30);
+  const summaryYear = agg((d) => d.slice(0, 4) === year);
   res.json({
     transactions: list.slice(0, 500),
     summary: { count: sum.count, liters: round2(sum.liters), ht: round2(sum.ht), ttc: round2(sum.ttc) },
+    summary30, summaryYear, year, asOf: lastD,
     byVehicle: Object.values(byVeh).map((b) => ({ ...b, liters: round2(b.liters), ttc: round2(b.ttc) })).sort((a, z) => z.ttc - a.ttc),
     analysis: fuelAnalysis(db),
     driverAnalysis: fuelDriverAnalysis(db),
@@ -3496,7 +3557,7 @@ app.delete('/api/staff/fuel/:id', authRequired, adminRequired, async (req, res) 
 });
 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
-require('./routes/erp').mount(app, { express, authRequired, adminRequired, getData, save });
+require('./routes/erp').mount(app, { express, authRequired, adminRequired, staffRequired, getData, save });
 
 // SPA fallback
 app.get('*', (req, res) => {
