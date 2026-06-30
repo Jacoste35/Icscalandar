@@ -1266,3 +1266,11 @@ td { color: var(--ink); }
   /* un peu d'espace pour ne pas masquer le contenu derrière la barre */
   .main { padding-bottom: 5rem; }
 }
+
+/* ---- Accueil : intitulés de section (regroupement épuré) ---- */
+.dash-divider {
+  font-size: .8rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+  color: #6f82a0; margin: 1.7rem .15rem .75rem; display: flex; align-items: center; gap: .65rem;
+}
+.dash-divider::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, #e2e9f3, transparent); }
+#dash-body > .dash-divider:first-child { margin-top: .1rem; }
