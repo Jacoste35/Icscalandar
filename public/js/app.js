@@ -955,6 +955,9 @@ async function renderDashboard(main) {
     // HSUP ni au suivi des retards : on les masque de son espace.
     const isPresident = (viewUser.groupId === 'grp_president');
     const { team } = await api('GET', '/team').catch(() => ({ team: [] }));
+    // Priorité d'apurement des congés (rang du salarié, sans exposer les soldes
+    // des autres) — pour la suggestion de poser une semaine complète.
+    const leavePrio = _previewMode ? null : await api('GET', '/my-leave-rank').catch(() => null);
     // Sélecteur d'aperçu (admin) + bandeau lecture seule.
     const previewBar = realAdmin ? `<div class="card" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;${_previewMode ? 'border-left:5px solid #f59e0b' : ''}">
       <strong>👁️ Afficher un aperçu en tant que</strong>
@@ -1032,6 +1035,8 @@ async function renderDashboard(main) {
     const conflictPanel = conflictAlertHTML(events, team);
     // Récap personnel des demandes de congés (statut + conflit + modification).
     const myLeavePanel = isPresident ? '' : myLeaveRecapHTML(viewUser, events, team);
+    // Suggestion de poser une semaine complète libre (optimisation de la rotation).
+    const weekSuggestPanel = isPresident ? '' : weekSuggestionHTML(viewUser, events, leavePrio);
 
     // Congés à venir des collègues du même groupe (pour éviter les doublons).
     const colleaguesPanel = colleaguesUpcomingHTML(team, events);
@@ -1052,6 +1057,7 @@ async function renderDashboard(main) {
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h`)}
       </div></div>`}
       ${myLeavePanel}
+      ${weekSuggestPanel}
       ${philo}
       ${myDocsPanel}
       ${messagesPanel}
@@ -1145,6 +1151,8 @@ function bindDashboardActions(scope) {
   });
   // Modifier une demande de congés depuis le récap d'accueil.
   scope.querySelectorAll('[data-leavemod]').forEach((b) => b.onclick = () => openRequestModal({ id: b.dataset.leavemod, category: b.dataset.cat, pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: b.dataset.reason || '' }));
+  // Poser une semaine complète proposée à l'accueil (optimisation des congés).
+  scope.querySelectorAll('[data-bookweek]').forEach((b) => b.onclick = () => openRequestModal({ category: 'CP', pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: '' }));
   // Démarre le panneau géoloc auto-actualisé (encadrement).
   if (typeof geolocStartDashboard === 'function' && scope.querySelector('#dash-geoloc')) geolocStartDashboard();
   // Mes documents : consulter, accuser réception (signature), attestation.
@@ -1419,11 +1427,17 @@ function myLeaveRecapHTML(viewUser, events, team) {
       tone = 'ok';
       msg = approved ? `Vos congés ${period} sont <strong>confirmés</strong> — aucun conflit sur ces dates. ✅` : `Votre demande ${period} est <strong>en attente de confirmation</strong> — aucun conflit sur ces dates pour le moment. ✅`;
     } else if (concurrent <= cap) {
-      tone = 'warn';
-      msg = `Pour vos congés ${period} : <strong>${n} autre personne</strong> a demandé la même période. Vous êtes ${concurrent} au total, soit la limite des <strong>${cap} remplacements</strong> possibles — vos congés ${approved ? 'sont confirmés mais à surveiller' : 'restent en attente d\'approbation'}. Vous pouvez nous soumettre une autre date pour plus de sécurité.`;
+      if (approved) {
+        // Congés déjà validés et dans la limite des remplacements : tout est sécurisé → vert.
+        tone = 'ok';
+        msg = `Vos congés ${period} sont <strong>confirmés</strong> — vous êtes ${concurrent} au total sur cette période, soit la limite des <strong>${cap} remplacements</strong> possibles, mais votre absence est garantie. ✅`;
+      } else {
+        tone = 'warn';
+        msg = `Pour vos congés ${period} : <strong>${n} autre personne</strong> a demandé la même période. Vous êtes ${concurrent} au total, soit la limite des <strong>${cap} remplacements</strong> possibles — vos congés restent en attente d'approbation. Vous pouvez nous soumettre une autre date pour plus de sécurité.`;
+      }
     } else {
       tone = 'danger';
-      msg = `Conflit pour vos congés ${period} : <strong>${n} autres personnes</strong> ont demandé la même période (${concurrent} au total). Or seuls <strong>${cap} congés</strong> peuvent être accordés en même temps (${cap} remplaçants) : il est <strong>certain que l'un d'entre vous ne pourra pas partir</strong> à ces dates. Merci de vraiment modifier vos dates pour m'aider à résoudre ce conflit.`;
+      msg = `Conflit pour vos congés ${period} : <strong>${n} autres personnes</strong> ont demandé la même période (${concurrent} au total). Or seuls <strong>${cap} congés</strong> peuvent être accordés en même temps (${cap} remplaçants) : il est <strong>certain que l'un d'entre vous ne pourra pas partir</strong> à ces dates. Je vous remercie de bien vouloir modifier vos dates afin de m'aider à résoudre ce conflit de planning.`;
     }
     return `<div class="leave-recap leave-${tone}">
       <div class="leave-recap-msg">${msg}</div>
@@ -1433,6 +1447,56 @@ function myLeaveRecapHTML(viewUser, events, team) {
   return `<div class="card"><h3 style="margin:0 0 .4rem">📅 Mes demandes de congés</h3>
     <p class="help" style="margin-top:-.2rem">Bonjour ${esc(viewUser.firstName)}, voici l'état de vos demandes (max. ${cap} congés simultanés). <span style="color:#166534">Vert</span> = aucun conflit · <span style="color:#b45309">Jaune</span> = à la limite · <span style="color:#b91c1c">Rouge</span> = conflit certain.</p>
     ${rows}</div>`;
+}
+
+// Accueil : suggestion de poser une SEMAINE COMPLÈTE (lundi → samedi) sur une
+// semaine libre à la réservation et située au moins à 2 semaines d'ici, afin
+// d'optimiser la rotation des congés et de solder les compteurs. On propose en
+// priorité (et davantage de semaines) à ceux dont le solde de congés est le plus
+// élevé ; l'ordre est légèrement randomisé chaque jour pour étaler les départs.
+function weekSuggestionHTML(viewUser, events, prio) {
+  if (!prio || !viewUser.balances) return '';
+  const myBal = Number(prio.balance) || 0;
+  if (myBal < 6) return ''; // moins d'une semaine complète (6 j ouvrables) à poser
+  const cap = MAX_CONCURRENT_LEAVES;
+  // Classement (calculé côté serveur, sans exposer les soldes des autres).
+  const total = Math.max(1, Number(prio.total) || 1);
+  const rank = Math.max(0, Number(prio.rank) || 0);
+  // Plus on est haut dans le classement, plus on propose de semaines (1 à 3).
+  const nSugg = rank < total / 3 ? 3 : rank < (2 * total) / 3 ? 2 : 1;
+  // Semaines candidates : complètes (lun-sam), à partir de S+2, libres (occupation < cap).
+  const monThis = isoWeekStart(new Date());
+  const cands = [];
+  for (let w = 2; w <= 16 && cands.length < 10; w++) {
+    const mon = addDays(monThis, w * 7), sat = addDays(mon, 5);
+    const ms = iso(mon), es = iso(sat);
+    if ((State.closedPeriods || []).some((p) => p.start <= es && p.end >= ms)) continue;
+    const occ = new Set();
+    (events || []).forEach((o) => {
+      if (o.category === 'RET') return;
+      if (!(o.status === 'pending' || o.status === 'approved')) return;
+      if (o.startDate <= es && o.endDate >= ms) occ.add(o.userId);
+    });
+    if (occ.has(viewUser.id)) continue;     // déjà une absence posée cette semaine
+    if (occ.size < cap) cands.push({ ms, es });
+  }
+  if (!cands.length) return '';
+  // Rotation : priorité aux mieux classés (semaines proches) + variation quotidienne.
+  const now = new Date();
+  const daySeed = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 86400000);
+  const off = ((rank + daySeed) % cands.length + cands.length) % cands.length;
+  const rotated = cands.slice(off).concat(cands.slice(0, off));
+  const picks = rotated.slice(0, Math.min(nSugg, rotated.length));
+  const pool = (Number(viewUser.balances.congesN1) || 0) > 0 ? 'N1' : 'N';
+  const poolLbl = pool === 'N1' ? 'vos congés N-1 (à solder en priorité)' : 'vos congés N';
+  const items = picks.map((p) => `<div class="week-sugg-item">
+      <span>📆 Semaine du <strong>${fmtDate(p.ms)}</strong> au <strong>${fmtDate(p.es)}</strong> <span class="help">— libre à la réservation</span></span>
+      <button class="btn ok sm" data-bookweek data-s="${p.ms}" data-e="${p.es}" data-pool="${pool}">Poser cette semaine</button>
+    </div>`).join('');
+  return `<div class="card" style="border-left:5px solid #16a34a">
+    <h3 style="margin:0 0 .3rem">🌴 Posez une semaine complète</h3>
+    <p class="help" style="margin-top:0">Pour fluidifier la rotation et solder ${poolLbl}, voici ${picks.length > 1 ? 'des semaines complètes libres' : 'une semaine complète libre'} (du lundi au samedi) à réserver dès maintenant. Il vous reste <strong>${Math.round(myBal * 10) / 10} j</strong> de congés à poser.</p>
+    ${items}</div>`;
 }
 
 // Congés à venir des collègues du même groupe (anti-doublon de semaine).

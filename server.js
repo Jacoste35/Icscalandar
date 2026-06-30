@@ -532,6 +532,17 @@ app.get('/api/team', authRequired, (req, res) => {
   res.json({ team });
 });
 
+// Priorité personnelle d'apurement des congés : rang du salarié (0 = solde le
+// plus élevé) parmi les actifs, sans exposer les soldes des autres (RGPD).
+app.get('/api/my-leave-rank', authRequired, (req, res) => {
+  const db = getData();
+  const cp = (u) => (Number(u.balances && u.balances.congesN) || 0) + (Number(u.balances && u.balances.congesN1) || 0);
+  const actives = db.users.filter((u) => u.status === 'active' && !u.suspended);
+  const ranked = actives.map((u) => ({ id: u.id, b: cp(u) })).sort((a, z) => z.b - a.b || String(a.id).localeCompare(String(z.id)));
+  const idx = ranked.findIndex((r) => r.id === req.user.id);
+  res.json({ balance: cp(req.user), rank: idx < 0 ? actives.length : idx, total: actives.length });
+});
+
 // ---------------------------------------------------------------------------
 // Calendrier : toutes les absences validées (visible de tous)
 // ---------------------------------------------------------------------------
