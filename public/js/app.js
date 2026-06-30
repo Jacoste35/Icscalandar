@@ -1088,40 +1088,29 @@ async function renderDashboard(main) {
 
     const anc = viewUser.hireDate ? `<div class="card" style="border-left:5px solid var(--brand)"><h3 style="margin:0">📅 ${_previewMode ? 'Ancienneté' : 'Votre ancienneté'} : ${ancienneteText(viewUser.hireDate)}</h3><p style="margin:.4rem 0 0">${anciennetePhilo(viewUser.hireDate)}</p><p class="help" style="margin:.3rem 0 0">Date d'entrée : ${fmtDate(viewUser.hireDate)}</p></div>` : '';
 
-    const dashBody = document.getElementById('dash-body');
-    dashBody.className = '';
-    dashBody.innerHTML = `
-      ${previewBar}
-      ${licenciementPanel}
-      ${geolocPanel}
-      ${anc}
-      ${isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">📊 Mes compteurs</h3><div class="grid cols-4">
+    const compteursCard = isPresident ? '' : `<div class="card"><h3 style="margin:0 0 .6rem">📊 Mes compteurs</h3><div class="grid cols-4">
         ${statCard('Congés N restants', b.congesN, 'jours', false, `déjà pris : ${takenCP} j (tous CP)${pendSub(pendCPN, b.congesN, 'j')}`)}
         ${statCard('Congés N-1 restants', b.congesN1, 'jours', false, pendCPN1 > 0 ? `${pendSub(pendCPN1, b.congesN1, 'j')}` : '')}
         ${statCard('RCC restant', b.rcc, 'h', false, `${hToDays(b.rcc)} · déjà pris ${takenRCC} h${pendSub(pendRCC, b.rcc, 'h')}`)}
         ${statCard('Récup. restante', b.heuresSupp, 'h', true, `${hToDays(b.heuresSupp)} · déjà pris ${takenRCP} h${pendSub(pendRCP, b.heuresSupp, 'h')}`)}
-      </div></div>`}
-      ${myLeavePanel}
-      ${weekSuggestPanel}
-      ${calSyncPanel}
-      ${isPresident ? '' : '<div id="dash-push"></div>'}
-      ${philo}
-      ${myDocsPanel}
-      ${messagesPanel}
-      ${kmAnomalyPanel}
-      ${stockAlertPanel}
-      ${needsMaintPanel}
-      ${disciplinePanel}
-      ${vehPendingPanel}
-      ${entretiensPanel}
-      ${vehicleWarnPanel}
-      ${retardCards}
-      ${conflictPanel}
-      ${pendingPanel}
-      ${priorityPanel}
-      ${classement}
-      ${colleaguesPanel}
-      ${weekCards}`;
+      </div></div>`;
+    const pushDiv = isPresident ? '' : '<div id="dash-push"></div>';
+    // Regroupe des panneaux sous un intitulé de section ; n'affiche la section
+    // que si au moins un panneau a du contenu (évite les titres vides).
+    const dashGroup = (title, ...panels) => {
+      const inner = panels.filter((p) => p && String(p).trim()).join('\n');
+      return inner ? `<h2 class="dash-divider">${title}</h2>${inner}` : '';
+    };
+    const dashBody = document.getElementById('dash-body');
+    dashBody.className = '';
+    dashBody.innerHTML = `
+      ${previewBar}
+      ${dashGroup('📌 À ne pas manquer', licenciementPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
+      ${dashGroup('🧮 Mon espace', compteursCard, anc, myLeavePanel, weekSuggestPanel, retardCards)}
+      ${dashGroup('🚚 Exploitation &amp; véhicules', geolocPanel, kmAnomalyPanel, stockAlertPanel, needsMaintPanel, disciplinePanel, vehPendingPanel, entretiensPanel, vehicleWarnPanel)}
+      ${dashGroup('👥 Mon équipe', priorityPanel, classement, colleaguesPanel)}
+      ${dashGroup('📅 Mon planning', weekCards)}
+      ${dashGroup('⚙️ Réglages &amp; infos', calSyncPanel, pushDiv, philo)}`;
     // Rend chaque section de l'accueil repliable (ouvrir/masquer à la demande).
     makeDashCollapsible(dashBody);
     // Notifications push : remplit le panneau dédié (selon l'état d'abonnement).
