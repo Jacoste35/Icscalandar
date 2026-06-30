@@ -3182,6 +3182,78 @@ function fuelMatchVehicle(db, t) {
   return null;
 }
 
+// Analyse carburant : KPI conso (tank-to-tank via kilométrage AS 24),
+// attribution chauffeur (par fréquence des pleins) et détection de
+// surconsommation / vol (plein > capacité réservoir, écart de conso anormal).
+function fuelAnalysis(db) {
+  const round2 = (n) => Math.round((n || 0) * 100) / 100;
+  const round1 = (n) => Math.round((n || 0) * 10) / 10;
+  const kpi = db.settings.fuelKpi || { refConso: 11, threshold: 15, tankCapacity: 100 };
+  const refConso = Number(kpi.refConso) || 11;
+  const thr = (Number(kpi.threshold) || 15) / 100;
+  const tank = Number(kpi.tankCapacity) || 100;
+  // Regroupe par véhicule (identité AS 24 = vehicleName, sinon « — »).
+  const groups = {};
+  for (const t of db.fuel) {
+    const key = (t.vehicleName || '').trim() || '—';
+    (groups[key] || (groups[key] = [])).push(t);
+  }
+  const vehById = {}; db.vehicles.forEach((v) => { vehById[v.id] = v; });
+  const vehicles = []; const alerts = [];
+  for (const key of Object.keys(groups)) {
+    const txns = groups[key].slice().sort((a, b) => String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
+    let liters = 0, ttc = 0, validKm = 0, validLiters = 0;
+    const drivers = {};
+    let mapped = null;
+    for (let i = 0; i < txns.length; i++) {
+      const t = txns[i];
+      liters += t.liters || 0; ttc += t.amountTTC || 0;
+      if (t.driver) { const d = drivers[t.driver] || (drivers[t.driver] = { name: t.driver, count: 0, liters: 0 }); d.count++; d.liters += t.liters || 0; }
+      if (t.vehicleId && vehById[t.vehicleId]) mapped = vehById[t.vehicleId];
+      // Plein > capacité réservoir : remplissage suspect (jerrican / autre cuve).
+      if ((t.liters || 0) > tank) {
+        const a = { vehicle: key, type: 'overtank', level: 'alert', date: t.date, driver: t.driver || '', text: `Plein de ${round1(t.liters)} L > capacité réservoir (${tank} L) — remplissage suspect (jerrican ?)` };
+        alerts.push(a);
+      }
+      // Conso tank-to-tank entre deux pleins (kilométrage AS 24 renseigné).
+      if (i > 0) {
+        const prev = txns[i - 1];
+        const dk = (t.km || 0) - (prev.km || 0);
+        if ((prev.km || 0) > 0 && (t.km || 0) > 0 && dk > 1 && dk < 2000 && (t.liters || 0) > 0) {
+          validKm += dk; validLiters += t.liters;
+          const segConso = t.liters / dk * 100;
+          if (segConso > refConso * (1 + Math.max(thr, 0.35))) {
+            alerts.push({ vehicle: key, type: 'spike', level: 'alert', date: t.date, driver: t.driver || '', text: `Conso anormale ${round1(segConso)} L/100 sur ${Math.round(dk)} km (${round1(t.liters)} L) — surconsommation ou vol à contrôler` });
+          }
+        }
+      }
+    }
+    const realConso = validKm > 0 ? validLiters / validKm * 100 : null;
+    const deviationPct = realConso != null ? Math.round((realConso - refConso) / refConso * 100) : null;
+    let level = 'ok';
+    if (realConso != null) level = (realConso > refConso * (1 + thr)) ? 'alert' : (realConso > refConso * (1 + thr / 2)) ? 'warn' : 'ok';
+    const drvList = Object.values(drivers).sort((a, b) => b.count - a.count);
+    const dominant = drvList[0] || null;
+    const driverShare = dominant && txns.length ? Math.round(dominant.count / txns.length * 100) : 0;
+    if (level === 'alert' && realConso != null) {
+      alerts.push({ vehicle: key, type: 'avg', level: 'alert', date: '', driver: dominant ? dominant.name : '', text: `Conso moyenne ${round1(realConso)} L/100 (réf. ${refConso}) — écart +${deviationPct}% à contrôler${dominant ? ' (chauffeur principal : ' + dominant.name + ')' : ''}` });
+    }
+    vehicles.push({
+      vehicle: key, vehicleId: mapped ? mapped.id : null, plate: mapped ? (mapped.plate || '') : '',
+      fills: txns.length, liters: round2(liters), ttc: round2(ttc),
+      km: validKm, realConso: realConso != null ? round1(realConso) : null,
+      refConso, deviationPct, level,
+      driver: dominant ? { name: dominant.name, share: driverShare } : null,
+      drivers: drvList.slice(0, 4).map((d) => ({ name: d.name, count: d.count })),
+      assignedDriver: mapped ? (mapped.assignedUserName || '') : '',
+    });
+  }
+  vehicles.sort((a, b) => (a.level === b.level ? b.ttc - a.ttc : a.level === 'alert' ? -1 : b.level === 'alert' ? 1 : a.level === 'warn' ? -1 : 1));
+  const order = { alert: 0, warn: 1, ok: 2 };
+  alerts.sort((a, b) => (order[a.level] - order[b.level]) || String(b.date).localeCompare(String(a.date)));
+  return { refConso, threshold: kpi.threshold, tankCapacity: tank, vehicles, alerts: alerts.slice(0, 60), alertCount: alerts.length };
+}
+
 // Liste des transactions + synthèse (litres, montants, par véhicule).
 app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
   const db = getData(); ensureErp(db);
@@ -3199,10 +3271,22 @@ app.get('/api/staff/fuel', authRequired, staffRequired, (req, res) => {
     transactions: list.slice(0, 500),
     summary: { count: sum.count, liters: round2(sum.liters), ht: round2(sum.ht), ttc: round2(sum.ttc) },
     byVehicle: Object.values(byVeh).map((b) => ({ ...b, liters: round2(b.liters), ttc: round2(b.ttc) })).sort((a, z) => z.ttc - a.ttc),
+    analysis: fuelAnalysis(db),
     isAdmin: req.user.role === 'admin',
     vehicles: db.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
     available: fuelimport.available(),
   });
+});
+
+// Réglage des paramètres d'analyse carburant (conso de référence, seuils).
+app.put('/api/admin/fuel/kpi', authRequired, adminRequired, async (req, res) => {
+  const db = getData(); ensureErp(db);
+  const b = req.body || {}; const k = db.settings.fuelKpi;
+  if (b.refConso != null && Number.isFinite(Number(b.refConso))) k.refConso = Math.max(1, Number(b.refConso));
+  if (b.threshold != null && Number.isFinite(Number(b.threshold))) k.threshold = Math.max(1, Number(b.threshold));
+  if (b.tankCapacity != null && Number.isFinite(Number(b.tankCapacity))) k.tankCapacity = Math.max(20, Number(b.tankCapacity));
+  await save();
+  res.json({ fuelKpi: k });
 });
 
 // Import d'un export AS 24 (Excel/CSV, base64). Déduplique par n° de transaction.

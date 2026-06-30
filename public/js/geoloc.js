@@ -119,6 +119,11 @@ function geoVehCardHTML(p) {
   const fuelLine = ((st === 'orange' || st === 'depot') && p.stats && p.stats.litersDay != null)
     ? `<div class="geo-fuelday">⛽ <strong>${p.stats.litersDay} L</strong> de gasoil consommés aujourd'hui (estimé)</div>` : '';
   const lateHtml = p.late ? `<div class="geo-late">⏰ Retard prise de poste : <strong>${p.late.minutes} min</strong> (prévu ${esc(p.late.ref)})</div>` : '';
+  // Odomètre : réel (remonté par le traceur) ou distance GPS cumulée (estimation).
+  const odo = p.odometer || {};
+  const odoHtml = (odo.real != null)
+    ? `<div class="geo-odo">🧭 Odomètre : <strong>${Math.round(odo.real).toLocaleString('fr-FR')} km</strong>${odo.realAt ? ` <span class="help">(maj ${gTime(odo.realAt)})</span>` : ''}</div>`
+    : (odo.est > 0 ? `<div class="geo-odo">🧭 Distance GPS cumulée : <strong>${Math.round(odo.est).toLocaleString('fr-FR')} km</strong> <span class="help">(estimation — odomètre traceur indisponible)</span></div>` : '');
   return `<div class="geo-card geo-${st}">
     <div class="geo-card-top">
       <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(geoVehLabel(p))}</span>
@@ -128,6 +133,7 @@ function geoVehCardHTML(p) {
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">${esc(meta.join(' · '))}</span></div>
     ${fuelLine}
+    ${odoHtml}
     ${lateHtml}
     ${geoStatsHTML(p.stats)}
   </div>`;
