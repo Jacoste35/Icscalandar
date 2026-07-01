@@ -4124,9 +4124,9 @@ function fleetKmHTML(vehicles, log) {
 function vehTabFleet(body) {
   const vehicles = _veh.vehicles;
   body.innerHTML = `
-    <div class="card">
-      <h3>Ajouter un véhicule</h3>
-      <div class="grid2">
+    <details class="card fleet-add">
+      <summary class="fleet-add-sum">➕ Ajouter un véhicule</summary>
+      <div class="grid2" style="margin-top:.7rem">
         <div><label>Nom (chauffeur attribué)</label><select id="fl-user">${driverOptions('')}</select></div>
         <div><label>Groupe</label><select id="fl-group">${groupOptions('')}</select></div>
         <div><label>Tournée</label><input id="fl-tournee" placeholder="ex. Tournée Caen Nord"></div>
@@ -4138,17 +4138,24 @@ function vehTabFleet(body) {
       <label class="veh-check" style="margin-top:.6rem"><input type="checkbox" id="fl-relais"> Véhicule relais</label>
       <div style="margin-top:.6rem"><button class="btn accent" id="fl-add">Ajouter à la flotte</button></div>
       <p class="help" style="margin-top:.4rem">Le « Nom » et le « Groupe » sont proposés à partir des salariés et groupes du site. Le kilométrage d'origine est le point de départ des calculs d'entretien.</p>
-    </div>
+    </details>
     <div class="card"><h3>Flotte (${vehicles.length})</h3>
-      ${vehicles.length ? `<div class="table-wrap"><table class="veh-table"><thead><tr><th>Nom</th><th>Groupe</th><th>Tournée</th><th>Modèle</th><th>Plaque</th><th>Km</th><th>Actif</th><th></th></tr></thead>
-        <tbody>${vehicles.map((v) => `<tr>
-          <td>${esc(v.name)}${v.relais ? ' <span class="pill">relais</span>' : ''}</td>
-          <td>${esc((groupById(v.groupId) || {}).name || '—')}</td>
-          <td>${esc(v.tournee || '—')}</td>
-          <td>${esc(v.model || '—')}</td><td>${esc(v.plate || '—')}</td><td>${kmFmt(v.km)}</td>
-          <td><button class="toggle ${v.active !== false ? 'on' : 'off'}" data-toggleactive="${v.id}" data-active="${v.active !== false ? '1' : '0'}" title="Actif / inactif">${v.active !== false ? 'ON' : 'OFF'}</button></td>
-          <td style="white-space:nowrap"><button class="btn ghost sm" data-carnet="${v.id}">Carnet</button> <button class="btn ghost sm" data-editv="${v.id}">Modifier</button> <button class="btn ghost sm" data-delv="${v.id}">✕</button></td>
-        </tr>`).join('')}</tbody></table></div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
+      ${vehicles.length ? `<div class="fleet-list">${vehicles.map((v) => {
+        const chip = (lbl, val) => val ? `<span class="fleet-chip"><b>${lbl}</b> ${esc(val)}</span>` : '';
+        const gname = (groupById(v.groupId) || {}).name;
+        return `<div class="fleet-item${v.active === false ? ' inactive' : ''}">
+          <div class="fleet-item-head">
+            <div class="fleet-item-title">🚐 ${esc(v.name)}${v.relais ? ' <span class="pill">relais</span>' : ''}</div>
+            <button class="toggle ${v.active !== false ? 'on' : 'off'}" data-toggleactive="${v.id}" data-active="${v.active !== false ? '1' : '0'}" title="Actif / inactif">${v.active !== false ? 'ON' : 'OFF'}</button>
+          </div>
+          <div class="fleet-item-meta">${chip('Groupe', gname)}${chip('Tournée', v.tournee)}${chip('Modèle', v.model)}${chip('Plaque', v.plate)}${chip('Km', kmFmt(v.km))}</div>
+          <div class="fleet-item-actions">
+            <button class="btn ghost sm" data-carnet="${v.id}">📒 Carnet</button>
+            <button class="btn ghost sm" data-editv="${v.id}">✏️ Modifier</button>
+            <button class="btn danger sm" data-delv="${v.id}">🗑 Supprimer</button>
+          </div>
+        </div>`;
+      }).join('')}</div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
     </div>
     <div id="flt-km" class="empty">Chargement du suivi kilométrique…</div>`;
   loadFleetKm();
