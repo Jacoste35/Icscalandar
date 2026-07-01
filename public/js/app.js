@@ -932,6 +932,21 @@ function fuelParamsTab(body, d) {
 let _calEvents = []; // évènements du calendrier (pour l'édition du remplaçant au planning)
 let _previewUserId = null; // aperçu « en tant que » : id du salarié prévisualisé (admin)
 let _previewMode = false;  // vrai pendant le rendu d'un aperçu (lecture seule)
+// Horloge de l'accueil : heure de Paris (HH:MM:SS) qui défile en temps réel.
+// Le minuteur s'auto-nettoie dès que l'horloge n'est plus à l'écran.
+let _dashClockTimer = null;
+function startDashClock() {
+  if (_dashClockTimer) { clearInterval(_dashClockTimer); _dashClockTimer = null; }
+  const tick = () => {
+    const el = document.getElementById('dash-clock');
+    if (!el) { if (_dashClockTimer) { clearInterval(_dashClockTimer); _dashClockTimer = null; } return; }
+    try { el.textContent = new Date().toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+    catch (e) { el.textContent = new Date().toTimeString().slice(0, 8); }
+  };
+  tick();
+  _dashClockTimer = setInterval(tick, 1000);
+}
+
 async function renderDashboard(main) {
   const todayLong = frLongDate(iso(new Date()));
   const heroDate = todayLong ? todayLong.charAt(0).toUpperCase() + todayLong.slice(1) : '';
@@ -941,6 +956,7 @@ async function renderDashboard(main) {
       <div class="dash-hero-text">
         <div class="dash-hello">Bonjour ${esc(State.user.firstName)} 👋</div>
         <div class="dash-date">${esc(heroDate)}</div>
+        <div class="dash-clock" id="dash-clock" aria-live="off">--:--:--</div>
       </div>
       <div class="dash-hero-actions">
         <button class="hero-chip" data-herov="team">📅 Mon planning</button>
@@ -951,6 +967,7 @@ async function renderDashboard(main) {
       </div>
     </section>
     <div id="dash-body" class="empty">Chargement…</div>`;
+  startDashClock();
   main.querySelectorAll('[data-herov]').forEach((b) => b.onclick = () => { State.view = b.dataset.herov; renderApp(); });
   const heroLeave = main.querySelector('#hero-leave'); if (heroLeave) heroLeave.onclick = () => openRequestModal();
   const heroAvert = main.querySelector('#hero-avert'); if (heroAvert) heroAvert.onclick = () => { _docMgmtTab = 'gen'; State.view = 'docmgmt'; renderApp(); };

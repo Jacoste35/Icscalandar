@@ -1643,3 +1643,12 @@ td { color: var(--ink); }
 .ioa-ev-sub { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .82rem; }
 .ioa-repl { color: var(--brand-2); font-weight: 650; }
 .ioa-ev .btn { align-self: center; flex: 0 0 auto; }
+
+/* Horloge temps réel de l'accueil (dans le hero) */
+.dash-clock {
+  margin-top: .3rem; font-weight: 800; font-size: 1.35rem; line-height: 1;
+  letter-spacing: .04em; font-variant-numeric: tabular-nums;
+  display: inline-flex; align-items: center; gap: .4rem; opacity: .97;
+}
+.dash-clock::before { content: '🕒'; font-size: 1rem; }
+@media (max-width: 560px) { .dash-clock { font-size: 1.2rem; } }
