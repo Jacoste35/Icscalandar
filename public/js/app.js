@@ -5068,6 +5068,66 @@ function ocrTextToLines(text) {
   return lines;
 }
 
+// Nombre d'une préfacturation : « 38 229,80 » / « 3800.70 » / « 1540,00 ».
+function prefNum(s) {
+  let t = String(s || '').replace(/\s/g, '');
+  if (t.includes(',') && t.includes('.')) t = t.replace(/\./g, '').replace(',', '.'); // 1.234,56 -> 1234.56
+  else if (t.includes(',')) t = t.replace(',', '.');
+  const n = parseFloat(t); return Number.isFinite(n) ? n : null;
+}
+// Montants de synthèse (HT / TVA / TTC) d'une préfacturation, pour vérification.
+// Nombres d'une préfacturation. Les milliers en groupes STRICTS de 3 chiffres
+// (« 38 229,80 ») pour ne pas coller deux montants voisins séparés par un espace.
+const PREF_NUM_RE = /\d{1,3}(?:[ .]\d{3})+[.,]\d{2}|\d+[.,]\d{2}|\d+/g;
+function prefactuTotals(text) {
+  const find = (re) => { let best = null; String(text || '').split(/\r?\n/).forEach((l) => { if (re.test(l)) { const m = l.match(/\d{1,3}(?:[ .]\d{3})+[.,]\d{2}|\d+[.,]\d{2}/g); if (m && m.length) best = prefNum(m[m.length - 1]); } }); return best; };
+  return { ht: find(/montant\s*ht|total\s*(?:facture\s*)?ht/i), tva: find(/\bt\.?v\.?a\b/i), ttc: find(/montant\s*ttc|total\s*ttc/i) };
+}
+// Lecteur spécifique de préfacturation GLS : le tableau comporte de nombreuses
+// colonnes (prix/nombre de colis, prix/nombre de points, forfait/jours, montant
+// mensuel, puis « TOTAL FACTURE HT »). On lit chaque ligne connue, on prend le
+// dernier montant (TOTAL FACTURE HT) et on retrouve quantité × prix unitaire
+// quand un produit correspond au total.
+function glsPrefactuToLines(text) {
+  const KNOWN = CARRIER_LABELS.gls;
+  const out = [];
+  String(text || '').split(/\r?\n/).forEach((raw) => {
+    const line = raw.replace(/[|]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    if (line.length < 4 || !/[A-Za-zÀ-ÿ]/.test(line)) return;
+    if (/total\s*facture|montant\s*(ht|ttc)|\bt\.?v\.?a\b|liaison|^lot\b|convention\s*image\s*\(?\s*$/i.test(line) && !/colis|gasoil|convention|bonus/i.test(line)) return;
+    // Rapprochement au libellé GLS connu (ou mots-clés caractéristiques).
+    let best = null, score = 0;
+    for (const k of KNOWN) { const s = _sim(line, k); if (s > score) { score = s; best = k; } }
+    if (score < 0.3 && !/colis|convention|gasoil|bonus/i.test(line)) return;
+    // Ligne de facturation = contient au moins un montant à 2 décimales (sinon
+    // « Bonus 1% » sans montant, en-têtes… → ignorés).
+    if (!/\d{1,3}(?:[ .]\d{3})*[.,]\d{2}/.test(line)) return;
+    // On retire les codes prestation (J1, J4, D3, G1, G5…) et les repères entre
+    // parenthèses (7VL…) pour ne pas fausser la détection quantité × prix.
+    const numLine = line.replace(/\b[A-Za-z]\d+\b/g, ' ').replace(/\(\s*\d+[A-Za-z]+\s*\)/g, ' ');
+    const amts = (numLine.match(PREF_NUM_RE) || []).map(prefNum).filter((n) => n != null);
+    if (!amts.length) return;
+    const total = amts[amts.length - 1];
+    if (total == null || Math.abs(total) < 0.01) return; // Bonus « – » (0) : ignoré
+    // Cherche un couple (prix unitaire, quantité) dont le produit ≈ total.
+    let qty = 1, pu = total, found = false;
+    for (let i = 0; i < amts.length - 1 && !found; i++) {
+      for (let j = 0; j < amts.length - 1 && !found; j++) {
+        if (i === j) continue;
+        const a = amts[i], b = amts[j];
+        if (a > 0 && b > 0 && Math.abs(a * b - total) <= Math.max(0.5, Math.abs(total) * 0.01)) {
+          pu = Math.min(a, b); qty = Math.max(a, b);
+          if (pu < qty) found = true;
+        }
+      }
+    }
+    out.push({ designation: best || line.replace(/[\d.,\s]+$/, '').slice(0, 60), quantite: Math.round(qty * 100) / 100, prixUnitaire: Math.round(pu * 1000) / 1000 });
+  });
+  return out;
+}
+// Choisit le lecteur selon le donneur d'ordre (GLS = lecteur dédié).
+function prefactuToLines(text, tab) { return tab === 'gls' ? glsPrefactuToLines(text) : ocrTextToLines(text); }
+
 // Libellés de lignes connus par transporteur (valeurs par défaut, complétées par
 // les lignes enregistrées dans le profil de facturation). Sert à « nettoyer »
 // automatiquement un libellé écorché par l'OCR.
@@ -5178,6 +5238,7 @@ async function billTab(main) {
           <button class="btn ghost sm" id="pf-autoextract">Extraire les lignes automatiquement</button>
           <button class="btn ghost sm" id="pf-import">Charger (désignation;qté;PU)</button>
         </div>
+        <div id="pf-detected" class="help" style="margin-top:.4rem"></div>
         <p class="help">L'OCR lit le scan <strong>localement</strong> (aucune donnée envoyée à un tiers). La reconnaissance peut être imparfaite : vérifiez les lignes avant de générer. Envoyez-moi un exemple de texte reconnu pour que j'affine le mapping FedEx exact.</p>
       </details>
     </div>`;
@@ -5226,11 +5287,23 @@ async function billTab(main) {
       const rows = body.querySelector('#pf-paste').value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => { const c = l.split(';'); return { designation: (c[0] || '').trim(), quantite: num(c[1]), prixUnitaire: num(c[2]) }; }).filter((l) => l.designation);
       fillLines(rows); toast(`${rows.length} ligne(s) chargée(s).`, 'ok');
     };
-    body.querySelector('#pf-autoextract').onclick = () => { const arr = snapLines(ocrTextToLines(body.querySelector('#pf-paste').value)); if (!arr.length) { toast('Aucune ligne montant détectée — corrigez le texte ou saisissez manuellement.', 'warn'); return; } fillLines(arr); toast(`${arr.length} ligne(s) extraite(s) — à vérifier.`, 'ok'); };
+    // Affiche les montants de synthèse détectés (HT/TVA/TTC) pour vérification.
+    const showDetected = (text, arr) => {
+      const el = body.querySelector('#pf-detected'); if (!el) return;
+      const t = prefactuTotals(text);
+      const linesHT = (arr || []).reduce((s, l) => s + (l.quantite || 0) * (l.prixUnitaire || 0), 0);
+      const parts = [];
+      if (t.ht != null) parts.push(`Préfacturation : <strong>HT ${eur(t.ht)}</strong>`);
+      if (t.tva != null) parts.push(`TVA ${eur(t.tva)}`);
+      if (t.ttc != null) parts.push(`TTC ${eur(t.ttc)}`);
+      if (arr && arr.length) { const ok = t.ht != null && Math.abs(linesHT - t.ht) <= Math.max(1, t.ht * 0.01); parts.push(`Somme des lignes extraites : <strong>${eur(linesHT)}</strong> ${t.ht != null ? (ok ? '✅ concorde' : '⚠️ écart avec le HT') : ''}`); }
+      el.innerHTML = parts.length ? parts.join(' · ') : '';
+    };
+    body.querySelector('#pf-autoextract').onclick = () => { const txt = body.querySelector('#pf-paste').value; const arr = snapLines(prefactuToLines(txt, _billTab)); if (!arr.length) { toast('Aucune ligne montant détectée — corrigez le texte ou saisissez manuellement.', 'warn'); showDetected(txt, arr); return; } fillLines(arr); showDetected(txt, arr); toast(`${arr.length} ligne(s) extraite(s) — à vérifier.`, 'ok'); };
     body.querySelector('#pf-ocr').onclick = async () => {
       const file = body.querySelector('#pf-file').files[0]; if (!file) { toast('Choisissez un fichier (PDF scanné ou image).', 'err'); return; }
       const status = body.querySelector('#pf-ocrstatus');
-      try { const txt = await ocrFileToText(file, status); body.querySelector('#pf-paste').value = txt; const arr = snapLines(ocrTextToLines(txt)); if (arr.length) { fillLines(arr); status.textContent = `OCR terminé — ${arr.length} ligne(s) pré-remplie(s), à vérifier.`; } else { status.textContent = 'OCR terminé — vérifiez le texte puis « Extraire les lignes ».'; } }
+      try { const txt = await ocrFileToText(file, status); body.querySelector('#pf-paste').value = txt; const arr = snapLines(prefactuToLines(txt, _billTab)); if (arr.length) { fillLines(arr); status.textContent = `OCR terminé — ${arr.length} ligne(s) pré-remplie(s), à vérifier.`; } else { status.textContent = 'OCR terminé — vérifiez le texte puis « Extraire les lignes ».'; } showDetected(txt, arr); }
       catch (e) { status.textContent = ''; toast('OCR indisponible : ' + e.message + '. Vous pouvez coller le texte manuellement.', 'err'); }
     };
     body.querySelector('#pf-save').onclick = async () => {
