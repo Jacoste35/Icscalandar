@@ -2842,7 +2842,7 @@ app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId, balances: u.balances }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, salaryParams: db.settings.salaryParams || {} });
+  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice() });
 });
 
 // Paramètres de paie par salarié (taux horaire, base mensualisée, cotisations,
@@ -3061,6 +3061,9 @@ app.post('/api/staff/payslips/parse', authRequired, adminRequired, async (req, r
   if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'Aucun fichier fourni.' });
   const usersMin = db.users.filter((u) => u.status !== 'deleted').map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName }));
   const balById = {}, addrById = {}; db.users.forEach((u) => { balById[u.id] = u.balances || {}; addrById[u.id] = u.address || ''; });
+  // Catégories proposables comme motif d'absence + dictionnaire d'apprentissage.
+  const absCats = db.categories.filter((c) => c.selectable && c.code !== 'DCP' && c.code !== 'RET');
+  const learning = (db.settings && db.settings.motifLearning) || {};
   const results = [];
   for (const f of files.slice(0, 40)) {
     const fileName = String((f && f.name) || 'bulletin.pdf');
@@ -3072,15 +3075,34 @@ app.post('/api/staff/payslips/parse', authRequired, adminRequired, async (req, r
       // lecture par coordonnées de chaque grille de soldes.
       let many = null;
       try { const pages = await payslip.pdfToItems(buf); many = payslip.extractMany(pages, usersMin); } catch (e) { many = null; }
-      if (many && many.length) { results.push(...many.slice(0, 80)); continue; }
-      // Sinon : un seul bulletin (autre format) — extraction ligne par ligne.
+      // Texte plat : absences datées + éléments de paie (heures sup., nuit, repas).
+      let elByMat = {};
+      try {
+        const text = await payslip.pdfToText(buf);
+        payslip.splitBulletins(text).forEach((b) => { elByMat[b.matricule] = payslip.parseBulletinElements(b.block, absCats, learning); });
+      } catch (e) { elByMat = {}; }
+      if (many && many.length) {
+        many.slice(0, 80).forEach((r) => {
+          const el = elByMat[r.matricule];
+          if (el) { r.absences = el.absences; r.pay = { hsup25: el.hsup25, nightHours: el.nightHours, mealCount: el.mealCount, mealAmount: el.mealAmount }; }
+          results.push(r);
+        });
+        continue;
+      }
+      // Sinon : un seul bulletin (autre format) — extraction ligne par ligne + éléments.
       const text = await payslip.pdfToText(buf);
-      results.push(Object.assign({ fileName, error: '', matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] }, payslip.extractFromText(text, usersMin)));
-    } catch (e) { results.push({ fileName, error: e.message, matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] }); }
+      const el = payslip.parseBulletinElements(text, absCats, learning);
+      results.push(Object.assign(
+        { fileName, error: '', matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [] },
+        payslip.extractFromText(text, usersMin),
+        { absences: el.absences, pay: { hsup25: el.hsup25, nightHours: el.nightHours, mealCount: el.mealCount, mealAmount: el.mealAmount }, period: '' }
+      ));
+    } catch (e) { results.push({ fileName, error: e.message, matchedUserId: null, matchedUserName: '', confidence: 0, values: {}, found: {}, lines: [], absences: [], pay: {} }); }
   }
   res.json({
     results,
     users: usersMin.map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}`, balances: balById[u.id] || {}, address: addrById[u.id] || '' })),
+    categories: absCats.map((c) => ({ code: c.code, label: c.label, color: c.color })),
   });
 });
 
@@ -3105,6 +3127,79 @@ app.post('/api/staff/payslips/apply', authRequired, adminRequired, async (req, r
   }
   await save();
   res.json({ applied });
+});
+
+// Applique les ABSENCES datées (au planning) et les ÉLÉMENTS DE PAIE (heures
+// sup. 25 %, majoration nuit, indemnité de repas → Gestion des heures) lus sur
+// les bulletins, après relecture et validation des motifs par l'administrateur.
+// Enregistre aussi l'apprentissage motif→catégorie pour les prochaines fois.
+app.post('/api/staff/payslips/apply-elements', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const normMotif = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  db.payImports = db.payImports || [];
+  if (!db.settings.motifLearning || typeof db.settings.motifLearning !== 'object') db.settings.motifLearning = {};
+  const items = (req.body && req.body.items) || [];
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Rien à importer.' });
+  let absAdded = 0, absSkipped = 0, payCount = 0, learned = 0;
+  for (const it of items) {
+    const u = db.users.find((x) => x.id === (it && it.userId));
+    if (!u) continue;
+    // --- Absences datées → calendrier (créées validées, sans re-décompte des
+    //     soldes car ceux-ci sont importés séparément depuis le même bulletin). ---
+    for (const a of (it.absences || [])) {
+      const cat = categoryByCode(a.category);
+      if (!cat || cat.code === 'DCP') continue;
+      if (!validDate(a.startDate)) continue;
+      const end = validDate(a.endDate) && a.endDate >= a.startDate ? a.endDate : a.startDate;
+      // Anti-doublon : même salarié / motif / période déjà au planning.
+      if (db.requests.some((r) => r.userId === u.id && r.category === a.category && r.startDate === a.startDate && r.endDate === end)) { absSkipped++; continue; }
+      const days = cat.code === 'RET' ? 0 : holidays.countWorkingDays(a.startDate, end);
+      const hours = days * HOURS_PER_DAY;
+      db.requests.push({
+        id: nextId('request'), userId: u.id, category: a.category, pool: null,
+        startDate: a.startDate, endDate: end, reason: cat.label,
+        fractionnement: null, retardMinutes: null, days, hours,
+        status: 'approved', createdAt: new Date().toISOString(),
+        decidedAt: new Date().toISOString(), decidedBy: req.user.id, createdBy: req.user.id,
+        replacedById: null, replacedByName: null,
+        adminNote: 'Importé du bulletin de paie' + (it.month ? ' (' + it.month + ')' : ''),
+      });
+      absAdded++;
+      // Apprentissage : mémorise le motif lu -> catégorie confirmée.
+      if (a.motif) { const k = normMotif(a.motif); if (k && db.settings.motifLearning[k] !== a.category) { db.settings.motifLearning[k] = a.category; learned++; } }
+    }
+    // --- Éléments de paie (mois YYYY-MM) → Gestion des heures. ---
+    const month = /^\d{4}-\d{2}$/.test(String(it.month || '')) ? it.month : null;
+    if (month) {
+      const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v))) ? null : Math.round(Number(v) * 100) / 100;
+      const rec = {
+        id: nextId('payimp'), userId: u.id, userName: `${u.firstName} ${u.lastName}`, month,
+        hsup25: num(it.hsup25), nightHours: num(it.nightHours), mealCount: num(it.mealCount), mealAmount: num(it.mealAmount),
+        source: 'bulletin', createdAt: new Date().toISOString(),
+      };
+      if (rec.hsup25 != null || rec.nightHours != null || rec.mealCount != null) {
+        db.payImports = db.payImports.filter((p) => !(p.userId === u.id && p.month === month));
+        db.payImports.push(rec);
+        payCount++;
+        // Les heures sup. 25 % payées alimentent le rapprochement HSUP du mois.
+        if (rec.hsup25 != null) {
+          let s = db.hsupSettlements.find((x) => x.userId === u.id && x.month === month);
+          if (!s) { s = { userId: u.id, month, paidHours: 0, transmittedEquiv: 0 }; db.hsupSettlements.push(s); }
+          s.paidHours = rec.hsup25;
+        }
+      }
+    }
+  }
+  await save();
+  res.json({ absAdded, absSkipped, payCount, learned });
+});
+
+// Retirer un élément de paie importé (heures sup. / nuit / repas d'un mois).
+app.delete('/api/staff/payimports/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  db.payImports = (db.payImports || []).filter((p) => p.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
 });
 
 // Anomalies de kilométrage en attente de validation (encadrement).

@@ -6476,6 +6476,7 @@ async function renderHours(main) {
     <div class="view-switch" id="hr-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
       <button data-htab="resume" class="active">Résumé des amplitudes</button>
       ${fullAccess ? `<button data-htab="hsup">Gestion des heures supplémentaires</button>
+      <button data-htab="payimports">Éléments de paie importés</button>
       <button data-htab="import">Import rapport d'activité</button>
       <button data-htab="saisie">Saisie manuelle</button>
       <button data-htab="bulletins">Bulletins de salaire</button>` : ''}
@@ -6491,6 +6492,7 @@ function hrTab(tab) {
   const body = document.getElementById('hr-body'); if (!body) return; body.className = '';
   if (tab === 'resume') return hoursResume(body);
   if (tab === 'hsup') return hoursHsup(body);
+  if (tab === 'payimports') return hoursPayImports(body);
   if (tab === 'import') return hoursImport(body);
   if (tab === 'saisie') return hoursSaisie(body);
   if (tab === 'bulletins') return hoursBulletins(body);
@@ -6499,6 +6501,8 @@ function hrTab(tab) {
 /* ---- Bulletins de salaire : upload + lecture + relecture + application --- */
 const BULL_CATS = [['congesN', 'Congés N'], ['congesN1', 'Congés N-1'], ['rcc', 'RCC (h)'], ['heuresSupp', 'Récup. / h. sup (h)']];
 let _bullUsers = [];
+let _bullCats = [];      // catégories proposables comme motif d'absence
+let _bullResults = [];   // dernier lot lu (absences + éléments de paie)
 function hoursBulletins(body) {
   body.innerHTML = `
     <div class="alert info">Importez les bulletins de paie (PDF). Les compteurs détectés (congés payés N / N-1, RCC, récupération) sont <strong>proposés</strong> ; vous les relisez et corrigez avant de les appliquer aux comptes des salariés.</div>
@@ -6530,8 +6534,9 @@ async function bullRead() {
   status.textContent = 'Lecture en cours…';
   try {
     const payload = await Promise.all(files.map(bullFileToData));
-    const { results, users } = await api('POST', '/staff/payslips/parse', { files: payload });
+    const { results, users, categories } = await api('POST', '/staff/payslips/parse', { files: payload });
     _bullUsers = users || [];
+    _bullCats = categories || [];
     bullRenderReview(results || []);
     status.textContent = `${results.length} bulletin(s) lu(s).`;
   } catch (e) { status.textContent = ''; toast('Erreur : ' + e.message, 'err'); }
@@ -6542,10 +6547,44 @@ function bullConfBadge(c) {
   return `<span class="pill" style="background:${m[0]}22;color:${m[0]}">détection ${m[1]}</span>`;
 }
 
+// Convertit une période bulletin « 05-2026 » en mois « 2026-05 ».
+function bullPeriodToMonth(period) { const m = String(period || '').match(/^(\d{2})-(\d{4})$/); return m ? `${m[2]}-${m[1]}` : ''; }
+// Options de catégorie du site pour le menu déroulant des motifs.
+function bullCatOptions(sel) {
+  return `<option value="">— choisir le motif —</option>` + _bullCats.map((c) => `<option value="${esc(c.code)}" ${c.code === sel ? 'selected' : ''}>${esc(c.code)} — ${esc(c.label)}</option>`).join('');
+}
+// Bloc « absences détectées » d'un bulletin (dates + motif lu + menu déroulant).
+function bullAbsencesHTML(r) {
+  const abs = r.absences || [];
+  if (!abs.length) return '';
+  const rows = abs.map((a, ai) => {
+    const range = a.endDate && a.endDate !== a.startDate ? `${fmtDate(a.startDate)} → ${fmtDate(a.endDate)}` : fmtDate(a.startDate);
+    const guess = a.suggested ? `<span class="pill" style="background:#3b82f622;color:#3b82f6">proposé</span>` : `<span class="pill warn">à confirmer</span>`;
+    return `<div class="bull-abs" data-ai="${ai}">
+      <label class="veh-check" style="margin:0"><input type="checkbox" data-absinc ${a.suggested ? 'checked' : ''}> <span class="bull-abs-date">${range}</span></label>
+      <span class="bull-abs-motif">lu : « ${esc(a.motif)} » ${guess}</span>
+      <select data-abscat data-motif="${esc(a.motif)}" data-s="${esc(a.startDate)}" data-e="${esc(a.endDate || a.startDate)}">${bullCatOptions(a.suggested)}</select>
+    </div>`;
+  }).join('');
+  return `<div class="bull-section"><div class="bull-section-h">📅 Absences à ajouter au planning</div>${rows}
+    <p class="help" style="margin:.2rem 0 0">Vérifiez le motif proposé (menu déroulant) puis cochez pour l'ajouter. Votre choix est mémorisé pour les prochains bulletins.</p></div>`;
+}
+// Bloc « éléments de paie » (heures sup. 25 %, majoration nuit, indemnité repas).
+function bullPayHTML(r) {
+  const p = r.pay || {};
+  const rows = [];
+  if (p.hsup25 != null) rows.push(`<label class="veh-check" style="margin:.15rem 0"><input type="checkbox" data-payinc="hsup25" checked> Heures supplémentaires 25 % : <strong>${p.hsup25} h</strong></label>`);
+  if (p.nightHours != null) rows.push(`<label class="veh-check" style="margin:.15rem 0"><input type="checkbox" data-payinc="nightHours" checked> Majoration heures de nuit : <strong>${p.nightHours} h</strong></label>`);
+  if (p.mealCount != null) rows.push(`<label class="veh-check" style="margin:.15rem 0"><input type="checkbox" data-payinc="mealCount" checked> Indemnité de repas : <strong>${p.mealCount} panier(s)</strong>${p.mealAmount ? ` · ${eur(p.mealAmount)}` : ''}</label>`);
+  if (!rows.length) return '';
+  return `<div class="bull-section"><div class="bull-section-h">⏱️ Éléments à importer dans la gestion des heures</div>${rows.join('')}</div>`;
+}
+
 function bullRenderReview(results) {
   const wrap = document.getElementById('bull-review');
   // Associés (et plus sûrs) d'abord ; non rapprochés en dernier.
   results = results.slice().sort((a, b) => (((a.matchedUserId ? 0 : 1) - (b.matchedUserId ? 0 : 1)) || ((b.confidence || 0) - (a.confidence || 0)) || String(a.fileName).localeCompare(String(b.fileName))));
+  _bullResults = results;
   const nMatched = results.filter((r) => r.matchedUserId).length;
   const userOpts = (sel) => '<option value="">— choisir un salarié —</option>'
     + _bullUsers.map((u) => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name)}</option>`).join('');
@@ -6563,13 +6602,15 @@ function bullRenderReview(results) {
     const err = r.error ? `<div class="alert warn" style="margin:.3rem 0">Lecture partielle : ${esc(r.error)}</div>` : '';
     const curAddr = (_bullUsers.find((u) => u.id === r.matchedUserId) || {}).address || '';
     const addrDet = r.address ? '<span class="pill" style="background:#3b82f622;color:#3b82f6">lu</span>' : '<span class="help">non détecté</span>';
-    return `<div class="card bull-card" data-i="${i}">
+    return `<div class="card bull-card" data-i="${i}" data-month="${esc(bullPeriodToMonth(r.period))}">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
         <strong>📄 ${esc(r.fileName)}</strong> ${bullConfBadge(r.confidence)}
       </div>
       ${err}
       <div class="erp-row" style="margin:.5rem 0"><label>Salarié<br><select data-user style="min-width:220px">${userOpts(r.matchedUserId)}</select></label></div>
       <div class="grid cols-2">${rows}</div>
+      ${bullAbsencesHTML(r)}
+      ${bullPayHTML(r)}
       <label style="display:block;margin:.4rem 0">🏠 Adresse postale (donnée perso — visible admin uniquement) ${addrDet}<br>
         <span class="help">actuelle : <b data-curaddr>${curAddr ? esc(curAddr) : '—'}</b></span>
         <input data-addr type="text" value="${esc(r.address || curAddr || '')}" placeholder="N° rue, code postal ville" style="width:100%"></label>
@@ -6592,7 +6633,8 @@ function bullRenderReview(results) {
 
 async function bullApply() {
   const cards = [...document.querySelectorAll('.bull-card')];
-  const items = [];
+  const items = [];       // soldes (compteurs)
+  const elItems = [];     // absences + éléments de paie
   for (const card of cards) {
     const userId = card.querySelector('[data-user]').value;
     if (!userId) continue;
@@ -6600,14 +6642,77 @@ async function bullApply() {
     card.querySelectorAll('[data-f]').forEach((inp) => { if (inp.value !== '') it[inp.dataset.f] = Number(inp.value); });
     const addr = card.querySelector('[data-addr]'); if (addr && addr.value.trim()) it.address = addr.value.trim();
     items.push(it);
+    // Absences cochées (avec un motif choisi) + éléments de paie du mois.
+    const month = card.dataset.month || '';
+    const absences = [];
+    card.querySelectorAll('.bull-abs').forEach((row) => {
+      const inc = row.querySelector('[data-absinc]');
+      const sel = row.querySelector('[data-abscat]');
+      if (inc && inc.checked && sel && sel.value) {
+        absences.push({ category: sel.value, startDate: sel.dataset.s, endDate: sel.dataset.e, motif: sel.dataset.motif || '' });
+      }
+    });
+    const el = { userId, month };
+    card.querySelectorAll('[data-payinc]').forEach((cb) => {
+      if (!cb.checked) return;
+      const idx = Number(card.dataset.i);
+      const p = (_bullResults[idx] && _bullResults[idx].pay) || {};
+      const k = cb.dataset.payinc;
+      if (k === 'mealCount') { el.mealCount = p.mealCount; el.mealAmount = p.mealAmount; } else { el[k] = p[k]; }
+    });
+    if (absences.length) el.absences = absences;
+    const hasPay = el.hsup25 != null || el.nightHours != null || el.mealCount != null;
+    if (absences.length || (hasPay && month)) elItems.push(el);
   }
   if (!items.length) { toast('Associez au moins un bulletin à un salarié.', 'warn'); return; }
-  if (!confirm(`Appliquer les compteurs à ${items.length} salarié(s) ? Les valeurs remplaceront leurs soldes actuels.`)) return;
+  const nAbs = elItems.reduce((s, e) => s + ((e.absences || []).length), 0);
+  const nPay = elItems.filter((e) => e.hsup25 != null || e.nightHours != null || e.mealCount != null).length;
+  if (!confirm(`Appliquer les compteurs à ${items.length} salarié(s)${nAbs ? `, ajouter ${nAbs} absence(s) au planning` : ''}${nPay ? ` et importer les éléments de paie de ${nPay} bulletin(s)` : ''} ? Les soldes seront remplacés.`)) return;
   try {
     const { applied } = await api('POST', '/staff/payslips/apply', { items });
-    toast(`Compteurs mis à jour pour ${applied.length} salarié(s).`, 'ok');
+    let extra = '';
+    if (elItems.length) {
+      const r = await api('POST', '/staff/payslips/apply-elements', { items: elItems });
+      extra = ` · ${r.absAdded || 0} absence(s) ajoutée(s)${r.absSkipped ? ` (${r.absSkipped} déjà présente(s))` : ''} · ${r.payCount || 0} élément(s) de paie importé(s)`;
+    }
+    toast(`Compteurs mis à jour pour ${applied.length} salarié(s).${extra}`, 'ok');
     await loadHours();
   } catch (e) { toast('Erreur : ' + e.message, 'err'); }
+}
+
+// Onglet « Éléments de paie importés » : heures sup. 25 %, majoration nuit et
+// indemnité de repas relevées sur les bulletins, par mois et par salarié.
+function frMonthLabel(mo) { const m = String(mo || '').match(/^(\d{4})-(\d{2})$/); return m ? `${MONTHS[Number(m[2]) - 1]} ${m[1]}` : mo; }
+function hoursPayImports(body) {
+  const imports = (_hours.payImports || []).slice();
+  if (!imports.length) {
+    body.innerHTML = `<div class="alert info">Aucun élément importé pour le moment. Ouvrez l'onglet « <strong>Bulletins de salaire</strong> », lisez les bulletins puis validez : les <strong>heures supplémentaires 25 %</strong>, <strong>majorations d'heures de nuit</strong> et <strong>indemnités de repas</strong> reconnues apparaîtront ici.</div>`;
+    return;
+  }
+  const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  const byMonth = {};
+  imports.forEach((p) => { (byMonth[p.month] = byMonth[p.month] || []).push(p); });
+  const months = Object.keys(byMonth).sort().reverse();
+  body.innerHTML = `<p class="help" style="margin-top:0">Éléments lus sur les bulletins (les heures sup. 25 % alimentent aussi le rapprochement « Gestion des heures supplémentaires » du mois).</p>` + months.map((mo) => {
+    const rows = byMonth[mo].slice().sort((a, b) => String(a.userName).localeCompare(String(b.userName)));
+    const tot = { hs: 0, ni: 0, me: 0, ma: 0 };
+    rows.forEach((p) => { tot.hs += p.hsup25 || 0; tot.ni += p.nightHours || 0; tot.me += p.mealCount || 0; tot.ma += p.mealAmount || 0; });
+    return `<div class="card"><h3 style="margin:.1rem 0 .5rem">${esc(frMonthLabel(mo))}</h3>
+      <div class="table-wrap"><table class="veh-table"><thead><tr><th>Salarié</th><th>H. sup. 25 %</th><th>Maj. nuit</th><th>Indemnité repas</th><th></th></tr></thead>
+      <tbody>${rows.map((p) => `<tr>
+        <td>${esc(p.userName)}</td>
+        <td>${p.hsup25 != null ? r2(p.hsup25) + ' h' : '—'}</td>
+        <td>${p.nightHours != null ? r2(p.nightHours) + ' h' : '—'}</td>
+        <td>${p.mealCount != null ? `${p.mealCount} panier(s)${p.mealAmount ? ' · ' + eur(p.mealAmount) : ''}` : '—'}</td>
+        <td><button class="btn ghost sm" data-delpay="${p.id}" title="Retirer">✕</button></td></tr>`).join('')}
+      <tr><th>Total</th><th>${r2(tot.hs)} h</th><th>${r2(tot.ni)} h</th><th>${tot.me} · ${eur(tot.ma)}</th><th></th></tr>
+      </tbody></table></div></div>`;
+  }).join('');
+  body.querySelectorAll('[data-delpay]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Retirer cet élément importé ?')) return;
+    try { await api('DELETE', '/staff/payimports/' + b.dataset.delpay); await loadHours(); hoursPayImports(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
 }
 
 // Résumé : amplitudes réalisées par chauffeur, pour un mois sélectionnable
