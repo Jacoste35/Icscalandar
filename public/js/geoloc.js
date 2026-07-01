@@ -42,6 +42,8 @@ function gTime(iso) {
   catch (e) { return '—'; }
 }
 function gDate(iso) { try { return new Date(iso).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }); } catch (e) { return ''; } }
+// Durée en minutes -> « 1 h 25 » / « 42 min ».
+function gDuration(min) { const m = Math.round(Number(min) || 0); if (m < 60) return m + ' min'; const h = Math.floor(m / 60), r = m % 60; return r ? `${h} h ${r < 10 ? '0' : ''}${r}` : `${h} h`; }
 function gIsToday(iso) { try { return gDate(iso) === gDate(Date.now()); } catch (e) { return false; } }
 // « depuis » : heure seule si aujourd'hui, sinon date + heure.
 function gStopSince(iso) { if (!iso) return '—'; return gIsToday(iso) ? gTime(iso) : `le ${gDate(iso)} à ${gTime(iso)}`; }
@@ -140,6 +142,11 @@ function geoVehCardHTML(p) {
   const driverDup = p.driverName && label.toLowerCase().includes(String(p.driverName).toLowerCase());
   const driverPart = (p.driverName && !driverDup) ? `${p.groupName ? ' · ' : ''}👤 ${esc(p.driverName)}` : '';
   const groupLine = (p.groupName || (p.driverName && !driverDup)) ? `<div class="geo-group">${p.groupName ? `👥 ${esc(p.groupName)}` : ''}${driverPart}</div>` : '';
+  // Dépôt du groupe : heure de départ / retour / temps passé sur place.
+  const di = p.depotInfo;
+  const depotLine = (di && (di.depart || di.retour || di.dwellMin)) ? `<div class="geo-depotline">🏭 ${esc(di.label || 'Dépôt')} · départ <strong>${di.depart ? gTime(di.depart) : '—'}</strong> · retour <strong>${di.retour ? gTime(di.retour) : '—'}</strong>${di.dwellMin ? ` · sur place <strong>${gDuration(di.dwellMin)}</strong>` : ''}</div>` : '';
+  // Passages AS24 (arrêt > 3 min) : station + heure + durée.
+  const fuelStopsLine = (p.fuelStops && p.fuelStops.length) ? `<div class="geo-fuelstops">⛽ ${p.fuelStops.map((f) => `${esc(f.name)} à <strong>${gTime(f.at)}</strong> (${gDuration(f.minutes)})`).join(' · ')}</div>` : '';
   return `<div class="geo-card geo-${st}">
     <div class="geo-card-top">
       <span class="geo-name"><span class="geo-dot" style="background:${m.color}"></span>${esc(label)}</span>
@@ -149,6 +156,8 @@ function geoVehCardHTML(p) {
     <div class="geo-addr">${m.dot} ${esc(addr)} ${maps}</div>
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">maj ${esc(gTime(p.ts))}</span></div>
     ${activityLine}
+    ${depotLine}
+    ${fuelStopsLine}
     ${groupLine}
     ${fuelLine}
     ${geoStatsHTML(p.stats)}

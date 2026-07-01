@@ -1730,3 +1730,7 @@ td { color: var(--ink); }
 .fleet-km-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: .7rem; align-items: start; }
 .fleet-km-grid > .card { margin: 0; }
 @media (max-width: 560px) { .fleet-km-grid { grid-template-columns: 1fr; } }
+
+/* Géoloc : ligne dépôt (départ/retour/temps sur place) + passages AS24 */
+.geo-depotline { font-size: .84rem; color: #475569; margin-top: .15rem; }
+.geo-fuelstops { font-size: .84rem; color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: .3rem .55rem; margin-top: .35rem; }
