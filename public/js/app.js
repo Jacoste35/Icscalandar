@@ -3884,8 +3884,8 @@ function vehTabTour(body) {
     </div>
     <div class="card">
       <h3>💥 Chocs & dommages carrosserie</h3>
-      <p class="help">Cliquez sur une zone du véhicule pour signaler un choc ou un dommage, puis choisissez le type.</p>
-      <div class="van-wrap">${vanDiagramSVG(_tour.impacts)}</div>
+      <p class="help">Cliquez sur une zone du schéma ou sur le nom d'une pièce pour signaler un choc ou un dommage, puis choisissez le type.</p>
+      <div class="van-wrap">${vanDiagram(_tour.impacts)}</div>
       <div id="tr-list" style="margin-top:.6rem"></div>
     </div>
     <div class="card">
@@ -3919,7 +3919,7 @@ function vehTabTour(body) {
 }
 
 function bindVanZones(scope) {
-  scope.querySelectorAll('.van-zone').forEach((z) => z.onclick = () => {
+  scope.querySelectorAll('.van-hot, .van-chip').forEach((z) => z.onclick = () => {
     const zone = z.dataset.zone, label = z.dataset.label;
     pickImpactType(label, (type, note) => {
       captureTourForm();
@@ -4002,56 +4002,53 @@ function renderTourHistory(el) {
   });
 }
 
-// Schéma SVG d'un fourgon (vue de dessus) avec zones cliquables. Chaque zone
-// porte le nom de la partie (au centre si la place suffit, sinon à côté). Les
-// "impacts" déjà relevés sont matérialisés par une pastille sur la zone.
-//   kind : 'center' (texte horizontal) | 'vertical' (panneaux latéraux longs)
-//          | 'side-left' / 'side-right' (petites zones : texte écrit à côté)
-const VAN_ZONES = [
-  { zone: 'pare_chocs_av', label: 'Pare-chocs avant', short: 'Pare-chocs AV', x: 66, y: 26, w: 208, h: 24, kind: 'center' },
-  { zone: 'capot', label: 'Capot / calandre', short: 'Capot', x: 66, y: 52, w: 208, h: 44, kind: 'center' },
-  { zone: 'pare_brise', label: 'Pare-brise', short: 'Pare-brise', x: 110, y: 100, w: 120, h: 42, kind: 'center' },
-  { zone: 'retro_g', label: 'Rétroviseur gauche', short: 'Rétro G', x: 40, y: 104, w: 18, h: 26, kind: 'side-left' },
-  { zone: 'retro_d', label: 'Rétroviseur droit', short: 'Rétro D', x: 282, y: 104, w: 18, h: 26, kind: 'side-right' },
-  { zone: 'cote_av_g', label: 'Côté avant gauche (porte conducteur)', short: 'Porte cond. (G)', x: 66, y: 100, w: 40, h: 150, kind: 'vertical' },
-  { zone: 'cote_av_d', label: 'Côté avant droit (porte passager)', short: 'Porte pass. (D)', x: 234, y: 100, w: 40, h: 150, kind: 'vertical' },
-  { zone: 'toit', label: 'Toit', short: 'Toit', x: 110, y: 146, w: 120, h: 320, kind: 'center' },
-  { zone: 'cote_ar_g', label: 'Côté arrière gauche', short: 'Flanc AR G', x: 66, y: 254, w: 40, h: 270, kind: 'vertical' },
-  { zone: 'cote_ar_d', label: 'Côté arrière droit', short: 'Flanc AR D', x: 234, y: 254, w: 40, h: 270, kind: 'vertical' },
-  { zone: 'portes_ar', label: 'Portes arrière', short: 'Portes AR', x: 110, y: 470, w: 120, h: 96, kind: 'center' },
-  { zone: 'pare_chocs_ar', label: 'Pare-chocs arrière', short: 'Pare-chocs AR', x: 66, y: 570, w: 208, h: 44, kind: 'center' },
-  { zone: 'roue_av_g', label: 'Roue avant gauche', short: 'Roue AvG', x: 34, y: 140, w: 22, h: 64, kind: 'side-left' },
-  { zone: 'roue_av_d', label: 'Roue avant droite', short: 'Roue AvD', x: 284, y: 140, w: 22, h: 64, kind: 'side-right' },
-  { zone: 'roue_ar_g', label: 'Roue arrière gauche', short: 'Roue ArG', x: 34, y: 430, w: 22, h: 64, kind: 'side-left' },
-  { zone: 'roue_ar_d', label: 'Roue arrière droite', short: 'Roue ArD', x: 284, y: 430, w: 22, h: 64, kind: 'side-right' },
+// Schéma réel du véhicule (4 vues) avec zones cliquables superposées à l'image,
+// et une liste de pièces cliquables (les libellés) pour un repérage précis.
+// Les coordonnées des zones sont en % de l'image (van-schema.jpg, 1401×895).
+const VAN_PARTS = [
+  // --- Avant ---
+  { zone: 'pare_chocs_av', label: 'Pare-chocs avant', group: 'Avant', hot: { x: 76, y: 33, w: 15, h: 7 } },
+  { zone: 'calandre', label: 'Calandre', group: 'Avant', hot: { x: 79, y: 26, w: 11, h: 7 } },
+  { zone: 'capot', label: 'Capot', group: 'Avant', hot: { x: 51, y: 23, w: 9, h: 8 } },
+  { zone: 'pare_brise', label: 'Pare-brise', group: 'Avant', hot: { x: 77, y: 11, w: 13, h: 11 } },
+  { zone: 'phare_av', label: 'Phare avant', group: 'Avant', hot: { x: 57, y: 27, w: 5, h: 5 } },
+  { zone: 'aile_av', label: 'Aile avant', group: 'Avant', hot: { x: 50, y: 31, w: 7, h: 7 } },
+  { zone: 'retroviseur', label: 'Rétroviseur', group: 'Avant', hot: { x: 45, y: 16, w: 5, h: 6 } },
+  // --- Côtés ---
+  { zone: 'porte_av', label: 'Porte avant', group: 'Côtés', hot: { x: 39, y: 18, w: 8, h: 13 } },
+  { zone: 'porte_laterale', label: 'Porte latérale coulissante', group: 'Côtés', hot: { x: 23, y: 17, w: 15, h: 16 } },
+  { zone: 'bas_caisse', label: 'Bas de caisse / marchepied', group: 'Côtés', hot: { x: 24, y: 38, w: 20, h: 5 } },
+  { zone: 'protection_laterale', label: 'Protection latérale', group: 'Côtés', hot: { x: 22, y: 82, w: 20, h: 6 } },
+  // --- Arrière ---
+  { zone: 'portes_ar', label: 'Portes arrière', group: 'Arrière', hot: { x: 76, y: 59, w: 15, h: 16 } },
+  { zone: 'feu_stop', label: 'Feu stop', group: 'Arrière', hot: { x: 81, y: 53, w: 6, h: 4 } },
+  { zone: 'feu_ar', label: 'Feu arrière', group: 'Arrière', hot: { x: 88, y: 68, w: 7, h: 8 } },
+  { zone: 'pare_chocs_ar', label: 'Pare-chocs arrière', group: 'Arrière', hot: { x: 77, y: 81, w: 15, h: 7 } },
+  // --- Roues ---
+  { zone: 'roue_av', label: 'Roue avant (pneu / jante)', group: 'Roues', hot: { x: 45, y: 37, w: 8, h: 10 } },
+  { zone: 'roue_ar', label: 'Roue arrière (pneu / jante)', group: 'Roues', hot: { x: 11, y: 37, w: 8, h: 10 } },
 ];
 
-function vanZoneLabelSVG(z) {
-  const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
-  const t = esc(z.short || z.label);
-  if (z.kind === 'vertical') return `<text class="van-label" x="${cx}" y="${cy}" text-anchor="middle" transform="rotate(-90 ${cx} ${cy})">${t}</text>`;
-  if (z.kind === 'side-left') return `<text class="van-side-label" x="${z.x - 6}" y="${cy + 3}" text-anchor="end">${t}</text>`;
-  if (z.kind === 'side-right') return `<text class="van-side-label" x="${z.x + z.w + 6}" y="${cy + 3}" text-anchor="start">${t}</text>`;
-  return `<text class="van-label" x="${cx}" y="${cy + 3}" text-anchor="middle">${t}</text>`;
-}
-
-function vanDiagramSVG(impacts) {
+function vanDiagram(impacts) {
   const counts = {};
   (impacts || []).forEach((i) => { counts[i.zone] = (counts[i.zone] || 0) + 1; });
-  const zones = VAN_ZONES.map((z) => {
-    const n = counts[z.zone] || 0;
-    const cx = z.x + z.w / 2;
-    // La pastille de comptage se place en haut de la zone pour ne pas masquer le nom.
-    const my = z.kind === 'center' || z.kind === 'vertical' ? z.y + 13 : z.y + z.h / 2;
-    const mark = n ? `<g class="van-mark"><circle cx="${cx}" cy="${my}" r="10" /><text x="${cx}" y="${my + 4}" text-anchor="middle">${n}</text></g>` : '';
-    return `<rect class="van-zone${n ? ' has-mark' : ''}" data-zone="${z.zone}" data-label="${esc(z.label)}" x="${z.x}" y="${z.y}" width="${z.w}" height="${z.h}" rx="7"><title>${esc(z.label)}</title></rect>${vanZoneLabelSVG(z)}${mark}`;
+  const hotspots = VAN_PARTS.filter((p) => p.hot).map((p) => {
+    const n = counts[p.zone] || 0;
+    return `<button type="button" class="van-hot${n ? ' has' : ''}" data-zone="${p.zone}" data-label="${esc(p.label)}"
+      style="left:${p.hot.x}%;top:${p.hot.y}%;width:${p.hot.w}%;height:${p.hot.h}%" title="${esc(p.label)}" aria-label="${esc(p.label)}">${n ? `<span class="van-pin">${n}</span>` : ''}</button>`;
   }).join('');
-  return `<svg viewBox="-82 0 504 648" class="van-svg" role="img" aria-label="Schéma du véhicule">
-    <rect x="60" y="22" width="220" height="596" rx="30" class="van-body" />
-    <text x="170" y="14" text-anchor="middle" class="van-cap">AVANT</text>
-    <text x="170" y="636" text-anchor="middle" class="van-cap">ARRIÈRE</text>
-    ${zones}
-  </svg>`;
+  const groups = {};
+  VAN_PARTS.forEach((p) => { (groups[p.group] = groups[p.group] || []).push(p); });
+  const chips = Object.keys(groups).map((g) => `<div class="van-chip-group">
+      <div class="van-chip-h">${esc(g)}</div>
+      <div class="van-chip-row">${groups[g].map((p) => {
+        const n = counts[p.zone] || 0;
+        return `<button type="button" class="van-chip${n ? ' has' : ''}" data-zone="${p.zone}" data-label="${esc(p.label)}">${esc(p.label)}${n ? ` <span class="van-chip-n">${n}</span>` : ''}</button>`;
+      }).join('')}</div>
+    </div>`).join('');
+  return `<div class="van-photo"><img src="/img/van-schema.jpg" alt="Schéma du véhicule (4 vues)" class="van-img" loading="lazy" />${hotspots}</div>
+    <p class="help" style="margin:.7rem 0 .4rem">Touchez une zone du schéma, ou choisissez directement la pièce ci-dessous :</p>
+    <div class="van-chips">${chips}</div>`;
 }
 
 // Options de chauffeur (liste des utilisateurs de la base) et de groupe.
