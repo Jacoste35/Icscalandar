@@ -4118,7 +4118,7 @@ function fleetKmHTML(vehicles, log) {
       <p class="help" style="margin:.3rem 0 0">Par chauffeur : ${drivers || '—'}</p>
     </div>`;
   }).filter(Boolean).join('');
-  return cards || '<p class="help">Aucun relevé de kilométrage importé pour le moment (importez un rapport contenant une colonne véhicule + kilomètres).</p>';
+  return cards ? `<div class="fleet-km-grid">${cards}</div>` : '<p class="help">Aucun relevé de kilométrage importé pour le moment (importez un rapport contenant une colonne véhicule + kilomètres).</p>';
 }
 
 function vehTabFleet(body) {
@@ -4139,15 +4139,27 @@ function vehTabFleet(body) {
       <div style="margin-top:.6rem"><button class="btn accent" id="fl-add">Ajouter à la flotte</button></div>
       <p class="help" style="margin-top:.4rem">Le « Nom » et le « Groupe » sont proposés à partir des salariés et groupes du site. Le kilométrage d'origine est le point de départ des calculs d'entretien.</p>
     </details>
-    <div class="card"><h3>Flotte (${vehicles.length})</h3>
-      ${vehicles.length ? `<div class="fleet-list">${vehicles.map((v) => {
-        const chip = (lbl, val) => val ? `<span class="fleet-chip"><b>${lbl}</b> ${esc(val)}</span>` : '';
+    ${(() => {
+      const ana = {}; ((_veh.analysis && _veh.analysis.vehicles) || []).forEach((a) => { ana[a.id] = a; });
+      const activeN = vehicles.filter((v) => v.active !== false).length;
+      const relaisN = vehicles.filter((v) => v.relais).length;
+      const maintN = vehicles.filter((v) => { const a = ana[v.id]; return a && a.items && worstLevel(a) !== 'ok'; }).length;
+      const ctN = vehicles.filter((v) => { const a = ana[v.id]; return a && a.ct && (a.ct.level === 'soon' || a.ct.level === 'overdue'); }).length;
+      const stat = (val, lbl, cls) => `<div class="fleet-stat ${cls || ''}"><div class="fleet-stat-v">${val}</div><div class="fleet-stat-l">${lbl}</div></div>`;
+      const chip = (lbl, val) => val ? `<span class="fleet-chip"><b>${lbl}</b> ${esc(val)}</span>` : '';
+      const card = (v) => {
         const gname = (groupById(v.groupId) || {}).name;
-        return `<div class="fleet-item${v.active === false ? ' inactive' : ''}">
+        const a = ana[v.id] || {};
+        const wl = a.items ? worstLevel(a) : 'ok';
+        const maintPill = wl === 'overdue' ? '<span class="pill danger">entretien dépassé</span>' : wl === 'soon' ? '<span class="pill warn">entretien proche</span>' : '';
+        const ctPill = (a.ct && a.ct.level === 'overdue') ? '<span class="pill danger">CT dépassé</span>' : (a.ct && a.ct.level === 'soon') ? '<span class="pill warn">CT bientôt</span>' : '';
+        const searchStr = esc([v.name, v.plate, v.model, v.tournee, gname].filter(Boolean).join(' ').toLowerCase());
+        return `<div class="fleet-item${v.active === false ? ' inactive' : ''}" data-search="${searchStr}">
           <div class="fleet-item-head">
             <div class="fleet-item-title">🚐 ${esc(v.name)}${v.relais ? ' <span class="pill">relais</span>' : ''}</div>
             <button class="toggle ${v.active !== false ? 'on' : 'off'}" data-toggleactive="${v.id}" data-active="${v.active !== false ? '1' : '0'}" title="Actif / inactif">${v.active !== false ? 'ON' : 'OFF'}</button>
           </div>
+          ${(maintPill || ctPill) ? `<div class="fleet-item-pills">${maintPill}${ctPill}</div>` : ''}
           <div class="fleet-item-meta">${chip('Groupe', gname)}${chip('Tournée', v.tournee)}${chip('Modèle', v.model)}${chip('Plaque', v.plate)}${chip('Km', kmFmt(v.km))}</div>
           <div class="fleet-item-actions">
             <button class="btn ghost sm" data-carnet="${v.id}">📒 Carnet</button>
@@ -4155,8 +4167,16 @@ function vehTabFleet(body) {
             <button class="btn danger sm" data-delv="${v.id}">🗑 Supprimer</button>
           </div>
         </div>`;
-      }).join('')}</div>` : '<p class="help">Aucun véhicule dans la flotte.</p>'}
-    </div>
+      };
+      return `<div class="card">
+        <div class="fleet-head">
+          <h3 style="margin:0">Flotte</h3>
+          ${vehicles.length ? `<input id="fleet-search" class="fleet-search" type="search" placeholder="🔍 Rechercher (nom, plaque, modèle, tournée…)">` : ''}
+        </div>
+        <div class="fleet-stats">${stat(vehicles.length, 'véhicules')}${stat(activeN, 'actifs', 'ok')}${stat(relaisN, 'relais')}${stat(maintN, 'entretien à prévoir', maintN ? 'warn' : '')}${stat(ctN, 'CT à prévoir', ctN ? 'warn' : '')}</div>
+        ${vehicles.length ? `<div class="fleet-list">${vehicles.map(card).join('')}</div><p class="help" id="fleet-noresult" style="display:none">Aucun véhicule ne correspond à la recherche.</p>` : '<p class="help">Aucun véhicule dans la flotte. Ajoutez-en avec « ➕ Ajouter un véhicule ».</p>'}
+      </div>`;
+    })()}
     <div id="flt-km" class="empty">Chargement du suivi kilométrique…</div>`;
   loadFleetKm();
   document.getElementById('fl-add').onclick = async () => {
@@ -4173,6 +4193,13 @@ function vehTabFleet(body) {
     if (!payload.assignedUserId && !payload.groupId && !payload.tournee.trim()) { toast('Renseignez au moins un chauffeur, un groupe ou une tournée.', 'err'); return; }
     try { await api('POST', '/admin/vehicles', payload); toast('Véhicule ajouté.', 'ok'); await loadFleet(); vehRefresh(); }
     catch (e) { toast(e.message, 'err'); }
+  };
+  // Recherche instantanée dans la flotte (nom, plaque, modèle, tournée, groupe).
+  const fsearch = body.querySelector('#fleet-search');
+  if (fsearch) fsearch.oninput = () => {
+    const q = fsearch.value.trim().toLowerCase(); let visible = 0;
+    body.querySelectorAll('.fleet-item').forEach((it) => { const m = !q || (it.dataset.search || '').includes(q); it.style.display = m ? '' : 'none'; if (m) visible++; });
+    const nr = body.querySelector('#fleet-noresult'); if (nr) nr.style.display = visible ? 'none' : '';
   };
   body.querySelectorAll('[data-carnet]').forEach((b) => b.onclick = () => maintHistoryModal(b.dataset.carnet));
   body.querySelectorAll('[data-editv]').forEach((b) => b.onclick = () => fleetEditModal(b.dataset.editv));
