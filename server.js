@@ -287,6 +287,14 @@ app.post('/api/register', loginRateLimit, async (req, res) => {
   if (user.email) {
     mail.sendCredentials({ to: user.email, firstName: user.firstName, login: user.username, password: String(password) });
   }
+  // Push : prévient les administrateurs qu'un nouveau compte attend leur validation.
+  if (!isFirstUser) {
+    push.fire(push.notifyUsers(getData(), save, push.adminIds(getData()), {
+      title: '👤 Nouvelle inscription à valider',
+      body: `${user.firstName} ${user.lastName} a créé un compte — à valider et paramétrer.`,
+      url: '/', tag: 'register-' + user.id,
+    }));
+  }
   res.json({
     user: publicUser(user),
     token: user.status === 'active' ? signToken(user) : null,
@@ -1759,6 +1767,12 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
   if (kmNum > (Number(v.km) || 0)) v.km = kmNum;
   db.vehicleReports.push(report);
   await save();
+  // Push : prévient l'encadrement d'un signalement / demande d'entretien véhicule.
+  push.fire(push.notifyUsers(getData(), save, push.staffIds(getData()), {
+    title: '🔧 Signalement véhicule',
+    body: `${report.userName} — ${report.vehicleName} (${report.plate})${report.issues.length ? ' : ' + report.issues.slice(0, 3).join(', ') : ''}${report.note ? ' — ' + report.note.slice(0, 80) : ''}`,
+    url: '/', tag: 'vreport-' + report.id,
+  }));
   res.json({ report });
 });
 
@@ -1986,6 +2000,15 @@ app.post('/api/admin/vehicle-reports/:id/decide', authRequired, adminRequired, a
   r.decidedAt = new Date().toISOString();
   r.decidedBy = req.user.id;
   await save();
+  // Push : informe le chauffeur du traitement de son signalement.
+  if (decision === 'closed') {
+    const resLbl = r.resolution === 'done' ? 'travaux réalisés ✅' : r.resolution === 'partial' ? 'travaux partiellement réalisés' : r.resolution === 'notdone' ? 'travaux non réalisés' : 'clôturé';
+    push.fire(push.notifyUser(getData(), save, r.userId, {
+      title: '🔧 Signalement véhicule traité',
+      body: `${r.vehicleName} (${r.plate}) : ${resLbl}.${r.adminNote ? ' ' + r.adminNote.slice(0, 100) : ''}`,
+      url: '/', tag: 'vreport-' + r.id,
+    }));
+  }
   res.json({ report: r });
 });
 

@@ -1777,20 +1777,28 @@ function urlB64ToUint8(base64) {
   return arr;
 }
 let _pushCfg = null;
-async function renderPushPanel() {
-  const el = document.getElementById('dash-push'); if (!el) return;
-  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { el.innerHTML = ''; return; }
+// Rafraîchit tous les panneaux de notifications présents (accueil + profil).
+function refreshPushPanels() { ['dash-push', 'md-push'].forEach((id) => { if (document.getElementById(id)) renderPushPanel(id); }); }
+async function renderPushPanel(elId) {
+  const el = document.getElementById(elId || 'dash-push'); if (!el) return;
+  const onProfile = (elId === 'md-push');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    // iOS : le push n'existe que dans l'app installée sur l'écran d'accueil.
+    el.innerHTML = onProfile ? `<div class="card" style="border-left:5px solid var(--brand-2)"><h3 style="margin:0 0 .3rem">🔔 Notifications</h3><p class="help" style="margin:0">Pour recevoir les notifications sur iPhone, ouvrez d'abord ce site dans Safari puis <strong>Partager → Sur l'écran d'accueil</strong>, et rouvrez l'application depuis l'icône ajoutée.</p></div>` : '';
+    return;
+  }
   let cfg; try { cfg = await api('GET', '/push/config'); } catch (e) { el.innerHTML = ''; return; }
   _pushCfg = cfg;
-  if (!cfg.enabled || !cfg.publicKey) { el.innerHTML = ''; return; }
+  if (!cfg.enabled || !cfg.publicKey) { el.innerHTML = onProfile ? '<div class="card"><h3 style="margin:0 0 .3rem">🔔 Notifications</h3><p class="help" style="margin:0">Service de notifications momentanément indisponible.</p></div>' : ''; return; }
   const reg = await navigator.serviceWorker.ready.catch(() => null);
   const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
   const on = !!sub;
   const denied = Notification.permission === 'denied';
+  const detail = 'Congés (validation/refus), demandes en attente, avertissements & documents, signalements et entretiens de véhicules, annonces.';
   el.innerHTML = `<div class="card" style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;border-left:5px solid ${on ? 'var(--ok)' : 'var(--brand-2)'}">
-    <div style="flex:1;min-width:200px"><h3 style="margin:0 0 .2rem">🔔 Notifications</h3>
-      <p class="help" style="margin:0">${denied ? 'Les notifications sont bloquées dans les réglages de votre navigateur — réautorisez-les pour les activer.' : on ? 'Activées sur cet appareil : congés validés, documents adressés, annonces…' : 'Recevez les alertes importantes (congés, documents, planning), même application fermée.'}</p></div>
-    ${denied ? '' : `<button class="btn ${on ? 'ghost' : 'accent'}" id="push-toggle">${on ? 'Désactiver' : 'Activer les notifications'}</button>`}
+    <div style="flex:1;min-width:200px"><h3 style="margin:0 0 .2rem">🔔 Notifications ${on ? '<span class="pill ok">activées</span>' : '<span class="pill warn">désactivées</span>'}</h3>
+      <p class="help" style="margin:0">${denied ? 'Les notifications sont bloquées dans les réglages de votre téléphone/navigateur — réautorisez-les pour cette application afin de les activer.' : on ? 'Activées sur cet appareil. Vous serez prévenu pour : ' + detail : 'Recevez une notification, même application fermée, pour : ' + detail}</p></div>
+    ${denied ? '' : `<button class="btn ${on ? 'ghost' : 'accent'}" id="push-toggle">${on ? 'Désactiver' : '🔔 Activer les notifications'}</button>`}
   </div>`;
   const btn = el.querySelector('#push-toggle');
   if (btn) btn.onclick = () => (on ? pushDisable() : pushEnable());
@@ -1798,13 +1806,13 @@ async function renderPushPanel() {
 async function pushEnable() {
   try {
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { toast('Notifications non autorisées.', 'warn'); return renderPushPanel(); }
+    if (perm !== 'granted') { toast('Notifications non autorisées.', 'warn'); return refreshPushPanels(); }
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(_pushCfg.publicKey) });
     await api('POST', '/me/push-subscribe', sub.toJSON ? sub.toJSON() : sub);
     toast('Notifications activées sur cet appareil. ✅', 'ok');
   } catch (e) { toast('Activation impossible : ' + e.message, 'err'); }
-  renderPushPanel();
+  refreshPushPanels();
 }
 async function pushDisable() {
   try {
@@ -1813,7 +1821,7 @@ async function pushDisable() {
     if (sub) { const ep = sub.endpoint; await sub.unsubscribe().catch(() => {}); await api('POST', '/me/push-unsubscribe', { endpoint: ep }); }
     toast('Notifications désactivées sur cet appareil.', 'ok');
   } catch (e) { toast(e.message, 'err'); }
-  renderPushPanel();
+  refreshPushPanels();
 }
 
 // Widget « Mon planning » d'accueil : un seul bloc avec un sélecteur de semaines
@@ -2623,6 +2631,7 @@ async function renderMyData(main) {
     const isPresident = (user.groupId === 'grp_president');
     const md = document.getElementById('md'); md.className = '';
     md.innerHTML = `
+      <div id="md-push"></div>
       ${isPresident ? '' : `<div class="grid cols-4">
         ${statCard('Congés N', user.balances.congesN, 'jours')}
         ${statCard('Congés N-1', user.balances.congesN1, 'jours')}
@@ -2672,6 +2681,8 @@ async function renderMyData(main) {
           <tbody>${approved.map((r) => `<tr><td>${esc(reqLabel(r))}</td><td>${fmtDate(r.startDate)}</td><td>${fmtDate(r.endDate)}</td><td>${r.days}</td></tr>`).join('')}</tbody>
         </table></div>`}
       </div>`;
+    // Panneau de notifications push (activer / désactiver sur cet appareil).
+    renderPushPanel('md-push');
     const parentBox = document.getElementById('md-parent');
     if (parentBox) parentBox.onchange = async () => {
       try { const r = await api('PUT', '/me', { isParent: parentBox.checked }); State.user = r.user; toast('Information enregistrée.', 'ok'); }
