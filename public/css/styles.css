@@ -1652,3 +1652,33 @@ td { color: var(--ink); }
 }
 .dash-clock::before { content: '🕒'; font-size: 1rem; }
 @media (max-width: 560px) { .dash-clock { font-size: 1.2rem; } }
+
+/* ======================================================================
+   TOUR DU VÉHICULE — schéma réel (photo) cliquable + pièces cliquables
+   ====================================================================== */
+.van-photo { position: relative; width: 100%; max-width: 700px; margin: 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: #fff; box-shadow: var(--shadow); }
+.van-img { display: block; width: 100%; height: auto; }
+.van-hot {
+  position: absolute; border: 0; padding: 0; margin: 0; cursor: pointer;
+  background: rgba(20,66,126,.05); border-radius: 8px;
+  transition: background .15s var(--ease), box-shadow .15s var(--ease);
+}
+.van-hot:hover, .van-hot:focus-visible { background: rgba(37,99,235,.26); box-shadow: 0 0 0 2px var(--brand-2) inset; outline: none; }
+.van-hot.has { background: rgba(212,48,45,.22); box-shadow: 0 0 0 2px var(--accent) inset; }
+.van-pin {
+  position: absolute; top: -9px; right: -9px; min-width: 21px; height: 21px; padding: 0 5px;
+  border-radius: 999px; background: var(--accent); color: #fff; font-size: .72rem; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,.32);
+}
+.van-chips { display: flex; flex-direction: column; gap: .7rem; }
+.van-chip-h { font-size: .74rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: #8190a8; margin-bottom: .35rem; }
+.van-chip-row { display: flex; flex-wrap: wrap; gap: .4rem; }
+.van-chip {
+  border: 1px solid var(--border); background: #fff; border-radius: 999px;
+  padding: .42rem .75rem; font-weight: 650; font-size: .85rem; color: var(--text);
+  cursor: pointer; transition: background .14s var(--ease), border-color .14s var(--ease);
+  display: inline-flex; align-items: center; gap: .4rem;
+}
+.van-chip:hover { background: var(--surface-2); border-color: var(--brand-2); }
+.van-chip.has { background: #fee2e2; border-color: #fecaca; color: #b91c1c; }
+.van-chip-n { font-weight: 800; background: var(--accent); color: #fff; border-radius: 999px; min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: .7rem; padding: 0 4px; }
