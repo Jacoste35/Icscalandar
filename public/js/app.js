@@ -4005,28 +4005,38 @@ function renderTourHistory(el) {
 // Schéma réel du véhicule (4 vues) avec zones cliquables superposées à l'image,
 // et une liste de pièces cliquables (les libellés) pour un repérage précis.
 // Les coordonnées des zones sont en % de l'image (van-schema.jpg, 1401×895).
+// Vue du HAUT (fourgon tourné vers la droite) = côté GAUCHE / conducteur.
+// Vue du BAS (fourgon tourné vers la gauche) = côté DROIT / passager.
 const VAN_PARTS = [
-  // --- Avant ---
+  // --- Avant (pièces centrales, communes) ---
   { zone: 'pare_chocs_av', label: 'Pare-chocs avant', group: 'Avant', hot: { x: 76, y: 33, w: 15, h: 7 } },
   { zone: 'calandre', label: 'Calandre', group: 'Avant', hot: { x: 79, y: 26, w: 11, h: 7 } },
   { zone: 'capot', label: 'Capot', group: 'Avant', hot: { x: 51, y: 23, w: 9, h: 8 } },
   { zone: 'pare_brise', label: 'Pare-brise', group: 'Avant', hot: { x: 77, y: 11, w: 13, h: 11 } },
-  { zone: 'phare_av', label: 'Phare avant', group: 'Avant', hot: { x: 57, y: 27, w: 5, h: 5 } },
-  { zone: 'aile_av', label: 'Aile avant', group: 'Avant', hot: { x: 50, y: 31, w: 7, h: 7 } },
-  { zone: 'retroviseur', label: 'Rétroviseur', group: 'Avant', hot: { x: 45, y: 16, w: 5, h: 6 } },
-  // --- Côtés ---
-  { zone: 'porte_av', label: 'Porte avant', group: 'Côtés', hot: { x: 39, y: 18, w: 8, h: 13 } },
-  { zone: 'porte_laterale', label: 'Porte latérale coulissante', group: 'Côtés', hot: { x: 23, y: 17, w: 15, h: 16 } },
-  { zone: 'bas_caisse', label: 'Bas de caisse / marchepied', group: 'Côtés', hot: { x: 24, y: 38, w: 20, h: 5 } },
-  { zone: 'protection_laterale', label: 'Protection latérale', group: 'Côtés', hot: { x: 22, y: 82, w: 20, h: 6 } },
-  // --- Arrière ---
+  // --- Côté gauche (conducteur) — vue du haut ---
+  { zone: 'retro_g', label: 'Rétroviseur G', group: 'Côté gauche (conducteur)', hot: { x: 45, y: 16, w: 5, h: 6 } },
+  { zone: 'phare_av_g', label: 'Phare avant G', group: 'Côté gauche (conducteur)', hot: { x: 57, y: 27, w: 5, h: 5 } },
+  { zone: 'aile_av_g', label: 'Aile avant G', group: 'Côté gauche (conducteur)', hot: { x: 50, y: 31, w: 7, h: 7 } },
+  { zone: 'porte_av_g', label: 'Porte avant G', group: 'Côté gauche (conducteur)', hot: { x: 39, y: 18, w: 8, h: 13 } },
+  { zone: 'porte_laterale_g', label: 'Porte latérale G', group: 'Côté gauche (conducteur)', hot: { x: 23, y: 17, w: 15, h: 16 } },
+  { zone: 'bas_caisse_g', label: 'Bas de caisse G', group: 'Côté gauche (conducteur)', hot: { x: 24, y: 38, w: 20, h: 5 } },
+  { zone: 'roue_av_g', label: 'Roue avant G (pneu / jante)', group: 'Côté gauche (conducteur)', hot: { x: 45, y: 37, w: 8, h: 10 } },
+  { zone: 'roue_ar_g', label: 'Roue arrière G (pneu / jante)', group: 'Côté gauche (conducteur)', hot: { x: 11, y: 37, w: 8, h: 10 } },
+  // --- Côté droit (passager) — vue du bas ---
+  { zone: 'retro_d', label: 'Rétroviseur D', group: 'Côté droit (passager)', hot: { x: 8, y: 60, w: 5, h: 6 } },
+  { zone: 'phare_av_d', label: 'Phare avant D', group: 'Côté droit (passager)', hot: { x: 5, y: 71, w: 5, h: 5 } },
+  { zone: 'aile_av_d', label: 'Aile avant D', group: 'Côté droit (passager)', hot: { x: 4, y: 73, w: 8, h: 7 } },
+  { zone: 'porte_av_d', label: 'Porte avant D', group: 'Côté droit (passager)', hot: { x: 12, y: 65, w: 9, h: 12 } },
+  { zone: 'porte_laterale_d', label: 'Porte latérale D', group: 'Côté droit (passager)', hot: { x: 26, y: 64, w: 16, h: 14 } },
+  { zone: 'bas_caisse_d', label: 'Bas de caisse D', group: 'Côté droit (passager)', hot: { x: 22, y: 83, w: 20, h: 6 } },
+  { zone: 'roue_av_d', label: 'Roue avant D (pneu / jante)', group: 'Côté droit (passager)', hot: { x: 12, y: 78, w: 8, h: 10 } },
+  { zone: 'roue_ar_d', label: 'Roue arrière D (pneu / jante)', group: 'Côté droit (passager)', hot: { x: 45, y: 78, w: 8, h: 10 } },
+  // --- Arrière (vue arrière : gauche véhicule = à droite de l'image) ---
   { zone: 'portes_ar', label: 'Portes arrière', group: 'Arrière', hot: { x: 76, y: 59, w: 15, h: 16 } },
   { zone: 'feu_stop', label: 'Feu stop', group: 'Arrière', hot: { x: 81, y: 53, w: 6, h: 4 } },
-  { zone: 'feu_ar', label: 'Feu arrière', group: 'Arrière', hot: { x: 88, y: 68, w: 7, h: 8 } },
+  { zone: 'feu_ar_g', label: 'Feu arrière G', group: 'Arrière', hot: { x: 88, y: 68, w: 7, h: 8 } },
+  { zone: 'feu_ar_d', label: 'Feu arrière D', group: 'Arrière', hot: { x: 68, y: 68, w: 7, h: 8 } },
   { zone: 'pare_chocs_ar', label: 'Pare-chocs arrière', group: 'Arrière', hot: { x: 77, y: 81, w: 15, h: 7 } },
-  // --- Roues ---
-  { zone: 'roue_av', label: 'Roue avant (pneu / jante)', group: 'Roues', hot: { x: 45, y: 37, w: 8, h: 10 } },
-  { zone: 'roue_ar', label: 'Roue arrière (pneu / jante)', group: 'Roues', hot: { x: 11, y: 37, w: 8, h: 10 } },
 ];
 
 function vanDiagram(impacts) {
