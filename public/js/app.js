@@ -3421,9 +3421,22 @@ async function renderVehicleManagement(main) {
   if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des véhicules</h1>
     <p>Tour du véhicule (état des lieux, propreté, équipements, documents). Le suivi & les alertes et les demandes sont dans « Suivi des entretiens et du stock ».</p></div></div>
+    <div class="view-switch" id="vt-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+      <button data-vttab="tour" class="active">🧾 Nouveau tour</button>
+      <button data-vttab="history">📋 Tours de véhicule précédents</button>
+    </div>
     <div id="veh-body" class="empty">Chargement…</div>`;
+  const tabs = main.querySelector('#vt-tabs');
+  tabs.querySelectorAll('[data-vttab]').forEach((b) => b.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.remove('active')); b.classList.add('active'); vehTourTab(b.dataset.vttab); });
   await loadFleet();
-  vehTab('tour');
+  vehTourTab('tour');
+}
+// Routeur des onglets de « Gestion des véhicules » (nouveau tour / historique).
+function vehTourTab(t) {
+  const body = document.getElementById('veh-body'); if (!body) return; body.className = '';
+  if (!_veh) { body.innerHTML = `<div class="alert warn">Données indisponibles.</div>`; return; }
+  if (t === 'history') return vehTabTourHistoryAll(body);
+  return vehTabTour(body);
 }
 
 async function loadFleet() {
@@ -3867,11 +3880,25 @@ function vehTabTour(body) {
   const team = _veh.team || [];
   const docs = (_veh.checksDef || []).filter((c) => c.group === 'doc');
   const etat = (_veh.checksDef || []).filter((c) => c.group === 'etat');
+  // Véhicules triés par groupe d'attribution (optgroups).
+  const vehOptionsGrouped = (selId) => {
+    const order = State.groups.map((g) => g.id).concat([null]);
+    const byG = {}; vehicles.forEach((v) => { const k = v.groupId || 'none'; (byG[k] = byG[k] || []).push(v); });
+    return order.map((gid) => { const list = byG[gid || 'none']; if (!list || !list.length) return ''; const g = groupById(gid); list.sort((a, b) => vehLabel(a).localeCompare(vehLabel(b))); return `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">` + list.map((v) => `<option value="${v.id}" ${v.id === selId ? 'selected' : ''}>${esc(vehLabel(v))}</option>`).join('') + `</optgroup>`; }).join('');
+  };
+  // Chauffeurs triés par groupe d'attribution (optgroups).
+  const driverOptionsGrouped = (selId) => {
+    const order = State.groups.map((g) => g.id).concat([null]);
+    const byG = {}; team.forEach((m) => { const k = m.groupId || 'none'; (byG[k] = byG[k] || []).push(m); });
+    let html = '<option value="">— Non précisé —</option>';
+    order.forEach((gid) => { const list = byG[gid || 'none']; if (!list || !list.length) return; const g = groupById(gid); list.sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName)); html += `<optgroup label="${esc(g ? g.name : 'Sans groupe')}">` + list.map((m) => `<option value="${m.id}" ${m.id === selId ? 'selected' : ''}>${esc(m.firstName)} ${esc(m.lastName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('') + `</optgroup>`; });
+    return html;
+  };
   body.innerHTML = `
     <div class="card">
       <div class="grid2">
-        <div><label>Véhicule</label><select id="tr-vehicle">${vehicles.map((v) => `<option value="${v.id}" ${v.id === _tour.vehicleId ? 'selected' : ''}>${esc(vehLabel(v))}</option>`).join('')}</select></div>
-        <div><label>Chauffeur utilisant ce véhicule le jour du contrôle</label><select id="tr-driver"><option value="">— Non précisé —</option>${team.map((m) => `<option value="${m.id}" ${m.id === _tour.driverId ? 'selected' : ''}>${esc(m.firstName)} ${esc(m.lastName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('')}</select></div>
+        <div><label>Véhicule</label><select id="tr-vehicle">${vehOptionsGrouped(_tour.vehicleId)}</select></div>
+        <div><label>Chauffeur utilisant ce véhicule le jour du contrôle</label><select id="tr-driver">${driverOptionsGrouped(_tour.driverId)}</select></div>
         <div><label>Kilométrage</label><input id="tr-km" type="number" min="0" placeholder="km du jour" value="${esc(_tour.km)}"></div>
       </div>
       <p class="help" style="margin-top:.5rem">Tout est considéré <strong>présent et conforme</strong> par défaut (cases cochées) : <strong>décochez uniquement</strong> ce qui est manquant ou non conforme. Les éléments cochés apparaîtront <span style="color:#166534;font-weight:700">en vert</span> ; les décochés seront signalés comme manquements à régulariser. La licence et la carte gasoil sont archivées dans le dossier du véhicule.</p>
@@ -3960,55 +3987,92 @@ function renderTourList() {
   el.querySelectorAll('[data-rmimp]').forEach((b) => b.onclick = () => { captureTourForm(); _tour.impacts.splice(Number(b.dataset.rmimp), 1); vehTab('tour'); });
 }
 
-function renderTourHistory(el) {
-  const recs = _veh.inspections.filter((i) => i.vehicleId === _tour.vehicleId)
-    .slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt)); // chrono pour repérer le 1er
+// Nom lisible d'un véhicule par son id (pour l'historique groupé).
+function vehNameById(id) { const v = (_veh.vehicles || []).find((x) => x.id === id); return v ? vehLabel(v) : '—'; }
+// Carte d'un tour de véhicule (réutilisée : par véhicule et historique groupé).
+function tourCardHTML(r, ctx) {
+  const labelByCode = ctx.labelByCode, isStaff = ctx.isStaff, isAdmin = ctx.isAdmin;
+  const checks = r.checks || {};
+  const reg = r.regularized || {};
+  const missingCodes = Object.keys(checks).filter((k) => checks[k].ok === false);
+  const okIds = Object.keys(checks).filter((k) => checks[k].id && checks[k].ok !== false).map((k) => `${labelByCode[k] || k} : ${checks[k].id}`);
+  const okLabels = Object.keys(checks).filter((k) => checks[k].ok !== false && !checks[k].id).map((k) => labelByCode[k] || k);
+  const activeImpacts = (r.impacts || []).filter((i) => !i.repaired).length;
+  const vehPart = ctx.showVehicle ? ` · 🚐 <strong>${esc(vehNameById(r.vehicleId))}</strong>` : '';
+  return `<div class="veh-report${ctx.isBaseline ? ' veh-baseline' : ''}">
+    <div class="vr-head"><strong>${fmtDate(r.date)}</strong>${ctx.isBaseline ? ' <span class="pill">Tour de départ (base)</span>' : ''}${vehPart} · ${kmFmt(r.km)}${r.driverName ? ' · chauffeur : ' + esc(r.driverName) : ''} · contrôlé par ${esc(r.userName)}
+      ${r.impacts && r.impacts.length ? `<span class="pill warn">${activeImpacts}/${r.impacts.length} dommage(s) actif(s)</span>` : ''}${missingCodes.length ? `<span class="pill danger">${missingCodes.length} manquement(s)</span>` : '<span class="pill ok">conforme</span>'}
+      ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
+    ${okIds.length ? `<div class="tr-present">✅ ${okIds.map(esc).join(' · ')}</div>` : ''}
+    ${okLabels.length ? `<div class="tr-conform">✔️ Conforme : ${okLabels.map(esc).join(' · ')}</div>` : ''}
+    ${missingCodes.length ? `<div class="tr-manq"><div class="help" style="margin:.3rem 0 .2rem">⚠️ Manquement(s) — à régulariser :</div>${missingCodes.map((k) => `<div class="impact-row">
+      <span>${esc(labelByCode[k] || k)} ${reg[k] ? '<span class="pill ok">✅ régularisé</span>' : '<span class="pill danger">manquant</span>'}</span>
+      ${isStaff ? `<button class="btn ${reg[k] ? 'ghost' : 'ok'} sm" data-reg="${r.id}" data-code="${k}" data-to="${reg[k] ? '0' : '1'}">${reg[k] ? '↩ Annuler' : '✅ Régulariser'}</button>` : ''}
+    </div>`).join('')}</div>` : ''}
+    ${(r.impacts && r.impacts.length) ? `<div class="tr-dmg"><div class="help" style="margin:.4rem 0 .2rem">Dommages carrosserie :</div>${r.impacts.map((i) => `<div class="impact-row${i.repaired ? ' repaired' : ''}">
+      <span><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''} ${i.repaired ? '<span class="pill ok">réparation réalisée</span>' : ''}</span>
+      ${isStaff ? `<button class="btn ghost sm" data-rep="${i.id}" data-to="${i.repaired ? '0' : '1'}">${i.repaired ? 'Rouvrir' : 'Réparation réalisée'}</button>` : ''}
+    </div>`).join('')}</div>` : ''}
+    ${r.note ? `<p style="margin:.2rem 0 0">${esc(r.note)}</p>` : ''}
+  </div>`;
+}
+// Actions (réparé / régularisé / supprimer) d'un conteneur de tours. `refresh`
+// re-rend le bon onglet après action.
+function bindTourHistoryActions(scope, refresh) {
   const isStaff = State.user.role === 'admin' || State.user.role === 'responsable';
   const isAdmin = State.user.role === 'admin';
-  const labelByCode = Object.fromEntries((_veh.checksDef || []).map((c) => [c.code, c.label]));
-  if (!recs.length) { el.innerHTML = `<p class="help">Aucun tour enregistré pour ce véhicule.</p>`; return; }
-  const baselineId = recs[0].id;
-  el.innerHTML = recs.slice().reverse().map((r) => {
-    const checks = r.checks || {};
-    const reg = r.regularized || {};
-    const missingCodes = Object.keys(checks).filter((k) => checks[k].ok === false);
-    // Présents & conformes (en vert) : références renseignées puis autres points.
-    const okIds = Object.keys(checks).filter((k) => checks[k].id && checks[k].ok !== false).map((k) => `${labelByCode[k] || k} : ${checks[k].id}`);
-    const okLabels = Object.keys(checks).filter((k) => checks[k].ok !== false && !checks[k].id).map((k) => labelByCode[k] || k);
-    const isBaseline = r.id === baselineId;
-    const activeImpacts = (r.impacts || []).filter((i) => !i.repaired).length;
-    return `<div class="veh-report${isBaseline ? ' veh-baseline' : ''}">
-      <div class="vr-head"><strong>${fmtDate(r.date)}</strong>${isBaseline ? ' <span class="pill">Tour de départ (base)</span>' : ''} · ${kmFmt(r.km)}${r.driverName ? ' · chauffeur : ' + esc(r.driverName) : ''} · contrôlé par ${esc(r.userName)}
-        ${r.impacts && r.impacts.length ? `<span class="pill warn">${activeImpacts}/${r.impacts.length} dommage(s) actif(s)</span>` : ''}${missingCodes.length ? `<span class="pill danger">${missingCodes.length} manquement(s)</span>` : '<span class="pill ok">conforme</span>'}
-        ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
-      ${okIds.length ? `<div class="tr-present">✅ ${okIds.map(esc).join(' · ')}</div>` : ''}
-      ${okLabels.length ? `<div class="tr-conform">✔️ Conforme : ${okLabels.map(esc).join(' · ')}</div>` : ''}
-      ${missingCodes.length ? `<div class="tr-manq"><div class="help" style="margin:.3rem 0 .2rem">⚠️ Manquement(s) — à régulariser :</div>${missingCodes.map((k) => `<div class="impact-row">
-        <span>${esc(labelByCode[k] || k)} ${reg[k] ? '<span class="pill ok">✅ régularisé</span>' : '<span class="pill danger">manquant</span>'}</span>
-        ${isStaff ? `<button class="btn ${reg[k] ? 'ghost' : 'ok'} sm" data-reg="${r.id}" data-code="${k}" data-to="${reg[k] ? '0' : '1'}">${reg[k] ? '↩ Annuler' : '✅ Régulariser'}</button>` : ''}
-      </div>`).join('')}</div>` : ''}
-      ${(r.impacts && r.impacts.length) ? `<div class="tr-dmg"><div class="help" style="margin:.4rem 0 .2rem">Dommages carrosserie :</div>${r.impacts.map((i) => `<div class="impact-row${i.repaired ? ' repaired' : ''}">
-        <span><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''} ${i.repaired ? '<span class="pill ok">réparation réalisée</span>' : ''}</span>
-        ${isStaff ? `<button class="btn ghost sm" data-rep="${i.id}" data-to="${i.repaired ? '0' : '1'}">${i.repaired ? 'Rouvrir' : 'Réparation réalisée'}</button>` : ''}
-      </div>`).join('')}</div>` : ''}
-      ${r.note ? `<p style="margin:.2rem 0 0">${esc(r.note)}</p>` : ''}
-    </div>`;
-  }).join('');
   if (isStaff) {
-    el.querySelectorAll('[data-rep]').forEach((b) => b.onclick = async () => {
-      try { await api('PUT', '/staff/vehicles/impact/' + b.dataset.rep + '/repaired', { repaired: b.dataset.to === '1' }); await loadFleet(); vehTab('tour'); }
+    scope.querySelectorAll('[data-rep]').forEach((b) => b.onclick = async () => {
+      try { await api('PUT', '/staff/vehicles/impact/' + b.dataset.rep + '/repaired', { repaired: b.dataset.to === '1' }); await loadFleet(); refresh(); }
       catch (e) { toast(e.message, 'err'); }
     });
-    el.querySelectorAll('[data-reg]').forEach((b) => b.onclick = async () => {
-      try { await api('PUT', '/staff/vehicles/inspection/' + b.dataset.reg + '/regularize', { code: b.dataset.code, regularized: b.dataset.to === '1' }); await loadFleet(); vehTab('tour'); toast('Mis à jour.', 'ok'); }
+    scope.querySelectorAll('[data-reg]').forEach((b) => b.onclick = async () => {
+      try { await api('PUT', '/staff/vehicles/inspection/' + b.dataset.reg + '/regularize', { code: b.dataset.code, regularized: b.dataset.to === '1' }); await loadFleet(); refresh(); toast('Mis à jour.', 'ok'); }
       catch (e) { toast(e.message, 'err'); }
     });
   }
-  if (isAdmin) el.querySelectorAll('[data-delinsp]').forEach((b) => b.onclick = async () => {
+  if (isAdmin) scope.querySelectorAll('[data-delinsp]').forEach((b) => b.onclick = async () => {
     if (!confirm('Supprimer ce tour de véhicule ?')) return;
-    try { await api('DELETE', '/staff/vehicles/inspection/' + b.dataset.delinsp); await loadFleet(); vehTab('tour'); toast('Supprimé.', 'ok'); }
+    try { await api('DELETE', '/staff/vehicles/inspection/' + b.dataset.delinsp); await loadFleet(); refresh(); toast('Supprimé.', 'ok'); }
     catch (e) { toast(e.message, 'err'); }
   });
+}
+// Historique des tours du VÉHICULE sélectionné (sous le formulaire de tour).
+function renderTourHistory(el) {
+  const recs = _veh.inspections.filter((i) => i.vehicleId === _tour.vehicleId)
+    .slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const labelByCode = Object.fromEntries((_veh.checksDef || []).map((c) => [c.code, c.label]));
+  const isStaff = State.user.role === 'admin' || State.user.role === 'responsable';
+  const isAdmin = State.user.role === 'admin';
+  if (!recs.length) { el.innerHTML = `<p class="help">Aucun tour enregistré pour ce véhicule.</p>`; return; }
+  const baselineId = recs[0].id;
+  el.innerHTML = recs.slice().reverse().map((r) => tourCardHTML(r, { labelByCode, isStaff, isAdmin, isBaseline: r.id === baselineId, showVehicle: false })).join('');
+  bindTourHistoryActions(el, () => vehTab('tour'));
+}
+// Onglet « Tours de véhicule précédents » : tout l'historique groupé par groupe
+// d'attribution du véhicule.
+function vehTabTourHistoryAll(body) {
+  const recs = (_veh.inspections || []).slice();
+  if (!recs.length) { body.innerHTML = `<div class="alert info">Aucun tour de véhicule enregistré pour le moment.</div>`; return; }
+  const labelByCode = Object.fromEntries((_veh.checksDef || []).map((c) => [c.code, c.label]));
+  const isStaff = State.user.role === 'admin' || State.user.role === 'responsable';
+  const isAdmin = State.user.role === 'admin';
+  const vehById = {}; (_veh.vehicles || []).forEach((v) => { vehById[v.id] = v; });
+  // 1er tour (base) par véhicule.
+  const firstByVeh = {};
+  recs.slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))).forEach((r) => { if (!firstByVeh[r.vehicleId]) firstByVeh[r.vehicleId] = r.id; });
+  // Regroupement par groupe d'attribution du véhicule.
+  const byGroup = {};
+  recs.forEach((r) => { const v = vehById[r.vehicleId]; const gid = (v && v.groupId) || 'none'; (byGroup[gid] = byGroup[gid] || []).push(r); });
+  const order = State.groups.map((g) => g.id).concat(['none']);
+  const shown = order.filter((gid) => byGroup[gid] && byGroup[gid].length);
+  body.innerHTML = `<p class="help" style="margin-top:0">Historique de tous les tours de véhicule, classés par groupe d'attribution. Les manquements restent régularisables ici.</p>` + shown.map((gid) => {
+    const g = groupById(gid === 'none' ? null : gid);
+    const list = byGroup[gid].slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    return `<details class="card" open><summary><strong>${g ? esc(g.name) : 'Sans groupe'}</strong> <span class="help">${list.length} tour(s)</span></summary>
+      <div style="margin-top:.6rem">${list.map((r) => tourCardHTML(r, { labelByCode, isStaff, isAdmin, isBaseline: firstByVeh[r.vehicleId] === r.id, showVehicle: true })).join('')}</div></details>`;
+  }).join('');
+  bindTourHistoryActions(body, () => vehTourTab('history'));
 }
 
 // Schéma réel du véhicule (4 vues) avec zones cliquables superposées à l'image,
