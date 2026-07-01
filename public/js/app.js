@@ -3849,7 +3849,9 @@ function captureTourForm() {
 }
 
 function checkItemHTML(c, vehicle) {
-  const ok = trCheckOk(c.code);
+  // Par défaut : présent / conforme. On ne décoche que ce qui manque.
+  const set = _tour.checks[c.code];
+  const ok = set ? set.ok !== false : true;
   const id = c.hasId ? `<input class="tr-id" data-code="${c.code}" placeholder="${esc(c.idLabel || 'N° / référence')}" value="${esc(trCheckId(c.code, vehicle))}" style="margin-top:.25rem">` : '';
   return `<div class="tr-check-item">
     <label class="veh-check"><input type="checkbox" class="tr-chk" data-code="${c.code}" ${ok ? 'checked' : ''}> ${esc(c.label)}</label>
@@ -3872,7 +3874,7 @@ function vehTabTour(body) {
         <div><label>Chauffeur utilisant ce véhicule le jour du contrôle</label><select id="tr-driver"><option value="">— Non précisé —</option>${team.map((m) => `<option value="${m.id}" ${m.id === _tour.driverId ? 'selected' : ''}>${esc(m.firstName)} ${esc(m.lastName)}${m.role !== 'employee' ? ' (' + roleLabel(m.role) + ')' : ''}</option>`).join('')}</select></div>
         <div><label>Kilométrage</label><input id="tr-km" type="number" min="0" placeholder="km du jour" value="${esc(_tour.km)}"></div>
       </div>
-      <p class="help" style="margin-top:.5rem">Cochez ce qui est <strong>présent et conforme</strong>. Tout élément <strong>décoché</strong> sera signalé (manquement). La licence et la carte gasoil sont archivées dans le dossier du véhicule pour le suivi.</p>
+      <p class="help" style="margin-top:.5rem">Tout est considéré <strong>présent et conforme</strong> par défaut (cases cochées) : <strong>décochez uniquement</strong> ce qui est manquant ou non conforme. Les éléments cochés apparaîtront <span style="color:#166534;font-weight:700">en vert</span> ; les décochés seront signalés comme manquements à régulariser. La licence et la carte gasoil sont archivées dans le dossier du véhicule.</p>
     </div>
     <div class="card">
       <h3>📄 Documents & équipements de bord</h3>
@@ -3896,6 +3898,10 @@ function vehTabTour(body) {
     <div class="card"><h3>Tours de véhicule précédents</h3><div id="tr-history"></div></div>`;
 
   document.getElementById('tr-vehicle').onchange = (e) => { _tour = { vehicleId: e.target.value, driverId: '', km: '', note: '', checks: {}, impacts: [] }; vehTab('tour'); };
+  // Capture immédiate de l'état des cases et des références : ce qui est coché /
+  // saisi est mémorisé aussitôt (jamais perdu lors d'un rafraîchissement du tour).
+  body.querySelectorAll('.tr-chk').forEach((cb) => cb.onchange = () => { _tour.checks = _tour.checks || {}; _tour.checks[cb.dataset.code] = _tour.checks[cb.dataset.code] || {}; _tour.checks[cb.dataset.code].ok = cb.checked; });
+  body.querySelectorAll('.tr-id').forEach((inp) => inp.oninput = () => { _tour.checks = _tour.checks || {}; _tour.checks[inp.dataset.code] = _tour.checks[inp.dataset.code] || { ok: true }; _tour.checks[inp.dataset.code].id = inp.value; });
   bindVanZones(body);
   renderTourList();
   renderTourHistory(document.getElementById('tr-history'));
@@ -3966,17 +3972,20 @@ function renderTourHistory(el) {
     const checks = r.checks || {};
     const reg = r.regularized || {};
     const missingCodes = Object.keys(checks).filter((k) => checks[k].ok === false);
-    const docIds = Object.keys(checks).filter((k) => checks[k].id).map((k) => `${labelByCode[k] || k} : ${checks[k].id}`);
+    // Présents & conformes (en vert) : références renseignées puis autres points.
+    const okIds = Object.keys(checks).filter((k) => checks[k].id && checks[k].ok !== false).map((k) => `${labelByCode[k] || k} : ${checks[k].id}`);
+    const okLabels = Object.keys(checks).filter((k) => checks[k].ok !== false && !checks[k].id).map((k) => labelByCode[k] || k);
     const isBaseline = r.id === baselineId;
     const activeImpacts = (r.impacts || []).filter((i) => !i.repaired).length;
     return `<div class="veh-report${isBaseline ? ' veh-baseline' : ''}">
       <div class="vr-head"><strong>${fmtDate(r.date)}</strong>${isBaseline ? ' <span class="pill">Tour de départ (base)</span>' : ''} · ${kmFmt(r.km)}${r.driverName ? ' · chauffeur : ' + esc(r.driverName) : ''} · contrôlé par ${esc(r.userName)}
         ${r.impacts && r.impacts.length ? `<span class="pill warn">${activeImpacts}/${r.impacts.length} dommage(s) actif(s)</span>` : ''}${missingCodes.length ? `<span class="pill danger">${missingCodes.length} manquement(s)</span>` : '<span class="pill ok">conforme</span>'}
         ${isAdmin ? `<button class="btn ghost sm" data-delinsp="${r.id}" style="margin-left:auto">Supprimer</button>` : ''}</div>
-      ${docIds.length ? `<div class="help">${docIds.map(esc).join(' · ')}</div>` : ''}
-      ${missingCodes.length ? `<div class="tr-manq"><div class="help" style="margin:.3rem 0 .2rem">Manquements :</div>${missingCodes.map((k) => `<div class="impact-row">
-        <span>${esc(labelByCode[k] || k)} ${reg[k] ? '<span class="pill ok">régularisé</span>' : '<span class="pill danger">manquant</span>'}</span>
-        ${isStaff ? `<button class="btn ghost sm" data-reg="${r.id}" data-code="${k}" data-to="${reg[k] ? '0' : '1'}">${reg[k] ? 'Annuler' : 'Régularisé'}</button>` : ''}
+      ${okIds.length ? `<div class="tr-present">✅ ${okIds.map(esc).join(' · ')}</div>` : ''}
+      ${okLabels.length ? `<div class="tr-conform">✔️ Conforme : ${okLabels.map(esc).join(' · ')}</div>` : ''}
+      ${missingCodes.length ? `<div class="tr-manq"><div class="help" style="margin:.3rem 0 .2rem">⚠️ Manquement(s) — à régulariser :</div>${missingCodes.map((k) => `<div class="impact-row">
+        <span>${esc(labelByCode[k] || k)} ${reg[k] ? '<span class="pill ok">✅ régularisé</span>' : '<span class="pill danger">manquant</span>'}</span>
+        ${isStaff ? `<button class="btn ${reg[k] ? 'ghost' : 'ok'} sm" data-reg="${r.id}" data-code="${k}" data-to="${reg[k] ? '0' : '1'}">${reg[k] ? '↩ Annuler' : '✅ Régulariser'}</button>` : ''}
       </div>`).join('')}</div>` : ''}
       ${(r.impacts && r.impacts.length) ? `<div class="tr-dmg"><div class="help" style="margin:.4rem 0 .2rem">Dommages carrosserie :</div>${r.impacts.map((i) => `<div class="impact-row${i.repaired ? ' repaired' : ''}">
         <span><strong>${esc(i.zoneLabel || i.zone)}</strong> — ${esc(i.type)}${i.note ? ' · ' + esc(i.note) : ''} ${i.repaired ? '<span class="pill ok">réparation réalisée</span>' : ''}</span>
