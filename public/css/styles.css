@@ -429,7 +429,7 @@ tr:last-child td { border-bottom: 0; }
 .veh-alert-list li { margin: .35rem 0; }
 
 /* Schéma véhicule (tour du véhicule) */
-.van-wrap { display: flex; justify-content: center; margin-top: .8rem; }
+.van-wrap { display: block; margin-top: .8rem; }
 .van-svg { width: 260px; max-width: 100%; height: auto; }
 .van-body { fill: #eef2f7; stroke: #94a3b8; stroke-width: 2; }
 .van-cap { fill: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 1px; }
