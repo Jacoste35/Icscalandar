@@ -1691,7 +1691,19 @@ td { color: var(--ink); }
 .fleet-add > summary::before { content: '›'; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: #eef3fb; color: var(--brand); font-weight: 800; transition: transform .18s; }
 .fleet-add[open] > summary::before { transform: rotate(90deg); }
 
-.fleet-list { display: flex; flex-direction: column; gap: .65rem; }
+/* Liste de la flotte : grille responsive (plusieurs cartes par ligne sur desktop). */
+.fleet-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: .7rem; align-items: start; }
+.fleet-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: .75rem; }
+.fleet-search { max-width: 340px; flex: 1 1 240px; }
+.fleet-stats { display: flex; flex-wrap: wrap; gap: .55rem; margin-bottom: 1rem; }
+.fleet-stat { flex: 1 1 auto; min-width: 92px; background: var(--surface-2, #f8fafc); border: 1px solid var(--border); border-radius: 14px; padding: .55rem .7rem; text-align: center; }
+.fleet-stat-v { font-size: 1.4rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
+.fleet-stat-l { font-size: .74rem; color: var(--muted); font-weight: 650; margin-top: .1rem; }
+.fleet-stat.ok .fleet-stat-v { color: var(--ok); }
+.fleet-stat.warn .fleet-stat-v { color: #b45309; }
+.fleet-item-pills { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .5rem; }
+.fleet-item { display: flex; flex-direction: column; }
+.fleet-item .fleet-item-actions { margin-top: auto; }
 .fleet-item { border: 1px solid var(--border); border-radius: 14px; padding: .8rem .9rem; background: #fff; box-shadow: var(--shadow); }
 .fleet-item.inactive { opacity: .62; }
 .fleet-item-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
@@ -1713,3 +1725,8 @@ td { color: var(--ink); }
 .bull-abs-date { font-weight: 700; }
 .bull-abs-motif { font-size: .85rem; color: var(--muted); }
 .bull-abs select { min-width: 190px; }
+
+/* Suivi kilométrique de la flotte : cartes en grille sur desktop */
+.fleet-km-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: .7rem; align-items: start; }
+.fleet-km-grid > .card { margin: 0; }
+@media (max-width: 560px) { .fleet-km-grid { grid-template-columns: 1fr; } }
