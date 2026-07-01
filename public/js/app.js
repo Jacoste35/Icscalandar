@@ -7346,8 +7346,19 @@ function mapMotifToCat(motif) {
   }
   return 'CP';
 }
-// Tente d'associer un nom du fichier à un salarié (compare noms ET prénoms).
+// Clé normalisée d'un nom de fichier d'activité (pour l'auto-apprentissage).
+function driverLearnKey(fileName) { return String(fileName || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim(); }
+// Association déjà apprise (nom du fichier -> salarié) si le compte existe encore.
+function learnedDriverId(fileName, drivers) {
+  const learn = (_hours && _hours.driverLearn) || {};
+  const id = learn[driverLearnKey(fileName)];
+  return (id && drivers.some((d) => d.id === id)) ? id : '';
+}
+// Tente d'associer un nom du fichier à un salarié. Priorité à l'auto-apprentissage
+// (association confirmée par le passé), sinon comparaison nom + prénom.
 function matchDriverId(fileName, drivers) {
+  const learned = learnedDriverId(fileName, drivers);
+  if (learned) return learned;
   const fileTokens = new Set(nmTokens(fileName));
   if (!fileTokens.size) return '';
   let best = null, bestScore = 0;
@@ -7386,11 +7397,14 @@ function renderImportMapping() {
     const tot = rows.reduce((s, r) => s + r.worked, 0);
     const mid = matchDriverId(n, drivers);
     if (mid) matched++;
-    const badge = mid ? '<span class="pill ok" style="margin-left:.4rem">✓ détecté</span>' : '<span class="pill warn" style="margin-left:.4rem">à associer</span>';
+    const learned = !!learnedDriverId(n, drivers);
+    const badge = mid
+      ? (learned ? '<span class="pill ok" style="margin-left:.4rem">🧠 appris</span>' : '<span class="pill ok" style="margin-left:.4rem">✓ détecté</span>')
+      : '<span class="pill warn" style="margin-left:.4rem">à associer</span>';
     return `<tr><td><strong>${esc(n)}</strong>${badge}</td><td>${rows.length}</td><td>${hFmt(tot)}</td><td><select data-mapname="${esc(n)}">${importDriverOptions(mid, drivers)}</select></td></tr>`;
   }).join('');
   el.innerHTML = `<div class="card"><h3>Associer les salariés détectés</h3>
-    <p class="help">${matched} / ${names.length} salarié(s) reconnu(s) automatiquement (par comparaison nom + prénom). Vérifiez et corrigez si besoin ; la liste est triée par groupe.</p>
+    <p class="help">${matched} / ${names.length} salarié(s) reconnu(s) automatiquement (nom + prénom, ou association déjà apprise 🧠). Vérifiez et corrigez si besoin. <strong>Chaque association que vous validez est mémorisée</strong> : le même nom sera reconnu tout seul la prochaine fois.</p>
     <div class="table-wrap"><table class="veh-table"><thead><tr><th>Salarié du fichier</th><th>Jours</th><th>Total travaillé</th><th>Associer au compte</th></tr></thead>
     <tbody>${rowsHTML}</tbody></table></div>
     <div style="margin-top:.7rem"><button class="btn accent" id="hi-import">Importer les données associées</button></div>
@@ -7401,7 +7415,7 @@ function renderImportMapping() {
     if (!maps.length) { toast('Associez au moins un salarié.', 'err'); return; }
     let total = 0, planned = 0, kmUp = 0, kmFlag = 0; const reopened = new Set();
     try {
-      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); kmUp += (r.kmUpdated || 0); kmFlag += (r.kmFlagged || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
+      for (const m of maps) { const r = await api('POST', '/staff/work-hours/import', { userId: m.userId, name: m.name, rows: _hImport.employees[m.name] }); total += r.added; planned += (r.planned || 0); kmUp += (r.kmUpdated || 0); kmFlag += (r.kmFlagged || 0); (r.reopened || []).forEach((mo) => reopened.add(mo)); }
       toast(`${total} journée(s) importée(s).`, 'ok');
       if (planned) toast(`${planned} absence(s) ajoutée(s) au planning (rétroactif).`, 'ok');
       if (kmUp) toast(`${kmUp} relevé(s) de kilométrage pris en compte.`, 'ok');

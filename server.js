@@ -2842,7 +2842,7 @@ app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId, balances: u.balances, hireDate: u.hireDate || null }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, hsupCutoff: db.settings.hsupCutoffDay || 0, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice() });
+  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, hsupCutoff: db.settings.hsupCutoffDay || 0, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice(), driverLearn: db.settings.driverImportLearning || {} });
 });
 
 // Paramètres de paie par salarié (taux horaire, base mensualisée, cotisations,
@@ -2980,10 +2980,17 @@ app.delete('/api/staff/work-hours/:id', authRequired, adminRequired, async (req,
 // Import en masse depuis un rapport d'activité (fichier analysé côté client).
 app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { userId, rows } = req.body || {};
+  const { userId, rows, name } = req.body || {};
   const u = db.users.find((x) => x.id === userId);
   if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
   if (!Array.isArray(rows)) return res.status(400).json({ error: 'Données invalides' });
+  // Auto-apprentissage : mémorise l'association nom-du-fichier -> salarié pour
+  // reconnaître automatiquement ce chauffeur lors des prochains imports.
+  if (name) {
+    if (!db.settings.driverImportLearning || typeof db.settings.driverImportLearning !== 'object') db.settings.driverImportLearning = {};
+    const key = String(name).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+    if (key) db.settings.driverImportLearning[key] = userId;
+  }
   let added = 0, planned = 0, kmUpdated = 0, kmFlagged = 0;
   const touchedMonths = new Set();
   const DAILY_KM_MAX = 1200; // au-delà : anomalie probable (erreur de saisie)
