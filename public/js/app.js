@@ -4122,6 +4122,7 @@ function fleetKmHTML(vehicles, log) {
 }
 
 function vehTabFleet(body) {
+  body.className = ''; // retire « empty » (flex centré) qui cassait la disposition
   const vehicles = _veh.vehicles;
   body.innerHTML = `
     <details class="card fleet-add">
