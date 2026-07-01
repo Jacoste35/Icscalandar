@@ -1702,3 +1702,14 @@ td { color: var(--ink); }
 .fleet-item-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .fleet-item-actions .btn { flex: 1 1 auto; min-width: 110px; }
 @media (min-width: 641px) { .fleet-item-actions .btn { flex: 0 0 auto; } }
+
+/* ======================================================================
+   BULLETINS — sections absences détectées + éléments de paie à importer
+   ====================================================================== */
+.bull-section { margin: .7rem 0; padding: .7rem .8rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2, #f8fafc); }
+.bull-section-h { font-weight: 750; font-size: .92rem; margin-bottom: .45rem; }
+.bull-abs { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; padding: .35rem 0; border-top: 1px dashed var(--border); }
+.bull-abs:first-of-type { border-top: 0; }
+.bull-abs-date { font-weight: 700; }
+.bull-abs-motif { font-size: .85rem; color: var(--muted); }
+.bull-abs select { min-width: 190px; }
