@@ -1822,36 +1822,57 @@ function dashPlanningCard(weeks, events, defaultIdx) {
   </div>`;
 }
 
-// Contenu d'une semaine (en-tête + vue grille + détail). Utilisé dans les onglets.
+// Contenu d'une semaine, présenté comme l'agenda du Calendrier iPhone : une
+// ligne par jour (date à gauche, absences empilées à droite), parfaitement
+// lisible sur téléphone — plus de grille à 7 colonnes.
 function dashWeekInner(title, weekStart, events, isCurrent, isPast) {
   const isAdmin = State.user && State.user.role === 'admin' && !_previewMode;
-  const weekDays = [...Array(6)].map((_, i) => addDays(weekStart, i));
+  const weekStartISO = iso(weekStart);
   const weekEnd = addDays(weekStart, 5);
   const label = `${pad(weekStart.getDate())}/${pad(weekStart.getMonth()+1)} → ${pad(weekEnd.getDate())}/${pad(weekEnd.getMonth()+1)}`;
-  const weekAbs = events.filter((ev) => ev.startDate <= iso(weekEnd) && ev.endDate >= iso(weekStart));
-  // Liste détaillée : salarié, groupe, dates et motif.
-  const byUser = {};
-  weekAbs.forEach((ev) => { (byUser[ev.userId] = byUser[ev.userId] || { ev }).ev = byUser[ev.userId].ev; (byUser[ev.userId].list = byUser[ev.userId].list || []).push(ev); });
-  const detail = Object.values(byUser).map((o) => o.list.map((ev) => {
-    const range = ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
-    const replCell = isAdmin ? `<td>${ev.replacedByName ? esc(ev.replacedByName) : '<span class="help">—</span>'} ${ev.code !== 'RET' ? `<button class="btn ghost sm" data-repl-cal="${ev.id}">${ev.replacedByName ? 'Modifier' : '+ Remplaçant'}</button>` : ''}</td>` : '';
-    return `<tr><td>${esc(ev.userName)}</td><td><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span></td><td>${range}</td><td><span class="tag" style="background:${catColor(ev.code)}22;color:${catColor(ev.code)}">${esc(ev.code)}</span> ${esc(ev.categoryLabel)}</td>${replCell}</tr>`;
-  }).join('')).join('');
+  const today = new Date();
+  const dows = ['lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+  const days = [...Array(6)].map((_, i) => addDays(weekStart, i));
+  const rows = days.map((d, i) => {
+    const ds = iso(d);
+    const hol = State.holidays[ds], vac = schoolHolidayFor(ds), closed = closedPeriodFor(ds);
+    const isToday = sameDay(d, today);
+    let badge = '';
+    if (closed) badge = `<span class="ioa-badge closed">🔒 ${esc(closed.label)}</span>`;
+    else if (hol) badge = `<span class="ioa-badge holiday">${esc(hol)}</span>`;
+    else if (vac) badge = `<span class="ioa-badge school">🏖️ ${esc(vac.label)}</span>`;
+    const dayAbs = events.filter((ev) => ev.startDate <= ds && ev.endDate >= ds)
+      .sort((a, b) => String(a.userName).localeCompare(String(b.userName)));
+    let evHtml;
+    if (!dayAbs.length) {
+      evHtml = badge ? '' : '<div class="ioa-empty">✅ Tout le monde est présent</div>';
+    } else {
+      evHtml = dayAbs.map((ev) => {
+        const c = catColor(ev.code);
+        // Bouton remplaçant (admin) affiché une seule fois, le 1er jour visible de l'absence.
+        const firstVisible = ev.startDate < weekStartISO ? weekStartISO : ev.startDate;
+        const showBtn = isAdmin && ds === firstVisible && ev.code !== 'RET';
+        const repl = ev.replacedByName ? `<span class="ioa-repl">↪ ${esc(ev.replacedByName)}</span>` : '';
+        const btn = showBtn ? `<button class="btn ghost sm" data-repl-cal="${ev.id}">${ev.replacedByName ? 'Modifier' : '+ Remplaçant'}</button>` : '';
+        return `<div class="ioa-ev" style="--c:${c}">
+          <span class="ioa-ev-bar"></span>
+          <span class="ioa-ev-body">
+            <span class="ioa-ev-name">${esc(ev.userName)} <span class="ioa-code" style="background:${c}22;color:${c}">${esc(ev.code)}</span>${ev.status === 'pending' ? ' <em class="help">en attente</em>' : ''}</span>
+            <span class="ioa-ev-sub"><span class="group-chip" style="background:${ev.groupColor}">${esc(ev.groupName)}</span>${repl}</span>
+          </span>
+          ${btn}
+        </div>`;
+      }).join('');
+    }
+    return `<div class="ioa-day${isToday ? ' today' : ''}">
+      <div class="ioa-date"><span class="ioa-dow">${dows[i]}</span><span class="ioa-num">${d.getDate()}</span></div>
+      <div class="ioa-col">${badge}${evHtml}</div>
+    </div>`;
+  }).join('');
   return `
       <div class="dash-wk-head"><h3>${isCurrent ? '📍 ' : ''}${esc(title)}</h3><span class="dash-wk-period">${label}</span></div>
-      <p class="help" style="margin:.1rem 0 .9rem">${isPast ? 'Qui était absent ?' : (isCurrent ? 'Qui est absent ?' : 'Qui sera absent ?')}</p>
-      <div class="week-grid">
-        <div class="wrow whead">
-          <div class="wcell namecol">Salarié</div>
-          ${weekDays.map((d) => {
-            const ds = iso(d); const h = State.holidays[ds]; const vac = schoolHolidayFor(ds); const closed = closedPeriodFor(ds);
-            const cls = closed ? 'closed' : (h ? 'holiday' : (vac ? 'school' : ''));
-            return `<div class="wcell ${cls}">${DOW_SHORT[(d.getDay()+6)%7]} ${pad(d.getDate())}<div class="sub">${h?esc(h):(closed?'🔒':(vac?'vac.':''))}</div></div>`;
-          }).join('')}
-        </div>
-        ${renderDashWeekRows(weekAbs, weekDays)}
-      </div>
-      ${detail ? `<div class="table-wrap" style="margin-top:.8rem"><table><thead><tr><th>Salarié</th><th>Groupe</th><th>Dates</th><th>Motif</th>${isAdmin ? '<th>Remplaçant</th>' : ''}</tr></thead><tbody>${detail}</tbody></table></div>` : ''}`;
+      <p class="help" style="margin:.1rem 0 .7rem">${isPast ? 'Qui était absent ?' : (isCurrent ? 'Qui est absent ?' : 'Qui sera absent ?')}</p>
+      <div class="ios-agenda">${rows}</div>`;
 }
 
 function renderDashWeekRows(weekAbs, weekDays) {

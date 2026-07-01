@@ -1616,3 +1616,30 @@ td { color: var(--ink); }
 @media (max-width: 560px) {
   .team-pa { grid-template-columns: 1fr; }
 }
+
+/* ======================================================================
+   ACCUEIL — planning d'une semaine en agenda « Calendrier iPhone »
+   Une ligne par jour : date à gauche (aujourd'hui en pastille rouge),
+   absences empilées à droite. Lisible sur téléphone, sans grille.
+   ====================================================================== */
+.ios-agenda { display: flex; flex-direction: column; }
+.ioa-day { display: grid; grid-template-columns: 48px 1fr; gap: .7rem; padding: .7rem 0; border-top: 1px solid #eef1f6; }
+.ios-agenda .ioa-day:first-child { border-top: 0; padding-top: .2rem; }
+.ioa-date { display: flex; flex-direction: column; align-items: center; gap: .12rem; padding-top: .1rem; }
+.ioa-dow { font-size: .66rem; font-weight: 700; color: #8a98ad; text-transform: uppercase; letter-spacing: .02em; }
+.ioa-num { font-size: 1.05rem; font-weight: 800; width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--text); }
+.ioa-day.today .ioa-num { background: var(--accent); color: #fff; box-shadow: 0 7px 16px -7px rgba(212,48,45,.7); }
+.ioa-col { display: flex; flex-direction: column; gap: .4rem; min-width: 0; }
+.ioa-empty { color: #9aa7bd; font-size: .9rem; padding-top: .38rem; }
+.ioa-badge { align-self: flex-start; font-size: .74rem; font-weight: 700; border-radius: 8px; padding: .18rem .55rem; }
+.ioa-badge.holiday { background: #fef3c7; color: #92400e; }
+.ioa-badge.school { background: #dbeafe; color: #1e40af; }
+.ioa-badge.closed { background: #fee2e2; color: #b91c1c; }
+.ioa-ev { display: flex; align-items: stretch; gap: .55rem; background: #fff; border: 1px solid #eef1f6; border-radius: 12px; padding: .5rem .6rem; box-shadow: var(--shadow); }
+.ioa-ev-bar { width: 4px; border-radius: 999px; background: var(--c, var(--brand)); flex: 0 0 4px; }
+.ioa-ev-body { display: flex; flex-direction: column; gap: .18rem; min-width: 0; flex: 1; }
+.ioa-ev-name { font-weight: 650; }
+.ioa-code { font-size: .7rem; font-weight: 800; border-radius: 6px; padding: .06rem .38rem; vertical-align: middle; }
+.ioa-ev-sub { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .82rem; }
+.ioa-repl { color: var(--brand-2); font-weight: 650; }
+.ioa-ev .btn { align-self: center; flex: 0 0 auto; }
