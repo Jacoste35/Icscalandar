@@ -6813,6 +6813,31 @@ function hmToMinClient(s) { const m = String(s || '').match(/^(\d{1,2}):(\d{2})$
 
 /* --- Heures supplémentaires : 25%/50%, paiement, transmission récupération --- */
 function isoWeekKey(d) { const x = isoWeekStart(d); return iso(x); }
+// Période de paie d'une date : « du J au J » (décalage d'un mois sur l'autre).
+// cutoff = jour de clôture (0 = mois civil). Les salariés entrés en cours de
+// mois sont payés de leur entrée à la fin de ce mois-là (période « entrée »).
+function payPeriodKey(dateISO, cutoff, hireDate) {
+  const d = parseISO(dateISO);
+  if (hireDate) { const h = parseISO(hireDate); if (d.getFullYear() === h.getFullYear() && d.getMonth() === h.getMonth()) return `${d.getFullYear()}-${pad(d.getMonth() + 1)}|entry`; }
+  if (!cutoff) return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  let py = d.getFullYear(), pm = d.getMonth();
+  if (d.getDate() > cutoff) { pm++; if (pm > 11) { pm = 0; py++; } }
+  return `${py}-${pad(pm + 1)}`;
+}
+// Libellé + bornes d'une période de paie à partir de sa clé.
+function payPeriodInfo(key, cutoff, hireDate) {
+  const entry = key.endsWith('|entry');
+  const base = key.replace('|entry', '');
+  const parts = base.split('-'); const y = Number(parts[0]), em = Number(parts[1]) - 1;
+  if (entry || !cutoff) {
+    const start = (entry && hireDate) ? hireDate : iso(new Date(y, em, 1));
+    const end = iso(new Date(y, em + 1, 0));
+    return { key: base, label: `${MONTHS[em]} ${y}${entry ? ' (entrée)' : ''}`, start, end };
+  }
+  const end = iso(new Date(y, em, cutoff));
+  const start = iso(new Date(y, em - 1, cutoff + 1));
+  return { key: base, label: `${MONTHS[em]} ${y}`, start, end };
+}
 function getSettlement(userId, month) { return (_hours.settlements || []).find((s) => s.userId === userId && s.month === month) || { paidHours: 0, transmittedEquiv: 0, realizedAdj: 0, overpayApplied: 0 }; }
 // Répartit des HSUP brutes en 25% (8 premières) et 50% (au-delà).
 function splitHsup(h) { const h25 = Math.min(Math.max(0, h), 8); const h50 = Math.max(0, h - 8); return { h25, h50 }; }
@@ -6821,9 +6846,10 @@ function equivRecup(h25, h50) { return Math.round((h25 * 1.25 + h50 * 1.5) * 100
 
 function hoursHsup(body) {
   const base = _hours.hsupBase || 35;
-  // Soldes par salarié (compteurs CP / CP N-1 / RCC / Récup) pour affichage.
-  const balById = {};
-  (_hours.drivers || []).forEach((d) => { balById[d.id] = d.balances || {}; });
+  const cutoff = _hours.hsupCutoff || 0; // jour de clôture de paie (0 = mois civil)
+  // Soldes + date d'entrée par salarié (compteurs + gestion des entrants).
+  const balById = {}, hireById = {};
+  (_hours.drivers || []).forEach((d) => { balById[d.id] = d.balances || {}; hireById[d.id] = d.hireDate || null; });
   const byUser = {};
   _hours.entries.forEach((e) => { (byUser[e.userId] = byUser[e.userId] || { name: e.userName, days: [] }).days.push(e); });
   const ids = Object.keys(byUser);
@@ -6835,9 +6861,16 @@ function hoursHsup(body) {
     const weeks = {};
     u.days.forEach((e) => { const k = isoWeekKey(parseISO(e.date)); (weeks[k] = weeks[k] || { worked: 0, days: 0, ids: [] }); weeks[k].worked += e.worked || 0; weeks[k].days += 1; if (e.id) weeks[k].ids.push(e.id); });
     const weekRows = Object.keys(weeks).sort().map((k) => { const w = weeks[k]; const hsup = Math.max(0, w.worked - base); const sp = splitHsup(hsup); return { k, worked: w.worked, days: w.days, hsup, h25: sp.h25, h50: sp.h50, ids: w.ids }; });
-    // Agrégat mensuel (25/50 sommés sur les semaines du mois).
+    // Agrégat par PÉRIODE DE PAIE (25/50 sommés sur les semaines de la période).
+    // La semaine est rattachée à la période de son lundi (date de début).
+    const hire = hireById[id];
     const months = {};
-    weekRows.forEach((w) => { const m = w.k.slice(0, 7); (months[m] = months[m] || { worked: 0, h25: 0, h50: 0 }); months[m].worked += w.worked; months[m].h25 += w.h25; months[m].h50 += w.h50; });
+    weekRows.forEach((w) => {
+      const info = payPeriodInfo(payPeriodKey(w.k, cutoff, hire), cutoff, hire);
+      const m = info.key;
+      (months[m] = months[m] || { worked: 0, h25: 0, h50: 0, label: info.label, start: info.start, end: info.end });
+      months[m].worked += w.worked; months[m].h25 += w.h25; months[m].h50 += w.h50;
+    });
     const monthKeys = Object.keys(months).sort();
     // Calcul des restants par mois (après paiement) + transmission déjà faite.
     // On NE transmet et NE compte dans le « Reste dû » que les HSUP réalisées
@@ -6873,7 +6906,7 @@ function hoursHsup(body) {
     const bal = balById[id] || {};
     const balLine = `CP ${(bal.congesN || 0)} j · CP N-1 ${(bal.congesN1 || 0)} j · RCC ${hFmt(bal.rcc || 0)} · Récup ${hFmt(bal.heuresSupp || 0)}`;
     const rows = monthCalc.map((c) => `<tr>
-      <td>${esc(c.m)}</td><td>${hFmt(c.worked)}</td>
+      <td>${esc(c.label || c.m)}${c.start ? `<div class="help">${fmtDate(c.start)} → ${fmtDate(c.end)}</div>` : ''}</td><td>${hFmt(c.worked)}</td>
       <td>${c.h25 > 0 ? hFmt(c.h25) : '—'}</td><td>${c.h50 > 0 ? hFmt(c.h50) : '—'}</td>
       <td><input class="hsup-realized" data-uid="${id}" data-month="${c.m}" data-computed="${c.hsup}" data-old="${c.realizedAdj}" type="number" step="0.5" min="0" value="${c.effRealized}" style="width:74px" title="Réalisé corrigé : l'écart avec le réalisé importé (${hFmt(c.hsup)}) est transmis au compteur du salarié">${c.realizedAdj ? `<div class="help">ajust. ${c.realizedAdj > 0 ? '+' : ''}${hFmt(c.realizedAdj)}</div>` : ''}</td>
       <td><span class="help">${hFmt(c.equipTot)} (${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
@@ -6893,7 +6926,7 @@ function hoursHsup(body) {
         <h4 style="margin:.4rem 0 .3rem">Synthèse du salarié</h4>
         ${synthSalarie(u.days, base, id)}
         <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Mois</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Réalisé HSUP (h)</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Période de paie</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Réalisé HSUP (h)</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <p class="help" style="margin:.3rem 0">« Réalisé HSUP », « Déjà payé » et « Transmis » sont modifiables directement (mettez 0 pour annuler). Corriger le <strong>Réalisé</strong> transmet l'écart au compteur du salarié ; <strong>trop-payer</strong> un mois (payé &gt; réalisé) décrémente son stock d'HSUP d'autant ; modifier « Transmis » ajuste aussi son compteur.</p>
         <div class="alert ${(bal.heuresSupp || 0) > 0 ? 'info' : ''}" style="margin:.3rem 0">Compteur salarié (Récup / heures sup., chiffre réel après tous les calculs) : <strong>${hFmt(bal.heuresSupp || 0)}</strong> ≈ <strong>${((bal.heuresSupp || 0) / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</div>
         <div class="alert info" style="margin-top:.5rem">
@@ -6916,14 +6949,21 @@ function hoursHsup(body) {
 
   body.innerHTML = `
     <div class="card"><h3>Heures supplémentaires</h3>
-      <div style="display:flex;gap:.5rem;align-items:end;flex-wrap:wrap">
+      <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap">
         <div><label>Base hebdomadaire (h au-delà = HSUP)</label><input id="hsup-base" type="number" step="0.5" min="0" value="${base}" style="width:120px"></div>
-        <button class="btn ghost" id="hsup-recalc">Enregistrer la base & recalculer</button>
+        <div><label>Paie « du J au J » — jour de clôture</label><input id="hsup-cutoff" type="number" step="1" min="0" max="28" value="${cutoff}" style="width:120px" title="0 = paie au mois civil. 22 = période du 23 au 22 (décalage d'un mois sur l'autre)."></div>
+        <button class="btn ghost" id="hsup-recalc">Enregistrer & recalculer</button>
       </div>
-      <p class="help">HSUP calculées par semaine (au-delà de la base, 35 h légal), réparties en <strong>+25%</strong> (8 premières heures) et <strong>+50%</strong>. « Déjà payé » réduit le reste dû ; « Transmettre » crédite le compteur Récupération du salarié avec le <strong>nombre d'heures supplémentaires réalisées</strong> qui lui sont dues. L'<em>Équiv. récup.</em> (majoration légale) est affichée uniquement à titre informatif pour la direction.</p>
+      <p class="help">HSUP calculées par semaine (au-delà de la base, 35 h légal), réparties en <strong>+25%</strong> (8 premières heures) et <strong>+50%</strong>. ${cutoff ? `Paie regroupée <strong>du ${cutoff + 1} au ${cutoff}</strong> (décalée d'un mois sur l'autre) ; les salariés entrés en cours de mois sont payés <strong>de leur entrée à la fin du mois</strong>.` : 'Paie au mois civil (mettez un jour de clôture, ex. 22, pour une paie du 23 au 22).'} « Déjà payé » réduit le reste dû ; « Transmettre » crédite le compteur Récupération du salarié. L'<em>Équiv. récup.</em> (majoration légale) est affichée à titre informatif.</p>
     </div>
     ${cards}`;
-  document.getElementById('hsup-recalc').onclick = async () => { try { await api('PUT', '/staff/hsup-base', { base: document.getElementById('hsup-base').value }); await loadHours(); hrTab('hsup'); } catch (e) { toast(e.message, 'err'); } };
+  document.getElementById('hsup-recalc').onclick = async () => {
+    try {
+      await api('PUT', '/staff/hsup-base', { base: document.getElementById('hsup-base').value });
+      await api('PUT', '/staff/hsup-cutoff', { cutoff: document.getElementById('hsup-cutoff').value });
+      await loadHours(); hrTab('hsup');
+    } catch (e) { toast(e.message, 'err'); }
+  };
   body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; hoursHsup(body); });
   body.querySelectorAll('.hsup-paid').forEach((inp) => inp.onchange = async () => {
     try { const r = await api('PUT', '/staff/hsup-settlement', { userId: inp.dataset.uid, month: inp.dataset.month, paidHours: inp.value, computedRealized: Number(inp.dataset.computed) || 0 }); if (r.newBalance != null) toast(`Enregistré. Solde récup. : ${hFmt(r.newBalance)}.`, 'ok'); await loadHours(); hoursHsup(body); }

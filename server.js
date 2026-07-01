@@ -2840,9 +2840,9 @@ app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
   const since = req.query.from || '';
   const list = db.workHours.filter((h) => !since || h.date >= since).sort((a, b) => b.date.localeCompare(a.date));
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
-    .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId, balances: u.balances }))
+    .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId, balances: u.balances, hireDate: u.hireDate || null }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice() });
+  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, hsupCutoff: db.settings.hsupCutoffDay || 0, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice() });
 });
 
 // Paramètres de paie par salarié (taux horaire, base mensualisée, cotisations,
@@ -2869,6 +2869,16 @@ app.put('/api/staff/hsup-base', authRequired, adminRequired, async (req, res) =>
   if (Number.isFinite(b) && b > 0) db.settings.hsupWeeklyBase = b;
   await save();
   res.json({ hsupBase: db.settings.hsupWeeklyBase });
+});
+
+// Jour de clôture de la paie (paie « du J au J » décalée d'un mois sur l'autre).
+// 0 = paie au mois civil (comportement d'origine) ; 22 = période 23→22.
+app.put('/api/staff/hsup-cutoff', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const d = Number((req.body || {}).cutoff);
+  if (Number.isFinite(d) && d >= 0 && d <= 28) db.settings.hsupCutoffDay = Math.round(d);
+  await save();
+  res.json({ hsupCutoff: db.settings.hsupCutoffDay || 0 });
 });
 
 // Indiquer les HSUP déjà payées (en heures brutes) pour un salarié / un mois.
