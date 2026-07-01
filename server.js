@@ -3281,7 +3281,7 @@ app.get('/api/staff/geoloc/config', authRequired, staffRequired, (req, res) => {
       vehicleMonthlyInsurance: g.vehicleMonthlyInsurance != null ? g.vehicleMonthlyInsurance : 220,
       vehicleFixedDays: g.vehicleFixedDays != null ? g.vehicleFixedDays : 21.5,
       priseDePoste: g.priseDePoste || '', priseDePosteByUser: g.priseDePosteByUser || {},
-      priseDePosteByGroup: g.priseDePosteByGroup || {}, deviceUserMap: g.deviceUserMap || {},
+      priseDePosteByGroup: g.priseDePosteByGroup || {}, deviceUserMap: g.deviceUserMap || {}, deviceGroupMap: g.deviceGroupMap || {},
     },
     isAdmin: req.user.role === 'admin',
     vehicles: data.vehicles.filter((v) => v.active !== false).map((v) => ({ id: v.id, name: v.name, plate: v.plate || '' })),
@@ -3344,6 +3344,12 @@ app.post('/api/admin/geoloc/config', authRequired, adminRequired, async (req, re
     const clean = {};
     for (const k of Object.keys(b.deviceUserMap)) { const v = b.deviceUserMap[k]; if (v) clean[String(k)] = String(v); }
     g.deviceUserMap = clean;
+  }
+  // Attribution directe traceur → groupe (prioritaire sur le groupe déduit du chauffeur).
+  if (b.deviceGroupMap && typeof b.deviceGroupMap === 'object') {
+    const clean = {};
+    for (const k of Object.keys(b.deviceGroupMap)) { const v = b.deviceGroupMap[k]; if (v) clean[String(k)] = String(v); }
+    g.deviceGroupMap = clean;
   }
   pajgps.resetToken();
   await save();

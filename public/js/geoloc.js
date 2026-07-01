@@ -813,19 +813,23 @@ async function toggleGeoConfig(main) {
 
   let deviceMap = Object.assign({}, c.deviceMap);
   let deviceUserMap = Object.assign({}, c.deviceUserMap);
+  let deviceGroupMap = Object.assign({}, c.deviceGroupMap);
   const userOpts = (id) => `<option value="">— chauffeur —</option>` + (cfg.users || []).map((u) => `<option value="${u.id}" ${id === u.id ? 'selected' : ''}>${esc(u.name)}${u.groupName ? ' · ' + esc(u.groupName) : ''}</option>`).join('');
+  const groupOpts = (id) => `<option value="">— groupe (auto) —</option>` + (cfg.groups || []).map((g) => `<option value="${g.id}" ${id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
   const devBox = panel.querySelector('#gc-devices');
   // Si des traceurs sont déjà associés, affiche le tableau d'attribution sans test.
-  const savedDevices = Object.keys(Object.assign({}, deviceMap, deviceUserMap));
+  const savedDevices = Object.keys(Object.assign({}, deviceMap, deviceUserMap, deviceGroupMap));
   const renderDevTable = (devices) => {
-    devBox.innerHTML = `<h3>Traceurs — associez un véhicule et un chauffeur inscrit</h3>
-      <p class="help">L'attribution à un chauffeur permet de croiser les données (retard de prise de poste, coût salarié, excès par chauffeur).</p>
-      <table class="report-table"><thead><tr><th>Traceur</th><th>IMEI</th><th>Véhicule</th><th>Chauffeur</th></tr></thead><tbody>
+    devBox.innerHTML = `<h3>Traceurs — associez un véhicule, un groupe et/ou un chauffeur inscrit</h3>
+      <p class="help">Le <strong>groupe</strong> détermine le dépôt (GLS / Ciblex / FedEx) pour le départ/retour et le temps sur place. S'il est laissé sur « auto », il est déduit du chauffeur associé. L'attribution à un chauffeur permet de croiser les données (retard de prise de poste, coût salarié, excès par chauffeur).</p>
+      <table class="report-table"><thead><tr><th>Traceur</th><th>IMEI</th><th>Véhicule</th><th>Groupe</th><th>Chauffeur</th></tr></thead><tbody>
       ${devices.map((dv) => `<tr><td><strong>${esc(dv.name || ('Traceur ' + dv.id))}</strong></td><td>${esc(dv.imei || '—')}</td>
         <td><select data-dev="${dv.id}">${vehOpts(deviceMap[dv.id] || '')}</select></td>
+        <td><select data-devgroup="${dv.id}">${groupOpts(deviceGroupMap[dv.id] || '')}</select></td>
         <td><select data-devuser="${dv.id}">${userOpts(deviceUserMap[dv.id] || '')}</select></td></tr>`).join('')}
       </tbody></table>`;
     devBox.querySelectorAll('select[data-dev]').forEach((s) => s.onchange = () => { if (s.value) deviceMap[s.dataset.dev] = s.value; else delete deviceMap[s.dataset.dev]; });
+    devBox.querySelectorAll('select[data-devgroup]').forEach((s) => s.onchange = () => { if (s.value) deviceGroupMap[s.dataset.devgroup] = s.value; else delete deviceGroupMap[s.dataset.devgroup]; });
     devBox.querySelectorAll('select[data-devuser]').forEach((s) => s.onchange = () => { if (s.value) deviceUserMap[s.dataset.devuser] = s.value; else delete deviceUserMap[s.dataset.devuser]; });
   };
   if (savedDevices.length) renderDevTable(savedDevices.map((id) => ({ id, name: 'Traceur ' + id, imei: '' })));
@@ -854,6 +858,7 @@ async function toggleGeoConfig(main) {
     priseDePosteByGroup: (() => { const m = {}; panel.querySelectorAll('[data-prisegrp]').forEach((i) => { if (i.value) m[i.dataset.prisegrp] = i.value; }); return m; })(),
     deviceMap,
     deviceUserMap,
+    deviceGroupMap,
   });
 
   panel.querySelector('#gc-test').onclick = async () => {
