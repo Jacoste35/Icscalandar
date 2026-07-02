@@ -1056,12 +1056,13 @@ async function renderDashboard(main) {
     const philo = isPresident ? '' : philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Panneaux véhicules + discipline (encadrement).
-    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '', geolocPanel = '', retardPropPanel = '';
+    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '', geolocPanel = '', retardPropPanel = '', retardReviewPanel = '';
     if (staff) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
       try { const { proposals } = await api('GET', '/staff/retard-proposals'); retardPropPanel = retardProposalsHTML(proposals); } catch (e) {}
+      try { const { reviews } = await api('GET', '/staff/retard-reviews'); retardReviewPanel = retardReviewsHTML(reviews); } catch (e) {}
       // Panneau géoloc : en-tête statique TOUJOURS visible (styles inline, sans
       // dépendance au CSS ni au chargement asynchrone), rempli ensuite par
       // geolocStartDashboard avec les données temps réel.
@@ -1141,7 +1142,7 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${previewBar}
-      ${dashGroup('📌 À ne pas manquer', licenciementPanel, retardPropPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
+      ${dashGroup('📌 À ne pas manquer', licenciementPanel, retardReviewPanel, retardPropPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
       ${dashGroup('🧮 Mon espace', compteursCard, anc, myLeavePanel, weekSuggestPanel, retardCards)}
       ${dashGroup('🚚 Exploitation &amp; véhicules', geolocPanel, kmAnomalyPanel, stockAlertPanel, needsMaintPanel, disciplinePanel, vehPendingPanel, entretiensPanel, vehicleWarnPanel)}
       ${dashGroup('👥 Mon équipe', priorityPanel, classement, colleaguesPanel)}
@@ -1258,6 +1259,17 @@ function bindDashboardActions(scope) {
   scope.querySelectorAll('[data-retprop-dismiss]').forEach((b) => b.onclick = async () => {
     if (!confirm('Ignorer ce retard ?\n\nIl restera enregistré au dossier du salarié (utilisable pour un prochain avertissement) mais la proposition disparaîtra de l\'accueil.')) return;
     try { await api('POST', '/staff/retard-proposals/dismiss', { userId: b.dataset.retpropDismiss }); toast('Proposition retirée de l\'accueil.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  // Retard de remplaçant : retenir (devient un retard validé) ou écarter.
+  scope.querySelectorAll('[data-retreview-approve]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Retenir ce retard pour le remplaçant ?\n\nIl sera consigné comme un retard validé et pourra faire l\'objet d\'un avertissement.')) return;
+    try { await api('POST', '/staff/retard-reviews/decide', { id: b.dataset.retreviewApprove, approve: true }); toast('Retard retenu.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  scope.querySelectorAll('[data-retreview-reject]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Écarter ce retard ?\n\nIl ne sera pas retenu contre le remplaçant.')) return;
+    try { await api('POST', '/staff/retard-reviews/decide', { id: b.dataset.retreviewReject, approve: false }); toast('Retard écarté.', 'ok'); renderDashboard(document.getElementById('main')); }
     catch (e) { toast(e.message, 'err'); }
   });
   // Modifier une demande de congés depuis le récap d'accueil.
@@ -1774,17 +1786,45 @@ function kmAnomalyHTML(anomalies) {
 // proposition de l'accueil (le retard reste au dossier pour plus tard).
 function retardProposalsHTML(list) {
   if (!list || !list.length) return '';
+  const urgent = list.filter((p) => p.urgent).length;
+  const retLabel = (r) => {
+    const base = `${fmtDate(r.date)}${r.minutes ? ` (${r.minutes} min${r.auto ? ' · auto' : ''})` : (r.auto ? ' · auto' : '')}`;
+    if (r.expiringSoon) return `<span style="color:#b91c1c;font-weight:600">${base} — expire ${r.daysLeft <= 0 ? "aujourd'hui" : `dans ${r.daysLeft} j`}</span>`;
+    return base;
+  };
   return `<div class="card" style="border-left:5px solid #fb7185">
     <h3 style="margin:0 0 .3rem">⏱️ Retards à sanctionner (${list.length})</h3>
-    <p class="help" style="margin-top:0">Retards constatés par le site, un responsable ou un administrateur. Préparez un avertissement (dates pré-remplies) ou ignorez la proposition — le retard reste alors au dossier pour un prochain avertissement.</p>
-    ${list.map((p) => `<div class="card" style="margin:.4rem 0;padding:.6rem .8rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+    <p class="help" style="margin-top:0">Retards constatés par le site, un responsable ou un administrateur. Préparez un avertissement (dates pré-remplies) ou ignorez la proposition — le retard reste alors au dossier. Un retard n'est plus reprochable au-delà de <strong>2 mois</strong>.</p>
+    ${urgent ? `<div class="alert warn" style="margin:.2rem 0 .6rem">⚠️ ${urgent} salarié(s) avec un retard qui <strong>expire dans 7 jours ou moins</strong> : décidez d'avertir ou non avant la prescription.</div>` : ''}
+    ${list.map((p) => `<div class="card" style="margin:.4rem 0;padding:.6rem .8rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap${p.urgent ? ';border:1px solid #fca5a5;background:#fef2f2' : ''}">
       <div style="flex:1;min-width:200px">
-        <strong>${esc(p.userName)}</strong>${p.groupName ? ` <span class="help">· ${esc(p.groupName)}</span>` : ''}
-        <div class="help" style="margin-top:.2rem">${p.retards.map((r) => `${fmtDate(r.date)}${r.minutes ? ` (${r.minutes} min${r.auto ? ' · auto' : ''})` : (r.auto ? ' · auto' : '')}`).join(' · ')}</div>
+        <strong>${esc(p.userName)}</strong>${p.groupName ? ` <span class="help">· ${esc(p.groupName)}</span>` : ''}${p.urgent ? ' <span class="pill danger">⏳ expire bientôt</span>' : ''}
+        <div class="help" style="margin-top:.2rem">${p.retards.map(retLabel).join(' · ')}</div>
       </div>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap">
         <button class="btn accent sm" data-retprop-send="${p.userId}" data-dates="${p.retards.map((r) => r.date).join(',')}">📄 Préparer l'avertissement</button>
         <button class="btn ghost sm" data-retprop-dismiss="${p.userId}">Ignorer</button>
+      </div>
+    </div>`).join('')}
+  </div>`;
+}
+
+// Accueil (encadrement) : retards « hérités » par un remplaçant (le chauffeur
+// titulaire du camion était absent). Ils ne sont PAS consignés d'office — le
+// remplaçant a pu être appelé tardivement — et attendent une décision manuelle.
+function retardReviewsHTML(list) {
+  if (!list || !list.length) return '';
+  return `<div class="card" style="border-left:5px solid #f59e0b">
+    <h3 style="margin:0 0 .3rem">🔁 Retards de remplaçants à valider (${list.length})</h3>
+    <p class="help" style="margin-top:0">Le camion a démarré en retard alors que son chauffeur habituel était absent : le retard revient au remplaçant. Comme il a pu être prévenu tardivement, il n'est <strong>pas retenu automatiquement</strong>. Validez-le s'il est injustifié, ou écartez-le.</p>
+    ${list.map((r) => `<div class="card" style="margin:.4rem 0;padding:.6rem .8rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <strong>${esc(r.userName)}</strong>${r.groupName ? ` <span class="help">· ${esc(r.groupName)}</span>` : ''}
+        <div class="help" style="margin-top:.2rem">${fmtDate(r.date)}${r.minutes ? ` · retard ${r.minutes} min` : ''}${r.replacementForName ? ` · remplaçait ${esc(r.replacementForName)}` : ''}</div>
+      </div>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+        <button class="btn accent sm" data-retreview-approve="${r.id}">✓ Retenir le retard</button>
+        <button class="btn ghost sm" data-retreview-reject="${r.id}">Écarter</button>
       </div>
     </div>`).join('')}
   </div>`;
