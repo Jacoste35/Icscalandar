@@ -4936,8 +4936,13 @@ async function docMgmtGen(main) {
     rw.style.display = isRet ? '' : 'none';
     if (isRet) {
       const dl = _discCtx.retardDates || [];
+      const used = new Set(_discCtx.usedRetardDates || []);
+      const avail = dl.filter((d) => !used.has(d));
       body.querySelector('#dm-retards').innerHTML = dl.length
-        ? dl.map((d) => `<label class="dm-retard-chip"><input type="checkbox" class="dm-ret" value="${d}" checked> ${fmtDate(d)}</label>`).join('')
+        ? dl.map((d) => used.has(d)
+            ? `<label class="dm-retard-chip used" title="Déjà reproché dans un précédent document — non bis in idem"><input type="checkbox" class="dm-ret" value="${d}" disabled> <s>${fmtDate(d)}</s> <span class="help">déjà sanctionné</span></label>`
+            : `<label class="dm-retard-chip"><input type="checkbox" class="dm-ret" value="${d}" checked> ${fmtDate(d)}</label>`).join('')
+          + (avail.length ? '' : '<div class="help" style="margin-top:.4rem">Tous les retards validés ont déjà été reprochés : aucune nouvelle date à sanctionner.</div>')
         : '<span class="help">Aucun retard validé (RET) au calendrier pour ce salarié.</span>';
     }
   };

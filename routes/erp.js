@@ -207,6 +207,16 @@ function mount(app, deps) {
       .filter((rq) => rq.userId === userId && rq.category === 'RET' && rq.status === 'approved' && rq.startDate)
       .map((rq) => rq.startDate)
       .sort();
+    // Dates déjà reprochées dans un document disciplinaire NON rejeté : on ne
+    // peut pas sanctionner deux fois le même retard (non bis in idem). Un
+    // document rejeté libère ses dates. Ces dates ne pourront pas être
+    // re-cochées côté saisie.
+    const usedRetardSet = new Set();
+    ((data.erp && data.erp.documents) || []).forEach((d) => {
+      if (d.userId !== userId || d.status === 'rejected') return;
+      (d.retardDates || []).forEach((dt) => { if (dt) usedRetardSet.add(dt); });
+    });
+    const usedRetardDates = [...usedRetardSet].sort();
     // Compteur d'avertissements déjà notifiés (sanctions de type « Avertissement »).
     const sanctions = (data.sanctions || []).filter((s) => s.userId === userId);
     const warnings = sanctions.filter((s) => /avertissement/i.test(s.type || ''));
@@ -219,6 +229,7 @@ function mount(app, deps) {
       userName: u ? `${u.firstName} ${u.lastName}` : '',
       retardDates,
       retardCount: retardDates.length,
+      usedRetardDates,
       vehicle,
       warningCount: warnings.length,
       sanctionCount: sanctions.length,
@@ -599,6 +610,9 @@ function mount(app, deps) {
       id: erp.eid('doc'), userId, userName: `${u.firstName} ${u.lastName}`,
       type: type || 'document', label: label || (tpl && tpl.label) || 'Document', html: inner,
       motif: (vars && vars.motif) || '',
+      // Dates de retard reprochées dans ce document (issues du calendrier, code
+      // RET) — mémorisées pour interdire de re-sanctionner les mêmes dates.
+      retardDates: (vars && vars.retards && Array.isArray(vars.retards.dates)) ? vars.retards.dates.filter(Boolean) : [],
       createdAt: new Date().toISOString(), createdBy: req.user.id, createdByName: `${req.user.firstName} ${req.user.lastName}`,
       status: isAdmin ? 'sent' : 'pending_approval', viewedAt: null, ackedAt: null, ackBy: null, ackName: null, ackRef: null,
       approvedBy: null, approvedByName: null, approvedAt: null, rejectedReason: null,

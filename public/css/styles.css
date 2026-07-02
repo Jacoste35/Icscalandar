@@ -454,6 +454,8 @@ tr:last-child td { border-bottom: 0; }
 .dm-retard-list { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; }
 .dm-retard-chip { display: inline-flex; align-items: center; gap: .35rem; font-size: .82rem; padding: .25rem .6rem; border: 1px solid var(--border); border-radius: 999px; background: #fff; cursor: pointer; }
 .dm-retard-chip input { margin: 0; }
+.dm-retard-chip.used { background: #f3f4f6; color: var(--muted); cursor: not-allowed; opacity: .85; }
+.dm-retard-chip.used s { text-decoration-color: #9ca3af; }
 .disc-prog { margin-bottom: .5rem; }
 .disc-prog:last-child { margin-bottom: 0; }
 .tk-row { margin: .55rem 0; }
