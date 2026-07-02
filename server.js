@@ -598,7 +598,7 @@ app.get('/api/calendar', authRequired, (req, res) => {
   const usersById = Object.fromEntries(db.users.map((u) => [u.id, u]));
   // On affiche les absences validées ET les demandes en attente (DCP).
   const events = db.requests
-    .filter((r) => r.status === 'approved' || r.status === 'pending')
+    .filter((r) => (r.status === 'approved' || r.status === 'pending') && !r.pendingReview)
     .map((r) => {
       const u = usersById[r.userId];
       const g = u ? groupsById[u.groupId] : null;
@@ -3378,16 +3378,68 @@ app.post('/api/admin/geoloc/test', authRequired, adminRequired, async (req, res)
   }
 });
 
+// Prescription des faits : un retard ne peut plus être reproché au salarié
+// au-delà de 2 mois. Passé ce délai il reste en mémoire (compteurs, historique)
+// mais n'est plus proposable à l'avertissement. Un rappel est fait à J-7.
+const RETARD_REPROACH_MONTHS = 2;
+const RETARD_WARN_LEAD_DAYS = 7;
+function isoAddMonths(iso, n) {
+  const p = String(iso || '').split('-').map(Number);
+  if (p.length !== 3) return iso;
+  const dt = new Date(Date.UTC(p[0], (p[1] - 1) + n, p[2]));
+  return dt.toISOString().slice(0, 10);
+}
+function isoDaysBetween(a, b) { // b - a, en jours
+  return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
+}
+function retardExpiry(dateISO) { return isoAddMonths(dateISO, RETARD_REPROACH_MONTHS); }
+
+// Absence VALIDÉE (hors retard) couvrant un jour donné pour un salarié.
+function coveringAbsence(db, userId, day) {
+  return (db.requests || []).find((r) => r.userId === userId && r.category !== 'RET' && r.status === 'approved' && r.startDate <= day && r.endDate >= day) || null;
+}
+
 // Vue temps réel : positions, statut de mouvement, excès de vitesse du jour.
 // Retards AUTOMATIQUES (constatés par le site via la géolocalisation) : au-delà
-// de 5 minutes, un retard est retenu et consigné comme un RET validé (un seul
-// par chauffeur et par jour). En deçà, il est ignoré (tolérance de ponctualité).
+// de 5 minutes, un retard est retenu (un seul par chauffeur et par jour). En
+// deçà, il est ignoré (tolérance de ponctualité).
+//  - Chauffeur attribué PRÉSENT → retard consigné directement (RET validé).
+//  - Chauffeur attribué ABSENT (congé, récup, maladie…) → le retard revient à
+//    son REMPLAÇANT, mais n'est PAS consigné automatiquement : il attend une
+//    validation manuelle depuis l'accueil (le remplaçant a pu être prévenu
+//    tardivement si le chauffeur n'avait pas signalé son absence).
 const AUTO_RETARD_MIN_MINUTES = 5;
 function syncAutoRetards(db, positions) {
   const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
   let changed = false;
   for (const p of positions || []) {
     if (!p || !p.driverId || !p.late || !(Number(p.late.minutes) > AUTO_RETARD_MIN_MINUTES)) continue;
+    const mins = Math.round(Number(p.late.minutes));
+    const abs = coveringAbsence(db, p.driverId, today);
+    if (abs) {
+      // Chauffeur attribué absent → retard hérité par le remplaçant, à valider.
+      const repId = abs.replacedById;
+      if (!repId) continue;                       // remplaçant inconnu : non attribuable
+      const rep = db.users.find((x) => x.id === repId);
+      if (!rep || rep.status !== 'active') continue;
+      const already = db.requests.some((r) => r.category === 'RET' && r.startDate === today && r.source === 'geoloc' && r.userId === repId && r.replacementFor === p.driverId);
+      if (already) continue;
+      const tit = db.users.find((x) => x.id === p.driverId);
+      db.requests.push({
+        id: nextId('request'), userId: repId, category: 'RET', pool: null,
+        startDate: today, endDate: today, reason: 'Retard à la prise de poste (remplaçant — à valider)',
+        fractionnement: null, retardMinutes: mins, days: 0, hours: Math.round((mins / 60) * 100) / 100,
+        status: 'pending', pendingReview: true, createdAt: now, decidedAt: null, decidedBy: null,
+        createdBy: null, replacedById: null, replacedByName: null,
+        replacementFor: p.driverId, replacementForName: tit ? `${tit.firstName} ${tit.lastName}` : '',
+        source: 'geoloc', auto: true, retardProposalDismissed: false,
+        adminNote: `Retard constaté par le site (${mins} min ; heure prévue ${p.late.ref || '—'}) sur le véhicule de ${tit ? tit.firstName + ' ' + tit.lastName : 'titulaire absent'} — hérité par le remplaçant, à valider.`,
+      });
+      changed = true;
+      continue;
+    }
+    // Chauffeur attribué présent → retard consigné directement.
     const already = db.requests.some((r) => r.userId === p.driverId && r.category === 'RET' && r.startDate === today && r.source === 'geoloc');
     if (already) continue;
     const u = db.users.find((x) => x.id === p.driverId);
@@ -3395,12 +3447,11 @@ function syncAutoRetards(db, positions) {
     db.requests.push({
       id: nextId('request'), userId: p.driverId, category: 'RET', pool: null,
       startDate: today, endDate: today, reason: 'Retard à la prise de poste (constaté par géolocalisation)',
-      fractionnement: null, retardMinutes: Math.round(Number(p.late.minutes)), days: 0,
-      hours: Math.round((Number(p.late.minutes) / 60) * 100) / 100,
-      status: 'approved', createdAt: new Date().toISOString(), decidedAt: new Date().toISOString(),
+      fractionnement: null, retardMinutes: mins, days: 0, hours: Math.round((mins / 60) * 100) / 100,
+      status: 'approved', createdAt: now, decidedAt: now,
       decidedBy: null, createdBy: null, replacedById: null, replacedByName: null,
       source: 'geoloc', auto: true, retardProposalDismissed: false,
-      adminNote: `Retard constaté automatiquement par le site (${Math.round(Number(p.late.minutes))} min ; heure prévue ${p.late.ref || '—'}).`,
+      adminNote: `Retard constaté automatiquement par le site (${mins} min ; heure prévue ${p.late.ref || '—'}).`,
     });
     changed = true;
   }
@@ -3451,11 +3502,15 @@ app.get('/api/staff/retard-proposals', authRequired, staffRequired, (req, res) =
     if (d.status === 'rejected') return;
     (d.retardDates || []).forEach((dt) => { if (dt) (usedByUser[d.userId] = usedByUser[d.userId] || new Set()).add(dt); });
   });
+  const today = new Date().toISOString().slice(0, 10);
   const byUser = {};
   (db.requests || []).forEach((r) => {
     if (r.category !== 'RET' || r.status !== 'approved' || !r.startDate) return;
+    if (r.pendingReview) return;                  // retards de remplaçant non validés
     if (r.retardProposalDismissed) return;
     if (usedByUser[r.userId] && usedByUser[r.userId].has(r.startDate)) return;
+    // Prescription : un retard de plus de 2 mois n'est plus reprochable.
+    if (today > retardExpiry(r.startDate)) return;
     (byUser[r.userId] = byUser[r.userId] || []).push(r);
   });
   const proposals = Object.keys(byUser).map((uid) => {
@@ -3463,12 +3518,53 @@ app.get('/api/staff/retard-proposals', authRequired, staffRequired, (req, res) =
     if (!u || u.status !== 'active') return null;
     const grp = u.groupId ? db.groups.find((g) => g.id === u.groupId) : null;
     const list = byUser[uid].slice().sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+    const retards = list.map((r) => {
+      const expiry = retardExpiry(r.startDate);
+      const daysLeft = isoDaysBetween(today, expiry);
+      return { id: r.id, date: r.startDate, minutes: r.retardMinutes || null, auto: !!r.auto, expiry, daysLeft, expiringSoon: daysLeft <= RETARD_WARN_LEAD_DAYS };
+    });
+    const minDaysLeft = Math.min.apply(null, retards.map((r) => r.daysLeft));
     return {
       userId: uid, userName: `${u.firstName} ${u.lastName}`, groupName: grp ? grp.name : '',
-      retards: list.map((r) => ({ id: r.id, date: r.startDate, minutes: r.retardMinutes || null, auto: !!r.auto })),
+      retards, urgent: minDaysLeft <= RETARD_WARN_LEAD_DAYS, minDaysLeft,
     };
-  }).filter(Boolean).sort((a, b) => a.userName.localeCompare(b.userName));
+  }).filter(Boolean).sort((a, b) => (a.minDaysLeft - b.minDaysLeft) || a.userName.localeCompare(b.userName));
   res.json({ proposals });
+});
+
+// Retards de REMPLAÇANTS à valider (chauffeur titulaire absent) : ils ne sont
+// pas consignés automatiquement — l'encadrement décide de les retenir ou non.
+app.get('/api/staff/retard-reviews', authRequired, staffRequired, (req, res) => {
+  const db = getData();
+  const reviews = (db.requests || [])
+    .filter((r) => r.category === 'RET' && r.pendingReview)
+    .map((r) => {
+      const u = db.users.find((x) => x.id === r.userId);
+      const grp = u && u.groupId ? db.groups.find((g) => g.id === u.groupId) : null;
+      return {
+        id: r.id, userId: r.userId, userName: u ? `${u.firstName} ${u.lastName}` : 'Inconnu',
+        groupName: grp ? grp.name : '', date: r.startDate, minutes: r.retardMinutes || null,
+        replacementForName: r.replacementForName || '',
+      };
+    })
+    .sort((a, b) => String(b.date).localeCompare(a.date));
+  res.json({ reviews });
+});
+
+// Valider (retenir) ou écarter un retard de remplaçant.
+app.post('/api/staff/retard-reviews/decide', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const { id, approve } = req.body || {};
+  const r = (db.requests || []).find((x) => x.id === id && x.category === 'RET' && x.pendingReview);
+  if (!r) return res.status(404).json({ error: 'Retard introuvable' });
+  if (approve) {
+    r.status = 'approved'; r.pendingReview = false; r.decidedAt = new Date().toISOString(); r.decidedBy = req.user.id;
+    r.reason = 'Retard à la prise de poste (remplaçant, validé par l’encadrement)';
+  } else {
+    db.requests = db.requests.filter((x) => x.id !== r.id);
+  }
+  await save();
+  res.json({ ok: true });
 });
 
 // « Ignorer » une proposition : le(s) retard(s) restent au dossier (utilisables

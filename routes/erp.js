@@ -202,9 +202,13 @@ function mount(app, deps) {
     const userId = req.query.userId;
     const motif = String(req.query.motif || '');
     const u = (data.users || []).find((x) => x.id === userId);
-    // Retards validés (RET, approuvés) — dates triées chronologiquement.
+    // Prescription : un retard de plus de 2 mois n'est plus reprochable. On ne
+    // propose donc à la saisie que les retards encore dans le délai.
+    const today = new Date().toISOString().slice(0, 10);
+    const retExpiry = (iso) => { const p = String(iso || '').split('-').map(Number); return p.length === 3 ? new Date(Date.UTC(p[0], (p[1] - 1) + 2, p[2])).toISOString().slice(0, 10) : iso; };
+    // Retards validés (RET, approuvés) NON prescrits — dates triées.
     const retardDates = (data.requests || [])
-      .filter((rq) => rq.userId === userId && rq.category === 'RET' && rq.status === 'approved' && rq.startDate)
+      .filter((rq) => rq.userId === userId && rq.category === 'RET' && rq.status === 'approved' && !rq.pendingReview && rq.startDate && today <= retExpiry(rq.startDate))
       .map((rq) => rq.startDate)
       .sort();
     // Dates déjà reprochées dans un document disciplinaire NON rejeté : on ne
