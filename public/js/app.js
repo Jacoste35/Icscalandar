@@ -1056,11 +1056,12 @@ async function renderDashboard(main) {
     const philo = isPresident ? '' : philoMessageHTML(retardCountSince(myRetards, 365));
 
     // Panneaux véhicules + discipline (encadrement).
-    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '', geolocPanel = '';
+    let vehicleWarnPanel = '', vehPendingPanel = '', entretiensPanel = '', disciplinePanel = '', stockAlertPanel = '', geolocPanel = '', retardPropPanel = '';
     if (staff) {
       try { const { warnings } = await api('GET', '/staff/vehicle-warnings'); vehicleWarnPanel = vehicleWarningsHTML(warnings); } catch (e) {}
       try { const { pendingReports, alerts, ctReminders, scheduled } = await api('GET', '/staff/vehicle-dashboard'); vehPendingPanel = dashVehiclePendingHTML(pendingReports); entretiensPanel = dashEntretiensHTML(alerts) + ctRemindersHTML(ctReminders) + scheduledHTML(scheduled); } catch (e) {}
       try { const { items } = await api('GET', '/staff/discipline'); disciplinePanel = disciplineHTML(items); } catch (e) {}
+      try { const { proposals } = await api('GET', '/staff/retard-proposals'); retardPropPanel = retardProposalsHTML(proposals); } catch (e) {}
       // Panneau géoloc : en-tête statique TOUJOURS visible (styles inline, sans
       // dépendance au CSS ni au chargement asynchrone), rempli ensuite par
       // geolocStartDashboard avec les données temps réel.
@@ -1140,7 +1141,7 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${previewBar}
-      ${dashGroup('📌 À ne pas manquer', licenciementPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
+      ${dashGroup('📌 À ne pas manquer', licenciementPanel, retardPropPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
       ${dashGroup('🧮 Mon espace', compteursCard, anc, myLeavePanel, weekSuggestPanel, retardCards)}
       ${dashGroup('🚚 Exploitation &amp; véhicules', geolocPanel, kmAnomalyPanel, stockAlertPanel, needsMaintPanel, disciplinePanel, vehPendingPanel, entretiensPanel, vehicleWarnPanel)}
       ${dashGroup('👥 Mon équipe', priorityPanel, classement, colleaguesPanel)}
@@ -1246,6 +1247,18 @@ function bindDashboardActions(scope) {
   scope.querySelectorAll('[data-prepmap]').forEach((b) => b.onclick = () => {
     _docGenPrefill = { userId: b.dataset.prepmap, motif: b.dataset.motif || '', type: 'mise_a_pied_conservatoire' };
     _docMgmtTab = 'gen'; State.view = 'docmgmt'; renderApp();
+  });
+  // Préparer un avertissement pour retard (dates pré-cochées) depuis l'accueil.
+  scope.querySelectorAll('[data-retprop-send]').forEach((b) => b.onclick = () => {
+    const dates = (b.dataset.dates || '').split(',').filter(Boolean);
+    _docGenPrefill = { userId: b.dataset.retpropSend, motif: 'Retards répétés', type: 'avertissement', retardDates: dates };
+    _docMgmtTab = 'gen'; State.view = 'docmgmt'; renderApp();
+  });
+  // Ignorer une proposition de retard : reste au dossier, disparaît de l'accueil.
+  scope.querySelectorAll('[data-retprop-dismiss]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Ignorer ce retard ?\n\nIl restera enregistré au dossier du salarié (utilisable pour un prochain avertissement) mais la proposition disparaîtra de l\'accueil.')) return;
+    try { await api('POST', '/staff/retard-proposals/dismiss', { userId: b.dataset.retpropDismiss }); toast('Proposition retirée de l\'accueil.', 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
   });
   // Modifier une demande de congés depuis le récap d'accueil.
   scope.querySelectorAll('[data-leavemod]').forEach((b) => b.onclick = () => openRequestModal({ id: b.dataset.leavemod, category: b.dataset.cat, pool: b.dataset.pool || null, startDate: b.dataset.s, endDate: b.dataset.e, reason: b.dataset.reason || '' }));
@@ -1752,6 +1765,28 @@ function kmAnomalyHTML(anomalies) {
     <p class="help" style="margin-top:0">Relevés suspects (erreur de saisie possible). <strong>Validez</strong> pour mettre à jour l'odomètre du véhicule, ou <strong>écartez</strong>.</p>
     <div class="table-wrap"><table><thead><tr><th>Véhicule</th><th>Date</th><th>Km relevé</th><th>Chauffeur</th><th>Anomalie</th><th></th></tr></thead>
       <tbody>${anomalies.map((a) => `<tr><td><strong>${esc(a.vehicleName)}</strong>${a.plate ? ` (${esc(a.plate)})` : ''}</td><td>${fmtDate(a.date)}</td><td>${kmFmt(a.km)}</td><td>${esc(a.userName)}</td><td class="help">${esc(a.reason)}</td><td style="white-space:nowrap"><button class="btn ok sm" data-kmano-apply="${a.id}">Valider</button> <button class="btn ghost sm" data-kmano-reject="${a.id}">Écarter</button></td></tr>`).join('')}</tbody></table></div>
+  </div>`;
+}
+
+// Accueil (encadrement) : retards constatés (site, responsable ou admin) pour
+// lesquels un avertissement peut être proposé. « Préparer » pré-remplit la
+// lettre d'avertissement avec la ou les dates ; « Ignorer » retire la
+// proposition de l'accueil (le retard reste au dossier pour plus tard).
+function retardProposalsHTML(list) {
+  if (!list || !list.length) return '';
+  return `<div class="card" style="border-left:5px solid #fb7185">
+    <h3 style="margin:0 0 .3rem">⏱️ Retards à sanctionner (${list.length})</h3>
+    <p class="help" style="margin-top:0">Retards constatés par le site, un responsable ou un administrateur. Préparez un avertissement (dates pré-remplies) ou ignorez la proposition — le retard reste alors au dossier pour un prochain avertissement.</p>
+    ${list.map((p) => `<div class="card" style="margin:.4rem 0;padding:.6rem .8rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <strong>${esc(p.userName)}</strong>${p.groupName ? ` <span class="help">· ${esc(p.groupName)}</span>` : ''}
+        <div class="help" style="margin-top:.2rem">${p.retards.map((r) => `${fmtDate(r.date)}${r.minutes ? ` (${r.minutes} min${r.auto ? ' · auto' : ''})` : (r.auto ? ' · auto' : '')}`).join(' · ')}</div>
+      </div>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+        <button class="btn accent sm" data-retprop-send="${p.userId}" data-dates="${p.retards.map((r) => r.date).join(',')}">📄 Préparer l'avertissement</button>
+        <button class="btn ghost sm" data-retprop-dismiss="${p.userId}">Ignorer</button>
+      </div>
+    </div>`).join('')}
   </div>`;
 }
 
@@ -4992,6 +5027,12 @@ async function docMgmtGen(main) {
     syncBtns();
     await refreshContext();
     if (pf.type) { const o = [...typeSel.options].find((x) => x.value === pf.type); if (o && !o.disabled) typeSel.value = pf.type; syncBtns(); }
+    // Avertissement pour retard : ne cocher que les dates proposées (non déjà
+    // sanctionnées), pas l'ensemble des retards du salarié.
+    if (pf.retardDates && pf.retardDates.length) {
+      const want = new Set(pf.retardDates);
+      body.querySelectorAll('.dm-ret').forEach((c) => { c.checked = !c.disabled && want.has(c.value); });
+    }
     toast('Dossier chargé : complétez les crochets puis générez le document.', 'ok');
   }
 }
