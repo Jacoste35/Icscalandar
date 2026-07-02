@@ -3378,6 +3378,34 @@ app.post('/api/admin/geoloc/test', authRequired, adminRequired, async (req, res)
 });
 
 // Vue temps réel : positions, statut de mouvement, excès de vitesse du jour.
+// Retards AUTOMATIQUES (constatés par le site via la géolocalisation) : au-delà
+// de 5 minutes, un retard est retenu et consigné comme un RET validé (un seul
+// par chauffeur et par jour). En deçà, il est ignoré (tolérance de ponctualité).
+const AUTO_RETARD_MIN_MINUTES = 5;
+function syncAutoRetards(db, positions) {
+  const today = new Date().toISOString().slice(0, 10);
+  let changed = false;
+  for (const p of positions || []) {
+    if (!p || !p.driverId || !p.late || !(Number(p.late.minutes) > AUTO_RETARD_MIN_MINUTES)) continue;
+    const already = db.requests.some((r) => r.userId === p.driverId && r.category === 'RET' && r.startDate === today && r.source === 'geoloc');
+    if (already) continue;
+    const u = db.users.find((x) => x.id === p.driverId);
+    if (!u || u.status !== 'active') continue;
+    db.requests.push({
+      id: nextId('request'), userId: p.driverId, category: 'RET', pool: null,
+      startDate: today, endDate: today, reason: 'Retard à la prise de poste (constaté par géolocalisation)',
+      fractionnement: null, retardMinutes: Math.round(Number(p.late.minutes)), days: 0,
+      hours: Math.round((Number(p.late.minutes) / 60) * 100) / 100,
+      status: 'approved', createdAt: new Date().toISOString(), decidedAt: new Date().toISOString(),
+      decidedBy: null, createdBy: null, replacedById: null, replacedByName: null,
+      source: 'geoloc', auto: true, retardProposalDismissed: false,
+      adminNote: `Retard constaté automatiquement par le site (${Math.round(Number(p.late.minutes))} min ; heure prévue ${p.late.ref || '—'}).`,
+    });
+    changed = true;
+  }
+  return changed;
+}
+
 app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) => {
   const data = getData(); ensureErp(data);
   const g = data.settings.pajgps;
@@ -3403,10 +3431,60 @@ app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) 
   }
   try { day = data.pajState.day; } catch (e) {}
   try { speedRecap = pajgps.weeklySpeedRecap(data); } catch (e) { speedRecap = []; console.error('Géoloc recap:', e && e.stack ? e.stack : e); }
+  // Consigne les retards automatiques (> 5 min) constatés par la géoloc.
+  try { if (syncAutoRetards(data, positions)) await save(); } catch (e) { console.error('Auto-retards:', e && e.message); }
   res.json({ positions, day, error: errMsg, enabled: true, configured: true, config: pubCfg(g), speedRecap });
 });
 
 function pubCfg(g) { return { speedLimit: g.speedLimit || 115, dayStart: g.dayStart || '05:00', dayEnd: g.dayEnd || '18:00' }; }
+
+// Propositions d'avertissement pour retard, affichées sur l'accueil de
+// l'encadrement : tous les retards validés (RET) — constatés par le site, un
+// responsable ou un administrateur — qui n'ont pas encore été reprochés dans un
+// avertissement et qui n'ont pas été « ignorés » manuellement.
+app.get('/api/staff/retard-proposals', authRequired, staffRequired, (req, res) => {
+  const db = getData(); ensureErp(db);
+  // Dates déjà reprochées dans un document disciplinaire non rejeté, par salarié.
+  const usedByUser = {};
+  ((db.erp && db.erp.documents) || []).forEach((d) => {
+    if (d.status === 'rejected') return;
+    (d.retardDates || []).forEach((dt) => { if (dt) (usedByUser[d.userId] = usedByUser[d.userId] || new Set()).add(dt); });
+  });
+  const byUser = {};
+  (db.requests || []).forEach((r) => {
+    if (r.category !== 'RET' || r.status !== 'approved' || !r.startDate) return;
+    if (r.retardProposalDismissed) return;
+    if (usedByUser[r.userId] && usedByUser[r.userId].has(r.startDate)) return;
+    (byUser[r.userId] = byUser[r.userId] || []).push(r);
+  });
+  const proposals = Object.keys(byUser).map((uid) => {
+    const u = db.users.find((x) => x.id === uid);
+    if (!u || u.status !== 'active') return null;
+    const grp = u.groupId ? db.groups.find((g) => g.id === u.groupId) : null;
+    const list = byUser[uid].slice().sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+    return {
+      userId: uid, userName: `${u.firstName} ${u.lastName}`, groupName: grp ? grp.name : '',
+      retards: list.map((r) => ({ id: r.id, date: r.startDate, minutes: r.retardMinutes || null, auto: !!r.auto })),
+    };
+  }).filter(Boolean).sort((a, b) => a.userName.localeCompare(b.userName));
+  res.json({ proposals });
+});
+
+// « Ignorer » une proposition : le(s) retard(s) restent au dossier (utilisables
+// pour un prochain avertissement) mais la proposition disparaît de l'accueil.
+app.post('/api/staff/retard-proposals/dismiss', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  const { userId, ids } = req.body || {};
+  const idSet = Array.isArray(ids) && ids.length ? new Set(ids) : null;
+  let n = 0;
+  (db.requests || []).forEach((r) => {
+    if (r.category !== 'RET' || r.status !== 'approved') return;
+    const match = idSet ? idSet.has(r.id) : (userId && r.userId === userId);
+    if (match) { r.retardProposalDismissed = true; n++; }
+  });
+  if (n) await save();
+  res.json({ ok: true, dismissed: n });
+});
 
 /* =========================================================================
    CARBURANT (Exploitation & Transport) — import des transactions AS 24
