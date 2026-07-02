@@ -622,6 +622,7 @@ app.get('/api/calendar', authRequired, (req, res) => {
         days: r.days,
         hours: r.hours,
         retardMinutes: r.retardMinutes || null,
+        auto: !!r.auto,
         replacedByName: r.replacedByName || null,
         replacedById: r.replacedById || null,
         fractionnement: r.fractionnement || null,

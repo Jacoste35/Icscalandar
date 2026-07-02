@@ -2494,7 +2494,7 @@ function iosDayDetail(ds) {
     return `<div class="iosev" style="--c:${c}"><span class="iosev-bar"></span>
       <span class="iosev-body">
         <span class="iosev-name">${esc(ev.userName)} <span class="help">(${esc(ev.groupName)})</span></span>
-        <span class="help">${esc(ev.code)} · ${esc(ev.categoryLabel)}${ev.category === 'RET' ? ` · retard ${ev.retardMinutes || '?'} min` : ''}${range(ev)}${ev.status === 'pending' ? ' · <em>en attente</em>' : ''}${ev.replacedByName ? ` · ↪ ${esc(ev.replacedByName)}` : ''}</span>
+        <span class="help">${esc(ev.code)} · ${esc(ev.categoryLabel)}${ev.category === 'RET' ? ` · retard ${ev.retardMinutes || '?'} min${ev.auto ? ' · auto' : ''}` : ''}${range(ev)}${ev.status === 'pending' ? ' · <em>en attente</em>' : ''}${ev.replacedByName ? ` · ↪ ${esc(ev.replacedByName)}` : ''}</span>
       </span>
       ${isAdmin ? `<button class="btn danger sm" data-del-ev="${ev.id}" title="Supprimer / recréditer">✕</button>` : ''}
     </div>`;
@@ -2513,7 +2513,7 @@ function viewAgenda(cursor) {
   if (!evs.length) return `<div class="empty">✅ Aucune absence sur ${MONTHS[m]} ${y}.</div>`;
   const isAdmin = State.user.role === 'admin';
   const fmtRange = (ev) => ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
-  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min` : `${ev.days} j`;
+  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min${ev.auto ? ' · auto' : ''}` : `${ev.days} j`;
   // Regroupement par jour de début pour des sous-titres clairs.
   let html = '<div class="agenda">', lastDay = '';
   evs.forEach((ev) => {
@@ -2542,7 +2542,7 @@ function viewAgenda(cursor) {
   if (!evs.length) return `<div class="empty">✅ Aucune absence sur ${MONTHS[m]} ${y}.</div>`;
   const isAdmin = State.user.role === 'admin';
   const fmtRange = (ev) => ev.startDate === ev.endDate ? fmtDate(ev.startDate) : `${fmtDate(ev.startDate)} → ${fmtDate(ev.endDate)}`;
-  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min` : `${ev.days} j`;
+  const dur = (ev) => ev.category === 'RET' ? `retard ${ev.retardMinutes || '?'} min${ev.auto ? ' · auto' : ''}` : `${ev.days} j`;
   // Regroupement par jour de début pour des sous-titres clairs.
   let html = '<div class="agenda">', lastDay = '';
   evs.forEach((ev) => {
