@@ -1096,9 +1096,12 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
   }
 
   // L'administrateur peut choisir d'attribuer directement (validé) ou plus tard
-  // (en attente). Le responsable propose toujours (en attente).
+  // (en attente). Le responsable propose toujours (en attente)… SAUF pour un
+  // retard (RET) : simple constat d'exploitation, il ne consomme aucun solde et
+  // n'a pas besoin de la validation d'un administrateur.
   const isAdmin = req.user.role === 'admin';
-  const approveNow = isAdmin && immediate !== false; // par défaut direct pour l'admin
+  const isRet = category === 'RET';
+  const approveNow = (isAdmin || isRet) && immediate !== false;
   const request = {
     id: nextId('request'),
     userId,
@@ -1118,7 +1121,9 @@ app.post('/api/admin/requests', authRequired, staffRequired, async (req, res) =>
     createdBy: req.user.id,
     replacedById: replacer ? replacer.id : null,
     replacedByName: replacer ? `${replacer.firstName} ${replacer.lastName}` : null,
-    adminNote: approveNow ? 'Attribué par l’administrateur' : (isAdmin ? 'Saisi par l’administrateur (à valider plus tard)' : `Proposé par le responsable ${req.user.firstName} ${req.user.lastName}`),
+    adminNote: approveNow
+      ? (isAdmin ? 'Attribué par l’administrateur' : `Retard enregistré par le responsable ${req.user.firstName} ${req.user.lastName}`)
+      : (isAdmin ? 'Saisi par l’administrateur (à valider plus tard)' : `Proposé par le responsable ${req.user.firstName} ${req.user.lastName}`),
   };
   // Le solde n'est décompté que si la demande est validée.
   if (approveNow) {
