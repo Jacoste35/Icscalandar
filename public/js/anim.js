@@ -23,9 +23,13 @@
 
   var A = {
     on: ON,
-    // Rejoue une timeline courte de la coquille (barre latérale + navigation).
+    // Anime la coquille (barre latérale + navigation) UNE SEULE FOIS, au premier
+    // affichage. À chaque changement de page l'app reconstruit tout le menu ;
+    // rejouer l'entrée à chaque fois donnait une impression de « flash » — on ne
+    // l'anime donc plus qu'à la première ouverture.
     shell: function () {
-      if (!ON) return;
+      if (!ON || this._shellDone) return;
+      this._shellDone = true;
       try {
         gsap.from('.sidebar .brand', { x: -22, opacity: 0, duration: .5, ease: 'power3.out' });
         gsap.from('.sidebar nav > *', { x: -16, opacity: 0, duration: .45, stagger: .035, delay: .04, ease: 'power3.out', clearProps: 'transform,opacity' });
