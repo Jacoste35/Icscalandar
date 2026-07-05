@@ -199,7 +199,11 @@ function toast(msg, kind = 'info') {
   el.className = 'toast ' + kind;
   el.textContent = msg;
   c.appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3500);
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.toastIn(el);
+  setTimeout(() => {
+    if (window.ICSAnim && ICSAnim.on) ICSAnim.toastOut(el, () => el.remove());
+    else { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }
+  }, 3500);
 }
 
 /* ------------------------------ Modal ----------------------------------- */
@@ -216,9 +220,15 @@ function modal({ title, bodyHTML, footHTML, onMount }) {
     </div>`;
   document.body.appendChild(overlay);
   overlay.addEventListener('click', (e) => { if (e.target === overlay || e.target.hasAttribute('data-close')) closeModal(); });
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.modalIn(overlay);
   if (onMount) onMount(overlay);
 }
-function closeModal() { const m = document.getElementById('modal-overlay'); if (m) m.remove(); }
+function closeModal() {
+  const m = document.getElementById('modal-overlay'); if (!m) return;
+  m.id = ''; // libère l'identifiant pour une éventuelle nouvelle modale immédiate
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.modalOut(m, () => m.remove());
+  else m.remove();
+}
 
 /* ------------------------------ Auth ------------------------------------ */
 function logout(silent) {
@@ -664,6 +674,7 @@ function renderApp() {
   // Choix d'une rubrique → fermeture du tiroir (le re-rendu s'en charge aussi).
   $app.querySelectorAll('.sidebar [data-view], .bottom-nav [data-view]').forEach((b) => b.addEventListener('click', () => setNav(false)));
   renderView();
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.shell();
   if (u.role === 'admin') refreshAdminBadge();
 }
 
@@ -682,6 +693,7 @@ async function refreshAdminBadge() {
 function renderView() {
   const main = document.getElementById('main');
   const v = State.view;
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.view(main);
   if (v === 'dashboard') return renderDashboard(main);
   if (v === 'calendar') return renderCalendar(main);
   if (v === 'mydata') return renderMyData(main);
@@ -967,6 +979,7 @@ async function renderDashboard(main) {
       </div>
     </section>
     <div id="dash-body" class="empty">Chargement…</div>`;
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.hero(main);
   startDashClock();
   main.querySelectorAll('[data-herov]').forEach((b) => b.onclick = () => { State.view = b.dataset.herov; renderApp(); });
   const heroLeave = main.querySelector('#hero-leave'); if (heroLeave) heroLeave.onclick = () => openRequestModal();
@@ -1150,6 +1163,8 @@ async function renderDashboard(main) {
       ${dashGroup('⚙️ Réglages &amp; infos', calSyncPanel, pushDiv, philo)}`;
     // Rend chaque section de l'accueil repliable (ouvrir/masquer à la demande).
     makeDashCollapsible(dashBody);
+    // Compteurs animés (nombres qui défilent) sur les statistiques.
+    if (window.ICSAnim && ICSAnim.on) ICSAnim.count(dashBody);
     // Tableaux lisibles sur téléphone : empilés « libellé : valeur », sans
     // défilement horizontal.
     tablesResponsive(dashBody);

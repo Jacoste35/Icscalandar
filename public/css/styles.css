@@ -1740,3 +1740,15 @@ td { color: var(--ink); }
 /* Tour de véhicule : éléments présents / conformes en vert, manquements */
 .tr-present { color: #166534; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: .35rem .6rem; margin: .35rem 0; font-size: .86rem; font-weight: 650; }
 .tr-conform { color: #15803d; font-size: .82rem; margin: .2rem 0; }
+
+/* =========================================================================
+   Animations GSAP (ICSAnim) — quand GSAP est actif (.gsap-on sur <html>), on
+   confie les entrées de modale et de toast à GSAP et on neutralise les
+   keyframes CSS correspondantes pour éviter les doubles animations. Le mode
+   « réduction des animations » du système reste prioritaire (bloc dédié).
+   ========================================================================= */
+html.gsap-on .modal-overlay,
+html.gsap-on .modal,
+html.gsap-on .toast { animation: none !important; }
+/* GSAP pose sa propre transform ; on évite que le :active CSS ne s'y superpose. */
+html.gsap-on .btn:active { transform: none; }
