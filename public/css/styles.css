@@ -1752,3 +1752,6 @@ html.gsap-on .modal,
 html.gsap-on .toast { animation: none !important; }
 /* GSAP pose sa propre transform ; on évite que le :active CSS ne s'y superpose. */
 html.gsap-on .btn:active { transform: none; }
+/* Transition de page « slide » : on clippe l'axe horizontal pour éviter une
+   barre de défilement transitoire pendant le glissement du contenu. */
+html.gsap-on #app { overflow-x: clip; }

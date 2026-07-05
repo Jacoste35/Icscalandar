@@ -18,28 +18,58 @@
        s'affiche immédiatement, avant même le chargement de la feuille de style. -->
   <style>
     html, body { margin: 0; }
+    /* ---- Écran de démarrage « techno » (radar géoloc + grille + anneaux) ---- */
     #splash {
-      position: fixed; inset: 0; z-index: 99999;
+      position: fixed; inset: 0; z-index: 99999; overflow: hidden;
       display: flex; align-items: center; justify-content: center;
-      background: radial-gradient(120% 90% at 50% 0%, #1b558f 0%, #14427e 45%, #0e2747 100%);
-      transition: opacity .55s ease, visibility .55s ease;
+      background: radial-gradient(120% 90% at 50% -8%, #1c5c98 0%, #14427e 42%, #0a1d38 100%);
+      transition: opacity .5s ease, visibility .5s ease; will-change: opacity, transform, filter;
     }
     #splash.hide { opacity: 0; visibility: hidden; }
-    .splash-inner { display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 24px; }
+    /* Grille technologique en fond, estompée sur les bords. */
+    #splash .sp-grid {
+      position: absolute; inset: -2px; pointer-events: none;
+      background-image: linear-gradient(rgba(125,175,255,.10) 1px, transparent 1px), linear-gradient(90deg, rgba(125,175,255,.10) 1px, transparent 1px);
+      background-size: 34px 34px;
+      -webkit-mask-image: radial-gradient(72% 62% at 50% 46%, #000 42%, transparent 80%);
+      mask-image: radial-gradient(72% 62% at 50% 46%, #000 42%, transparent 80%);
+      animation: spGrid 14s linear infinite;
+    }
+    @keyframes spGrid { from { background-position: 0 0, 0 0; } to { background-position: 34px 34px, 34px 34px; } }
+    /* Balayage radar. */
+    #splash .sp-radar {
+      position: absolute; width: min(80vw, 460px); height: min(80vw, 460px); border-radius: 50%; pointer-events: none;
+      background: conic-gradient(from 0deg, rgba(90,160,255,0) 0deg, rgba(96,175,255,.30) 42deg, rgba(90,160,255,0) 96deg);
+      animation: spSpin 3.6s linear infinite; opacity: .7;
+    }
+    @keyframes spSpin { to { transform: rotate(360deg); } }
+    /* Anneaux concentriques. */
+    #splash .sp-ring { position: absolute; border: 1px solid rgba(150,190,255,.20); border-radius: 50%; pointer-events: none; }
+    #splash .sp-ring.r1 { width: 190px; height: 190px; }
+    #splash .sp-ring.r2 { width: 290px; height: 290px; }
+    #splash .sp-ring.r3 { width: 400px; height: 400px; border-color: rgba(150,190,255,.12); }
+    .splash-inner { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 24px; }
+    .splash-logo-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
+    .splash-halo { position: absolute; width: 150px; height: 150px; border-radius: 34px; box-shadow: 0 0 60px 10px rgba(88,158,255,.45); }
     .splash-logo {
-      width: 116px; height: 116px; border-radius: 28px; background: #fff; padding: 14px;
-      object-fit: contain; box-shadow: 0 24px 60px -18px rgba(0,0,0,.55);
-      animation: splashPulse 1.7s ease-in-out infinite;
+      width: 118px; height: 118px; border-radius: 30px; background: #fff; padding: 14px; position: relative;
+      object-fit: contain; box-shadow: 0 28px 70px -18px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.16);
+      animation: splashPulse 2.4s ease-in-out infinite;
     }
     .splash-name {
-      color: #fff; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      font-weight: 800; letter-spacing: .14em; font-size: .92rem; opacity: .94; text-align: center;
+      display: flex; gap: .02em; color: #fff; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-weight: 800; letter-spacing: .17em; font-size: .95rem; text-align: center;
     }
-    .splash-bar { width: 168px; height: 4px; border-radius: 999px; background: rgba(255,255,255,.18); overflow: hidden; }
-    .splash-bar > span { display: block; height: 100%; width: 42%; border-radius: 999px; background: #e8504d; animation: splashSlide 1.15s ease-in-out infinite; }
-    @keyframes splashPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-    @keyframes splashSlide { 0% { margin-left: -42%; } 100% { margin-left: 100%; } }
-    @media (prefers-reduced-motion: reduce) { .splash-logo, .splash-bar > span { animation: none; } }
+    .splash-name span { display: inline-block; }
+    .splash-name .sp-space { width: .5em; }
+    .splash-sub { color: rgba(214,230,255,.72); font-size: .68rem; letter-spacing: .34em; font-weight: 600; }
+    .splash-bar { width: 190px; height: 4px; border-radius: 999px; background: rgba(255,255,255,.15); overflow: hidden; }
+    .splash-bar > span { display: block; height: 100%; width: 40%; border-radius: 999px; background: linear-gradient(90deg, #e8504d, #ff8f63); box-shadow: 0 0 14px rgba(232,80,77,.7); animation: splashSlide 1.15s ease-in-out infinite; }
+    @keyframes splashPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    @keyframes splashSlide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+    /* Quand GSAP prend la main, on lui laisse le logo (le float remplace le pulse). */
+    #splash.gsap .splash-logo { animation: none; }
+    @media (prefers-reduced-motion: reduce) { #splash .sp-radar, #splash .sp-grid, .splash-logo, .splash-bar > span { animation: none; } }
   </style>
   <link rel="stylesheet" href="/css/styles.css" />
   <link rel="icon" href="/img/icon-192.png" />
@@ -48,9 +78,20 @@
   <!-- Splash d'ouverture façon application : logo de l'entreprise pendant que
        le portail se charge en arrière-plan. Retiré dès que l'app a rendu. -->
   <div id="splash" role="status" aria-label="Chargement de l'application">
+    <div class="sp-grid"></div>
+    <div class="sp-radar"></div>
+    <div class="sp-ring r1"></div>
+    <div class="sp-ring r2"></div>
+    <div class="sp-ring r3"></div>
     <div class="splash-inner">
-      <img src="/img/icon-512.png" alt="Inter Colis Services" class="splash-logo" />
-      <div class="splash-name">INTER COLIS SERVICES</div>
+      <div class="splash-logo-wrap">
+        <div class="splash-halo"></div>
+        <img src="/img/icon-512.png" alt="Inter Colis Services" class="splash-logo" />
+      </div>
+      <div class="splash-name" aria-label="INTER COLIS SERVICES">
+        <span>I</span><span>N</span><span>T</span><span>E</span><span>R</span><span class="sp-space"></span><span>C</span><span>O</span><span>L</span><span>I</span><span>S</span><span class="sp-space"></span><span>S</span><span>E</span><span>R</span><span>V</span><span>I</span><span>C</span><span>E</span><span>S</span>
+      </div>
+      <div class="splash-sub">PORTAIL&nbsp;RH&nbsp;·&nbsp;EXPLOITATION</div>
       <div class="splash-bar"><span></span></div>
     </div>
   </div>
@@ -68,11 +109,15 @@
       var MIN_MS = 2200;            // durée minimale d'affichage (mise en cache)
       var appReady = false;
       var swReady = !('serviceWorker' in navigator); // si pas de SW : non bloquant
+      function removeSplash() { var s = document.getElementById('splash'); if (s && s.parentNode) s.parentNode.removeChild(s); }
       function doHide() {
         var s = document.getElementById('splash');
-        if (!s || s.classList.contains('hide')) return;
+        if (!s || s.__exiting || s.classList.contains('hide')) return;
+        s.__exiting = true;
+        // Sortie animée via GSAP si disponible, sinon simple fondu CSS.
+        if (typeof window.__splashExit === 'function') { try { window.__splashExit(s, removeSplash); return; } catch (e) {} }
         s.classList.add('hide');
-        setTimeout(function () { if (s && s.parentNode) s.parentNode.removeChild(s); }, 650);
+        setTimeout(removeSplash, 650);
       }
       function tryHide() {
         if (!appReady || !swReady) return;
@@ -98,6 +143,48 @@
   <script src="/js/reglement.js"></script>
   <script src="/vendor/gsap/gsap.min.js"></script>
   <script src="/js/anim.js"></script>
+  <script>
+    // Mise en scène « techno » de l'écran de démarrage avec GSAP (si présent et
+    // hors mode réduction d'animations). L'intro se joue immédiatement ; la
+    // sortie est confiée à window.__splashExit (appelée par doHide).
+    (function () {
+      var s = document.getElementById('splash');
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (!s || !window.gsap || reduce) return;
+      try {
+        s.classList.add('gsap');
+        gsap.set(s.querySelectorAll('.splash-logo'), { transformPerspective: 600 });
+        var tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
+        tl.from('#splash .sp-radar', { opacity: 0, scale: .6, duration: 1 }, 0)
+          .from('#splash .sp-ring', { opacity: 0, scale: .3, duration: .9, stagger: .12 }, 0)
+          .from('#splash .splash-halo', { opacity: 0, scale: .5, duration: .8 }, .15)
+          .from('#splash .splash-logo', { opacity: 0, scale: .5, rotationY: -85, duration: .95, ease: 'back.out(1.5)' }, .2)
+          .from('#splash .splash-name span', { opacity: 0, y: 22, rotationX: -50, duration: .5, stagger: .028 }, '-=.45')
+          .from('#splash .splash-sub', { opacity: 0, y: 8, letterSpacing: '.6em', duration: .5 }, '-=.25')
+          .from('#splash .splash-bar', { opacity: 0, scaleX: .3, transformOrigin: 'left center', duration: .5 }, '-=.35');
+        // Ambiances continues (flottement du logo + respiration du halo).
+        gsap.to('#splash .splash-logo', { y: -9, duration: 1.9, ease: 'sine.inOut', yoyo: true, repeat: -1, delay: 1.1 });
+        gsap.to('#splash .splash-halo', { opacity: .55, scale: 1.08, duration: 1.7, ease: 'sine.inOut', yoyo: true, repeat: -1 });
+
+        // Sortie : « décollage » du logo, anneaux qui s'ouvrent, fondu + flou.
+        window.__splashExit = function (splash, done) {
+          try {
+            // Stoppe l'intro et les ambiances encore en cours pour une sortie nette.
+            if (tl) tl.kill();
+            gsap.killTweensOf('#splash .splash-logo, #splash .splash-halo, #splash .splash-name span, #splash .sp-ring, #splash .sp-radar, #splash .splash-sub, #splash .splash-bar');
+            var out = gsap.timeline({ onComplete: done });
+            out.to('#splash .splash-name span', { opacity: 0, y: -14, stagger: .02, duration: .28, ease: 'power2.in' }, 0)
+               .to('#splash .splash-sub, #splash .splash-bar', { opacity: 0, duration: .22 }, 0)
+               .to('#splash .sp-ring', { scale: 1.7, opacity: 0, duration: .55, stagger: .05, ease: 'power2.out' }, 0)
+               .to('#splash .sp-radar', { opacity: 0, duration: .4 }, 0)
+               .to('#splash .splash-logo', { scale: 1.4, opacity: 0, duration: .55, ease: 'power2.in' }, .06)
+               .to('#splash .splash-halo', { opacity: 0, scale: 1.5, duration: .5 }, .06)
+               .to(splash, { opacity: 0, duration: .5, ease: 'power2.inOut', onStart: function () { splash.style.filter = 'blur(6px)'; } }, .18);
+          } catch (e) { if (done) done(); }
+        };
+      } catch (e) { /* dégradation : l'écran reste en CSS pur */ }
+    })();
+  </script>
   <script src="/js/app.js"></script>
   <script src="/js/geoloc.js"></script>
   <script>

@@ -35,10 +35,32 @@
     },
     // Transition d'entrée du conteneur principal à chaque changement de vue.
     view: function (main) {
-      // Fondu court du conteneur (sans translation, pour ne pas se cumuler avec
-      // la cascade des cartes qui, elles, montent).
+      // Transition de page « slide » : le contenu glisse depuis la droite en
+      // fondu. Les cartes, elles, montent (axe Y) → mouvements complémentaires.
       if (!ON || !main) return;
-      try { gsap.fromTo(main, { opacity: 0 }, { opacity: 1, duration: .28, ease: 'power2.out' }); } catch (e) {}
+      try { gsap.fromTo(main, { opacity: 0, x: 26 }, { opacity: 1, x: 0, duration: .42, ease: 'power3.out', clearProps: 'transform' }); } catch (e) {}
+    },
+    // Parallaxe subtile du bandeau d'accueil : les couches suivent le pointeur.
+    heroParallax: function (scope) {
+      if (!ON) return;
+      var hero = (scope || document).querySelector('.dash-hero'); if (!hero || hero.__px) return; hero.__px = 1;
+      var txt = hero.querySelector('.dash-hero-text'), act = hero.querySelector('.dash-hero-actions');
+      hero.addEventListener('pointermove', function (e) {
+        var r = hero.getBoundingClientRect(); var dx = (e.clientX - r.left) / r.width - .5, dy = (e.clientY - r.top) / r.height - .5;
+        try { gsap.to(txt, { x: dx * 18, y: dy * 10, duration: .5, ease: 'power2.out' }); gsap.to(act, { x: dx * -14, y: dy * -8, duration: .5, ease: 'power2.out' }); } catch (e2) {}
+      });
+      hero.addEventListener('pointerleave', function () { try { gsap.to([txt, act], { x: 0, y: 0, duration: .6, ease: 'power3.out' }); } catch (e2) {} });
+    },
+    // Planning : apparition en cascade des cellules du calendrier (jour, semaine,
+    // mois, année, agenda). Rejoué à chaque changement de mois / de vue.
+    planning: function (scope) {
+      if (!ON) return;
+      var g = scope || document.getElementById('cal-grid'); if (!g) return;
+      try {
+        var cells = g.querySelectorAll('.ioscell, .iosweek-strip > *, .iosday--solo, .agenda-item, .year-grid .cell, .month-grid .cell, .iosev');
+        if (!cells.length) return;
+        gsap.from(cells, { opacity: 0, y: 14, scale: .96, duration: .4, ease: 'power2.out', stagger: { amount: .5, from: 'start' }, clearProps: 'transform,opacity' });
+      } catch (e) {}
     },
     // Bandeau d'accueil : titre, horloge et raccourcis en cascade.
     hero: function (scope) {

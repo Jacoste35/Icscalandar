@@ -979,7 +979,7 @@ async function renderDashboard(main) {
       </div>
     </section>
     <div id="dash-body" class="empty">Chargement…</div>`;
-  if (window.ICSAnim && ICSAnim.on) ICSAnim.hero(main);
+  if (window.ICSAnim && ICSAnim.on) { ICSAnim.hero(main); ICSAnim.heroParallax(main); }
   startDashClock();
   main.querySelectorAll('[data-herov]').forEach((b) => b.onclick = () => { State.view = b.dataset.herov; renderApp(); });
   const heroLeave = main.querySelector('#hero-leave'); if (heroLeave) heroLeave.onclick = () => openRequestModal();
@@ -2392,6 +2392,8 @@ function drawCalendar() {
   });
   // Suppression d'une absence par l'administrateur (toutes vues).
   bindCalDelete(grid);
+  // Apparition en cascade des cellules du planning.
+  if (window.ICSAnim && ICSAnim.on) ICSAnim.planning(grid);
 }
 
 // Boutons de suppression d'absence (admin) dans un conteneur donné du calendrier.
