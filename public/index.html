@@ -55,6 +55,10 @@
     #splash .sp-truck svg { display: block; }
     /* Trace laissée derrière le camion (route en pointillés). */
     #splash .sp-trail { position: absolute; left: 0; top: 0; height: 0; margin-top: -1px; border-top: 2px dashed rgba(160,200,255,.55); border-radius: 2px; transform-origin: 0% 50%; pointer-events: none; z-index: 1; }
+    /* Toile 3D (Three.js) : fond animé sous le logo. */
+    #splash .sp-3d { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; display: block; }
+    /* En mode 3D, on masque le décor 2D (radar / anneaux / grille) pour ne pas surcharger. */
+    #splash.three .sp-radar, #splash.three .sp-ring, #splash.three .sp-grid { display: none; }
     .splash-inner { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 24px; }
     .splash-logo-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
     .splash-halo { position: absolute; width: 150px; height: 150px; border-radius: 34px; box-shadow: 0 0 60px 10px rgba(88,158,255,.45); }
@@ -156,6 +160,8 @@
   <script src="/js/anim.js"></script>
   <script src="/vendor/lottie/lottie_light.min.js"></script>
   <script src="/js/lottie-anim.js"></script>
+  <script src="/vendor/three/three.min.js"></script>
+  <script src="/js/splash3d.js"></script>
   <script>
     // Mise en scène « techno » de l'écran de démarrage avec GSAP (si présent et
     // hors mode réduction d'animations). L'intro se joue immédiatement ; la
@@ -188,7 +194,11 @@
           + '<rect x="35" y="13" width="7" height="6" rx="1" fill="#14427e"/>'
           + '<circle cx="12" cy="27" r="4.5" fill="#0b1f3a" stroke="currentColor" stroke-width="2"/>'
           + '<circle cx="40" cy="27" r="4.5" fill="#0b1f3a" stroke="currentColor" stroke-width="2"/></svg>';
-        var wrap = document.querySelector('#splash .splash-logo-wrap');
+        // Scène 3D (Three.js) en toile de fond si possible ; sinon on retombe
+        // sur les camions 2D (GSAP) ci-dessous.
+        var use3d = false;
+        try { use3d = !!(window.ICS3D && window.ICS3D.startSplash(s)); } catch (e3d) { use3d = false; }
+        var wrap = !use3d && document.querySelector('#splash .splash-logo-wrap');
         if (wrap) {
           var host = document.createElement('div'); host.className = 'sp-trucks'; wrap.appendChild(host);
           // Distance depuis le bord de l'écran jusqu'au logo (centre).
@@ -228,6 +238,10 @@
         // Sortie : « décollage » du logo, anneaux qui s'ouvrent, fondu + flou.
         window.__splashExit = function (splash, done) {
           try {
+            // Arrête proprement la scène 3D (si active) à la fin de la sortie.
+            var origDone = done;
+            done = function () { try { if (window.ICS3D) window.ICS3D.stop(); } catch (e) {} origDone(); };
+            gsap.to('#splash .sp-3d', { opacity: 0, duration: 0.4 });
             // Stoppe l'intro et les ambiances encore en cours pour une sortie nette.
             if (tl) tl.kill();
             gsap.killTweensOf('#splash .splash-logo, #splash .splash-halo, #splash .splash-name span, #splash .sp-ring, #splash .sp-radar, #splash .splash-sub, #splash .splash-bar, #splash .sp-truck, #splash .sp-trail');
