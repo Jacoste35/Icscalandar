@@ -51,8 +51,10 @@
     /* Petits camions qui tournent autour du logo (créés par GSAP). */
     #splash .sp-trucks { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; z-index: 3; }
     #splash .sp-orbit { position: absolute; left: 0; top: 0; width: 0; height: 0; }
-    #splash .sp-truck { position: absolute; left: 0; top: 0; margin: -9px 0 0 -13px; color: #eaf2ff; filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
+    #splash .sp-truck { position: absolute; left: 0; top: 0; margin: -9px 0 0 -13px; color: #eaf2ff; filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)); z-index: 2; }
     #splash .sp-truck svg { display: block; }
+    /* Trace laissée derrière le camion (route en pointillés). */
+    #splash .sp-trail { position: absolute; left: 0; top: 0; height: 0; margin-top: -1px; border-top: 2px dashed rgba(160,200,255,.55); border-radius: 2px; transform-origin: 0% 50%; pointer-events: none; z-index: 1; }
     .splash-inner { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 24px; }
     .splash-logo-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
     .splash-halo { position: absolute; width: 150px; height: 150px; border-radius: 34px; box-shadow: 0 0 60px 10px rgba(88,158,255,.45); }
@@ -77,7 +79,11 @@
     @media (prefers-reduced-motion: reduce) { #splash .sp-radar, #splash .sp-grid, .splash-logo, .splash-bar > span { animation: none; } }
   </style>
   <link rel="stylesheet" href="/css/styles.css" />
-  <link rel="icon" href="/img/icon-192.png" />
+  <link rel="icon" href="/img/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/img/favicon-16x16.png" />
+  <link rel="icon" type="image/png" sizes="96x96" href="/img/favicon-96x96.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/img/icon-192.png" />
 </head>
 <body>
   <!-- Splash d'ouverture façon application : logo de l'entreprise pendant que
@@ -185,24 +191,28 @@
         var wrap = document.querySelector('#splash .splash-logo-wrap');
         if (wrap) {
           var host = document.createElement('div'); host.className = 'sp-trucks'; wrap.appendChild(host);
-          // Distance à parcourir pour bien sortir de l'écran depuis le centre.
+          // Distance à parcourir pour sortir de l'écran.
           var D = Math.round(Math.max(window.innerWidth, window.innerHeight) * 0.72) + 120;
-          // Directions réparties tout autour (livraisons qui partent en étoile).
-          var ANGLES = [0, 45, 90, 135, 180, 225, 270, 315];
+          var OY = 66; // point de départ : juste EN DESSOUS du logo
+          // Directions vers les bords (bas + côtés + coins), en éventail.
+          var ANGLES = [0, 45, 90, 135, 180, 225, 315];
           ANGLES.forEach(function (deg, i) {
-            var truck = document.createElement('div'); truck.className = 'sp-truck'; truck.innerHTML = TRUCK_SVG;
-            host.appendChild(truck);
             var rad = deg * Math.PI / 180;
-            var dx = Math.cos(rad) * D, dy = Math.sin(rad) * D;
-            var dur = 2.0 + (i % 3) * 0.35;
-            // Le camion démarre au centre du logo, part vers le bord en accélérant,
-            // orienté dans son sens de marche, puis recommence (flux continu).
-            var t = gsap.timeline({ repeat: -1, delay: 0.5 + i * 0.28, repeatDelay: (ANGLES.length * 0.28) - dur > 0 ? 0 : 0.3 });
-            t.fromTo(truck,
-              { x: 0, y: 0, opacity: 0, scale: 0.25, rotation: deg },
-              { opacity: 1, scale: 1, duration: 0.35, ease: 'power1.out' })
-             .to(truck, { x: dx, y: dy, duration: dur, ease: 'power1.in' }, 0)
-             .to(truck, { opacity: 0, duration: 0.5, ease: 'power1.in' }, dur - 0.35);
+            var ex = Math.cos(rad) * D, ey = OY + Math.sin(rad) * D;
+            var dur = 5.0 + (i % 3) * 0.9; // déplacement LENT
+            var truck = document.createElement('div'); truck.className = 'sp-truck'; truck.innerHTML = TRUCK_SVG;
+            var trail = document.createElement('div'); trail.className = 'sp-trail';
+            host.appendChild(trail); host.appendChild(truck);
+            // Le camion sort de sous le logo, roule doucement vers le bord en
+            // laissant derrière lui une route en pointillés qui se dessine.
+            var t = gsap.timeline({ repeat: -1, delay: 0.6 + i * 0.7 });
+            t.set(truck, { x: 0, y: OY, rotation: deg, opacity: 0, scale: 0.4 })
+             .set(trail, { x: 0, y: OY, rotation: deg, width: 0, opacity: 0.55 })
+             .to(truck, { opacity: 1, scale: 1, duration: 0.5, ease: 'power1.out' }, 0)
+             .to(truck, { x: ex, y: ey, duration: dur, ease: 'power1.inOut' }, 0)
+             .to(trail, { width: D, duration: dur, ease: 'power1.inOut' }, 0)
+             .to(truck, { opacity: 0, duration: 0.7, ease: 'power1.in' }, dur - 0.6)
+             .to(trail, { opacity: 0, duration: 0.9, ease: 'power1.in' }, dur - 0.4);
           });
         }
 
@@ -211,7 +221,7 @@
           try {
             // Stoppe l'intro et les ambiances encore en cours pour une sortie nette.
             if (tl) tl.kill();
-            gsap.killTweensOf('#splash .splash-logo, #splash .splash-halo, #splash .splash-name span, #splash .sp-ring, #splash .sp-radar, #splash .splash-sub, #splash .splash-bar, #splash .sp-truck');
+            gsap.killTweensOf('#splash .splash-logo, #splash .splash-halo, #splash .splash-name span, #splash .sp-ring, #splash .sp-radar, #splash .splash-sub, #splash .splash-bar, #splash .sp-truck, #splash .sp-trail');
             gsap.to('#splash .sp-trucks', { opacity: 0, duration: .3 });
             var out = gsap.timeline({ onComplete: done });
             out.to('#splash .splash-name span', { opacity: 0, y: -14, stagger: .02, duration: .28, ease: 'power2.in' }, 0)
