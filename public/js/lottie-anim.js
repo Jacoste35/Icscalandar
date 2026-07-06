@@ -53,6 +53,46 @@
         this.mount(scope, scope.getAttribute('data-lottie'), { loop: scope.getAttribute('data-lottie-loop') !== '0' });
       }
     },
+    // Animation PLEIN ÉCRAN de confirmation (gros check, croix, sablier…) jouée
+    // après une action importante. Fond translucide, texte optionnel, fermeture
+    // automatique à la fin (ou au clic). Repli propre si Lottie indisponible.
+    //   name : 'validate' | 'error' | 'pending' | 'success' | …
+    //   opts : { text, hold, sub }
+    celebrate: function (name, opts) {
+      opts = (typeof opts === 'string') ? { text: opts } : (opts || {});
+      name = name || 'validate';
+      var ov = document.createElement('div'); ov.className = 'lt-celebrate';
+      var box = document.createElement('div'); box.className = 'lt-cel-box';
+      var host = document.createElement('div'); host.className = 'lt-cel-anim';
+      box.appendChild(host);
+      if (opts.text) { var t = document.createElement('div'); t.className = 'lt-cel-text'; t.textContent = opts.text; box.appendChild(t); }
+      if (opts.sub) { var sub = document.createElement('div'); sub.className = 'lt-cel-sub'; sub.textContent = opts.sub; box.appendChild(sub); }
+      ov.appendChild(box); document.body.appendChild(ov);
+      requestAnimationFrame(function () { ov.classList.add('show'); });
+      var closed = false;
+      function close() {
+        if (closed) return; closed = true;
+        ov.classList.remove('show');
+        setTimeout(function () { try { if (host.__lotAnim && host.__lotAnim.destroy) host.__lotAnim.destroy(); } catch (e) {} if (ov.parentNode) ov.parentNode.removeChild(ov); }, 280);
+      }
+      ov.addEventListener('click', close);
+      var hold = opts.hold != null ? opts.hold : 850;
+      if (this.on && window.lottie) {
+        load(name).then(function (data) {
+          if (!data) { host.innerHTML = '<div class="lt-cel-fallback">✓</div>'; setTimeout(close, 1400); return; }
+          try {
+            var a = window.lottie.loadAnimation({ container: host, renderer: 'svg', loop: false, autoplay: true, animationData: data });
+            host.__lotAnim = a;
+            a.addEventListener('complete', function () { setTimeout(close, hold); });
+          } catch (e) { setTimeout(close, 1400); }
+        });
+      } else {
+        host.innerHTML = '<div class="lt-cel-fallback">✓</div>';
+        setTimeout(close, 1400);
+      }
+      setTimeout(close, opts.max || 4500); // filet de sécurité
+      return close;
+    },
     // Détruit proprement les animations d'un scope (avant retrait du DOM).
     unmount: function (scope) {
       if (!scope || !scope.querySelectorAll) return;
@@ -62,6 +102,8 @@
     },
   };
   window.ICSLottie = ICSLottie;
+  // Raccourci global : celebrate('validate', 'Texte') depuis n'importe où.
+  window.celebrate = function (name, opts) { try { return ICSLottie.celebrate(name, opts); } catch (e) { return function () {}; } };
 
   if (ICSLottie.on) {
     var scanAll = function () { try { ICSLottie.scan(document); } catch (e) {} };
