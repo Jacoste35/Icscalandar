@@ -198,8 +198,12 @@
           ANGLES.forEach(function (deg, i) {
             var rad = deg * Math.PI / 180;
             var sx = Math.cos(rad) * D, sy = Math.sin(rad) * D;  // départ : bord de l'écran
-            var face = deg + 180;                                 // orienté vers le centre
-            var dur = 5.0 + (i % 3) * 0.9;                        // déplacement LENT
+            // Vue de profil : le camion reste TOUJOURS debout ; il regarde
+            // simplement vers la gauche ou la droite selon son sens de marche (on
+            // le MIROIR, on ne le retourne jamais sur le dos).
+            var vx = Math.cos((deg + 180) * Math.PI / 180); // composante horizontale du déplacement
+            var flip = vx < -0.01 ? -1 : 1;                  // -1 = regarde à gauche
+            var dur = 5.0 + (i % 3) * 0.9;                   // déplacement LENT
             var truck = document.createElement('div'); truck.className = 'sp-truck'; truck.innerHTML = TRUCK_SVG;
             var trail = document.createElement('div'); trail.className = 'sp-trail';
             host.appendChild(trail); host.appendChild(truck);
@@ -207,13 +211,14 @@
             // (immediateRender), sinon, pendant le délai de départ, ils resteraient
             // empilés au centre (bug « un seul camion fixe au milieu »).
             var t = gsap.timeline({ repeat: -1, delay: 0.4 + i * 0.32 });
-            // Trajet : bord de l'écran -> centre (logo).
-            t.fromTo(truck, { x: sx, y: sy, rotation: face },
+            // Trajet : bord de l'écran -> centre (logo). scaleX = sens de marche.
+            t.fromTo(truck, { x: sx, y: sy, scaleX: flip, rotation: 0 },
                              { x: 0, y: 0, duration: dur, ease: 'power1.inOut', immediateRender: true }, 0)
              // Apparition puis disparition en arrivant.
              .fromTo(truck, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: 'power1.out', immediateRender: true }, 0)
-             // Route en pointillés qui se dessine derrière le camion.
-             .fromTo(trail, { x: sx, y: sy, rotation: face, width: 0, opacity: 0.55 },
+             // Route en pointillés qui se dessine derrière le camion (de son
+             // point d'entrée vers le centre) — orientée selon le trajet.
+             .fromTo(trail, { x: sx, y: sy, rotation: deg + 180, width: 0, opacity: 0.55 },
                             { width: D, duration: dur, ease: 'power1.inOut', immediateRender: true }, 0)
              .to(truck, { opacity: 0, duration: 0.7, ease: 'power1.in' }, dur - 0.6)
              .to(trail, { opacity: 0, duration: 0.9, ease: 'power1.in' }, dur - 0.4);
