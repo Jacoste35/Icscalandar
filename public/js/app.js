@@ -2237,7 +2237,8 @@ async function adminAssignModal(prefillDate, prefillUserId) {
             immediate: f.immediate ? f.immediate.checked : true,
           });
           closeModal();
-          toast(r.pendingValidation ? 'Saisie enregistrée — en attente de validation.' : 'Absence attribuée au calendrier.', 'ok');
+          if (window.celebrate) celebrate(r.pendingValidation ? 'pending' : 'validate', r.pendingValidation ? { text: 'Saisie enregistrée', sub: 'En attente de validation' } : { text: 'Absence attribuée !', sub: 'Ajoutée au calendrier' });
+          else toast(r.pendingValidation ? 'Saisie enregistrée — en attente de validation.' : 'Absence attribuée au calendrier.', 'ok');
           if (State.view === 'calendar') renderCalendar(document.getElementById('main'));
           if (State.view === 'absmgmt') renderAbsenceManagement(document.getElementById('main'));
         } catch (e) { toast(e.message, 'err'); }
@@ -3013,7 +3014,9 @@ async function openRequestModal(prefill) {
           await api('POST', '/requests', { category: f.category.value, pool: f.pool.value || null, startDate: f.startDate.value, endDate: f.endDate.value, reason: f.reason.value, fractionnement: f.fractionnement ? f.fractionnement.value : null });
           // Modification : on supprime l'ancienne demande après la nouvelle.
           if (prefill && prefill.id) { try { await api('DELETE', '/requests/' + prefill.id); } catch (e2) {} }
-          closeModal(); toast(prefill ? 'Nouvelle demande envoyée — l\'ancienne a été remplacée.' : 'Demande envoyée à l\'administrateur.', 'ok');
+          closeModal();
+          if (window.celebrate) celebrate('validate', { text: prefill ? 'Demande remplacée !' : 'Demande de congés envoyée !', sub: 'En attente de validation' });
+          else toast(prefill ? 'Nouvelle demande envoyée — l\'ancienne a été remplacée.' : 'Demande envoyée à l\'administrateur.', 'ok');
           const main = document.getElementById('main');
           if (State.view === 'requests') renderRequests(main);
           else if (State.view === 'dashboard') renderDashboard(main);
@@ -3471,7 +3474,8 @@ async function renderMyVehicle(main) {
       if (!payload.vehicleId) { toast('Choisissez votre véhicule.', 'err'); return; }
       try {
         await api('POST', '/vehicles/report', payload);
-        toast('Signalement envoyé. Merci !', 'ok');
+        if (window.celebrate) celebrate('validate', { text: 'Signalement envoyé !', sub: 'Merci, l\'atelier est informé' });
+        else toast('Signalement envoyé. Merci !', 'ok');
         renderMyVehicle(main);
       } catch (e) { toast(e.message, 'err'); }
     };
@@ -3925,7 +3929,12 @@ function vehTabPending(body) {
     const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
     const resolutions = rep && rep.issues ? rep.issues.map((i) => ({ issue: i, done: !!body.querySelector(`.vr-res[data-rep="${id}"][data-issue="${cssEsc(i)}"]`)?.checked })) : [];
     const checkup = REPAIR_CHECKUP.map((c) => ({ label: c, ok: !!body.querySelector(`.ro-chk[data-rep="${id}"][data-c="${cssEsc(c)}"]`)?.checked }));
-    try { await api('POST', '/admin/vehicle-reports/' + id + '/decide', Object.assign({ decision, adminNote: note, resolutions, checkup }, extra)); await loadFleet(); vehTab('pending'); toast('Mis à jour. Le chauffeur est informé.', 'ok'); }
+    try {
+      await api('POST', '/admin/vehicle-reports/' + id + '/decide', Object.assign({ decision, adminNote: note, resolutions, checkup }, extra));
+      await loadFleet(); vehTab('pending');
+      if (window.celebrate) celebrate('validate', { text: 'Rapport traité !', sub: 'Le chauffeur est informé' });
+      else toast('Mis à jour. Le chauffeur est informé.', 'ok');
+    }
     catch (e) { toast(e.message, 'err'); }
   };
   body.querySelectorAll('[data-decide]').forEach((b) => b.onclick = () => collectAndDecide(b.dataset.decide, b.dataset.d));
@@ -4045,7 +4054,8 @@ function vehTabTour(body) {
         km: _tour.km, driverId: _tour.driverId, note: _tour.note, checks, impacts: _tour.impacts,
       });
       _tour = { vehicleId: _tour.vehicleId, driverId: '', km: '', note: '', checks: {}, impacts: [] };
-      toast('Tour du véhicule enregistré.', 'ok');
+      if (window.celebrate) celebrate('validate', { text: 'Tour enregistré !', sub: 'Contrôle du véhicule sauvegardé' });
+      else toast('Tour du véhicule enregistré.', 'ok');
       await loadFleet(); vehTab('tour');
     } catch (e) { toast(e.message, 'err'); }
   };
@@ -5076,7 +5086,8 @@ async function docMgmtGen(main) {
     if (!confirm(ask)) return;
     try {
       const res = await api('POST', '/admin/erp/documents/issue', { userId: uid, type: r.type, html: r.html, label: r.label, vars: { motif: effMotif() } });
-      toast(res && res.pending ? 'Document soumis à l\'administrateur pour validation.' : 'Document adressé au salarié.', 'ok');
+      if (window.celebrate) celebrate(res && res.pending ? 'pending' : 'validate', res && res.pending ? { text: 'Soumis à l\'administrateur', sub: 'En attente de validation' } : { text: 'Document envoyé !', sub: 'Le salarié est notifié' });
+      else toast(res && res.pending ? 'Document soumis à l\'administrateur pour validation.' : 'Document adressé au salarié.', 'ok');
       renderDocMgmt(main);
     } catch (e) { toast(e.message, 'err'); }
   };
@@ -8155,7 +8166,12 @@ async function adminReqs(body) {
     const [id, decision] = btn.dataset.decide.split('|');
     let note = '';
     if (decision === 'rejected') { note = prompt('Motif du refus (facultatif) :') || ''; }
-    try { await api('POST', `/admin/requests/${id}/decide`, { decision, adminNote: note }); toast(decision==='approved'?'Demande validée, solde mis à jour.':'Demande refusée.', 'ok'); refreshAdminBadge(); adminReqs(body); }
+    try {
+      await api('POST', `/admin/requests/${id}/decide`, { decision, adminNote: note });
+      if (window.celebrate) celebrate(decision === 'approved' ? 'validate' : 'error', decision === 'approved' ? { text: 'Demande validée !', sub: 'Solde mis à jour' } : { text: 'Demande refusée', hold: 650 });
+      else toast(decision==='approved'?'Demande validée, solde mis à jour.':'Demande refusée.', 'ok');
+      refreshAdminBadge(); adminReqs(body);
+    }
     catch (e) {
       // Conflit de remplaçant : popup bloquant, on ne valide pas.
       if (/deux endroits|disponible/i.test(e.message)) alert('⛔ ' + e.message);

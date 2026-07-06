@@ -1,7 +1,7 @@
 /* Service worker — coquille hors-ligne + accélération du chargement.
    Règle d'or : on ne met JAMAIS en cache les réponses /api (authentifiées,
    changeantes) ni les requêtes non-GET. Le réseau reste la source de vérité. */
-const VERSION = 'ics-v79';
+const VERSION = 'ics-v80';
 const CORE = [
   '/',
   '/index.html',
@@ -15,6 +15,9 @@ const CORE = [
   '/vendor/lottie/lottie_light.min.js',
   '/anim/loader.json',
   '/anim/success.json',
+  '/anim/validate.json',
+  '/anim/error.json',
+  '/anim/pending.json',
   '/vendor/leaflet/leaflet.js',
   '/vendor/leaflet/leaflet.css',
   '/img/logo.png',
