@@ -191,25 +191,26 @@
         var wrap = document.querySelector('#splash .splash-logo-wrap');
         if (wrap) {
           var host = document.createElement('div'); host.className = 'sp-trucks'; wrap.appendChild(host);
-          // Distance à parcourir pour sortir de l'écran.
+          // Distance depuis le bord de l'écran jusqu'au logo (centre).
           var D = Math.round(Math.max(window.innerWidth, window.innerHeight) * 0.72) + 120;
-          var OY = 66; // point de départ : juste EN DESSOUS du logo
-          // Directions vers les bords (bas + côtés + coins), en éventail.
-          var ANGLES = [0, 45, 90, 135, 180, 225, 315];
+          // Directions d'arrivée depuis tous les bords (les camions convergent).
+          var ANGLES = [0, 45, 90, 135, 180, 225, 270, 315];
           ANGLES.forEach(function (deg, i) {
             var rad = deg * Math.PI / 180;
-            var ex = Math.cos(rad) * D, ey = OY + Math.sin(rad) * D;
-            var dur = 5.0 + (i % 3) * 0.9; // déplacement LENT
+            var sx = Math.cos(rad) * D, sy = Math.sin(rad) * D;  // départ : bord de l'écran
+            var face = deg + 180;                                 // orienté vers le centre
+            var dur = 5.0 + (i % 3) * 0.9;                        // déplacement LENT
             var truck = document.createElement('div'); truck.className = 'sp-truck'; truck.innerHTML = TRUCK_SVG;
             var trail = document.createElement('div'); trail.className = 'sp-trail';
             host.appendChild(trail); host.appendChild(truck);
-            // Le camion sort de sous le logo, roule doucement vers le bord en
-            // laissant derrière lui une route en pointillés qui se dessine.
-            var t = gsap.timeline({ repeat: -1, delay: 0.6 + i * 0.7 });
-            t.set(truck, { x: 0, y: OY, rotation: deg, opacity: 0, scale: 0.4 })
-             .set(trail, { x: 0, y: OY, rotation: deg, width: 0, opacity: 0.55 })
-             .to(truck, { opacity: 1, scale: 1, duration: 0.5, ease: 'power1.out' }, 0)
-             .to(truck, { x: ex, y: ey, duration: dur, ease: 'power1.inOut' }, 0)
+            // Le camion entre par le bord, roule doucement vers le logo et laisse
+            // derrière lui une route en pointillés qui se dessine, puis s'efface
+            // en arrivant au centre.
+            var t = gsap.timeline({ repeat: -1, delay: 0.6 + i * 0.6 });
+            t.set(truck, { x: sx, y: sy, rotation: face, opacity: 0, scale: 0.55 })
+             .set(trail, { x: sx, y: sy, rotation: face, width: 0, opacity: 0.55 })
+             .to(truck, { opacity: 1, duration: 0.5, ease: 'power1.out' }, 0)
+             .to(truck, { x: 0, y: 0, scale: 0.85, duration: dur, ease: 'power1.inOut' }, 0)
              .to(trail, { width: D, duration: dur, ease: 'power1.inOut' }, 0)
              .to(truck, { opacity: 0, duration: 0.7, ease: 'power1.in' }, dur - 0.6)
              .to(trail, { opacity: 0, duration: 0.9, ease: 'power1.in' }, dur - 0.4);
