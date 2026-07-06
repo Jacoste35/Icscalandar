@@ -1,7 +1,7 @@
 /* Service worker — coquille hors-ligne + accélération du chargement.
    Règle d'or : on ne met JAMAIS en cache les réponses /api (authentifiées,
    changeantes) ni les requêtes non-GET. Le réseau reste la source de vérité. */
-const VERSION = 'ics-v83';
+const VERSION = 'ics-v84';
 const CORE = [
   '/',
   '/index.html',
@@ -24,6 +24,11 @@ const CORE = [
   '/img/logo.svg',
   '/img/icon-192.png',
   '/img/icon-512.png',
+  '/img/apple-touch-icon.png',
+  '/img/favicon.ico',
+  '/img/favicon-16x16.png',
+  '/img/favicon-32x32.png',
+  '/img/favicon-96x96.png',
   '/img/van-schema.jpg',
   '/manifest.webmanifest',
 ];
