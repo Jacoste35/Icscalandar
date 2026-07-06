@@ -630,7 +630,7 @@ function renderApp() {
   $app.innerHTML = `
   <div class="layout">
     <aside class="sidebar">
-      <div class="brand"><img src="/img/logo.png" onerror="this.onerror=null;this.src='/img/logo.svg'" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
+      <div class="brand"><img src="/img/icon-512.png" onerror="this.onerror=null;this.src='/img/icon-192.png'" alt="" class="brand-logo" /><span>Inter Colis Services</span></div>
       <button class="nav-toggle" id="nav-toggle" aria-label="Menu">☰</button>
       <nav id="nav">
         ${sections.map((s) => s.solo
