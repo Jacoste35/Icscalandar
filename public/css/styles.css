@@ -1780,3 +1780,48 @@ html.gsap-on #app { overflow-x: clip; }
 .lt-cel-sub { color: rgba(226,236,255,.82); font-weight: 600; font-size: .92rem; text-align: center; margin-top: -4px; padding: 0 16px; }
 .lt-cel-fallback { width: min(58vw,230px); height: min(58vw,230px); border-radius: 50%; background: #22b34a; color: #fff; font-size: 6.5rem; display: flex; align-items: center; justify-content: center; box-shadow: 0 20px 50px -12px rgba(34,179,74,.6); }
 @media (prefers-reduced-motion: reduce) { .lt-cel-box { transition: none; } }
+
+/* =========================================================================
+   Passe « 3D / profondeur » — relief, ombres animées, menus repensés.
+   Ajoutée en fin de feuille pour primer sur les règles précédentes.
+   ========================================================================= */
+:root {
+  --sh-1: 0 1px 2px rgba(16,33,60,.10), 0 4px 12px -4px rgba(16,33,60,.18);
+  --sh-2: 0 8px 18px -6px rgba(16,33,60,.28), 0 22px 48px -22px rgba(16,33,60,.40);
+  --sh-press: inset 0 2px 5px rgba(16,33,60,.22);
+}
+
+/* --- Boutons tactiles : relief + léger enfoncement au clic --- */
+.btn { box-shadow: var(--sh-1); transition: transform .14s var(--ease), box-shadow .18s var(--ease), filter .18s var(--ease), background .18s var(--ease); }
+.btn.accent, .btn.primary, .btn.danger { background-image: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,0) 42%); }
+@media (hover:hover) and (pointer:fine) { .btn:hover { transform: translateY(-2px); box-shadow: var(--sh-2); filter: brightness(1.03); } }
+.btn:active { transform: translateY(1px) scale(.99); box-shadow: var(--sh-press); filter: brightness(.98); }
+
+/* --- Cartes : élévation + lévitation au survol --- */
+.card { box-shadow: var(--sh-1); transition: transform .24s var(--ease), box-shadow .24s var(--ease); }
+@media (hover:hover) and (pointer:fine) { .card:hover { transform: translateY(-3px); box-shadow: var(--sh-2); } }
+.stat { box-shadow: var(--sh-1); transform-style: preserve-3d; }
+
+/* --- Barre latérale : menu repensé en relief --- */
+.sidebar nav button, .sidebar .nav-group-head { border-radius: 12px; transition: transform .16s var(--ease), background .16s var(--ease), box-shadow .16s var(--ease); }
+.sidebar nav button .ico, .sidebar .nav-group-head .ico {
+  width: 30px; height: 30px; flex: 0 0 30px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9px; background: rgba(255,255,255,.10); font-size: .95rem;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 2px 5px rgba(0,0,0,.25);
+}
+@media (hover:hover) and (pointer:fine) { .sidebar nav button:hover { transform: translateY(-1px); box-shadow: 0 6px 14px -6px rgba(0,0,0,.5); } }
+.sidebar nav button.active {
+  background: linear-gradient(180deg, var(--brand-2), #0f3568);
+  box-shadow: 0 8px 18px -7px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.18);
+  transform: translateY(-1px);
+}
+.sidebar nav button.active .ico { background: rgba(255,255,255,.22); }
+
+/* --- Barre du bas : icône active en relief --- */
+.bottom-nav button.active .bn-ico { filter: drop-shadow(0 4px 6px rgba(20,66,126,.5)); }
+
+/* Respect de la réduction d'animations */
+@media (prefers-reduced-motion: reduce) {
+  .btn, .card, .sidebar nav button { transition: none !important; }
+  .btn:hover, .card:hover, .sidebar nav button:hover, .btn:active { transform: none !important; }
+}
