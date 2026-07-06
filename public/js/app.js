@@ -197,12 +197,20 @@ function toast(msg, kind = 'info') {
   const c = document.getElementById('toast-container');
   const el = document.createElement('div');
   el.className = 'toast ' + kind;
-  el.textContent = msg;
+  // Coche animée (Lottie) pour les succès ; sinon simple texte.
+  if (kind === 'ok' && window.ICSLottie && ICSLottie.on) {
+    const ic = document.createElement('span');
+    ic.className = 'toast-ic'; ic.setAttribute('data-lottie', 'success'); ic.setAttribute('data-lottie-loop', '0');
+    el.appendChild(ic);
+  }
+  const tx = document.createElement('span'); tx.className = 'toast-tx'; tx.textContent = msg; el.appendChild(tx);
   c.appendChild(el);
+  if (window.ICSLottie) ICSLottie.scan(el);
   if (window.ICSAnim && ICSAnim.on) ICSAnim.toastIn(el);
+  const kill = () => { if (window.ICSLottie) ICSLottie.unmount(el); el.remove(); };
   setTimeout(() => {
-    if (window.ICSAnim && ICSAnim.on) ICSAnim.toastOut(el, () => el.remove());
-    else { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }
+    if (window.ICSAnim && ICSAnim.on) ICSAnim.toastOut(el, kill);
+    else { el.style.opacity = '0'; setTimeout(kill, 300); }
   }, 3500);
 }
 
