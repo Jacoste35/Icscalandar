@@ -202,6 +202,23 @@
       if (!b) return;
       try { gsap.to(b, { scale: .955, duration: .09, ease: 'power2.out', yoyo: true, repeat: 1, overwrite: 'auto', clearProps: 'transform' }); } catch (err) {}
     }, { passive: true });
+
+    // Inclinaison 3D des tuiles (statistiques, raccourcis) au survol de la souris
+    // — donne du relief sans WebGL. Uniquement sur pointeur fin (desktop).
+    if (window.matchMedia && window.matchMedia('(hover:hover) and (pointer:fine)').matches) {
+      var TILT = '.stat, .hero-chip';
+      document.addEventListener('pointermove', function (e) {
+        var el = e.target && e.target.closest ? e.target.closest(TILT) : null;
+        if (!el) return;
+        var r = el.getBoundingClientRect();
+        var px = (e.clientX - r.left) / r.width - 0.5, py = (e.clientY - r.top) / r.height - 0.5;
+        try { gsap.to(el, { rotationY: px * 9, rotationX: -py * 9, transformPerspective: 520, transformOrigin: 'center', duration: 0.4, ease: 'power2.out' }); } catch (err) {}
+      }, { passive: true });
+      document.addEventListener('pointerout', function (e) {
+        var el = e.target && e.target.closest ? e.target.closest(TILT) : null;
+        if (el) { try { gsap.to(el, { rotationX: 0, rotationY: 0, duration: 0.5, ease: 'power3.out' }); } catch (err) {} }
+      }, { passive: true });
+    }
   }
 
   window.ICSAnim = A;
