@@ -48,6 +48,11 @@
     #splash .sp-ring.r1 { width: 190px; height: 190px; }
     #splash .sp-ring.r2 { width: 290px; height: 290px; }
     #splash .sp-ring.r3 { width: 400px; height: 400px; border-color: rgba(150,190,255,.12); }
+    /* Petits camions qui tournent autour du logo (créés par GSAP). */
+    #splash .sp-trucks { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; z-index: 3; }
+    #splash .sp-orbit { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+    #splash .sp-truck { position: absolute; left: 0; top: 0; margin: -9px 0 0 -13px; color: #eaf2ff; filter: drop-shadow(0 2px 3px rgba(0,0,0,.4)); }
+    #splash .sp-truck svg { display: block; }
     .splash-inner { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 24px; }
     .splash-logo-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
     .splash-halo { position: absolute; width: 150px; height: 150px; border-radius: 34px; box-shadow: 0 0 60px 10px rgba(88,158,255,.45); }
@@ -106,7 +111,7 @@
     // d'affichage allongée pour laisser le cache se constituer sur les téléphones.
     (function () {
       var t0 = Date.now();
-      var MIN_MS = 2200;            // durée minimale d'affichage (mise en cache)
+      var MIN_MS = 3200;            // durée minimale d'affichage (mise en cache)
       var appReady = false;
       var swReady = !('serviceWorker' in navigator); // si pas de SW : non bloquant
       function removeSplash() { var s = document.getElementById('splash'); if (s && s.parentNode) s.parentNode.removeChild(s); }
@@ -168,12 +173,41 @@
         gsap.to('#splash .splash-logo', { y: -9, duration: 1.9, ease: 'sine.inOut', yoyo: true, repeat: -1, delay: 1.1 });
         gsap.to('#splash .splash-halo', { opacity: .55, scale: 1.08, duration: 1.7, ease: 'sine.inOut', yoyo: true, repeat: -1 });
 
+        // Petits camions qui sillonnent autour du logo (orbites de rayons et
+        // vitesses variés, dans les deux sens). Chaque camion est orienté dans
+        // son sens de marche (tangent à son orbite).
+        var TRUCK_SVG = '<svg width="26" height="17" viewBox="0 0 52 34" xmlns="http://www.w3.org/2000/svg">'
+          + '<rect x="2" y="8" width="30" height="16" rx="2" fill="currentColor"/>'
+          + '<path d="M32 12h9l7 7v5H32z" fill="currentColor"/>'
+          + '<rect x="35" y="13" width="7" height="6" rx="1" fill="#14427e"/>'
+          + '<circle cx="12" cy="27" r="4.5" fill="#0b1f3a" stroke="currentColor" stroke-width="2"/>'
+          + '<circle cx="40" cy="27" r="4.5" fill="#0b1f3a" stroke="currentColor" stroke-width="2"/></svg>';
+        var wrap = document.querySelector('#splash .splash-logo-wrap');
+        if (wrap) {
+          var host = document.createElement('div'); host.className = 'sp-trucks'; wrap.appendChild(host);
+          var FLEET = [
+            { r: 72, dur: 9,  dir: 1,  a: 0 },
+            { r: 90, dur: 13, dir: -1, a: 130 },
+            { r: 108, dur: 16, dir: 1, a: 250 },
+            { r: 126, dur: 20, dir: -1, a: 60 }
+          ];
+          FLEET.forEach(function (c) {
+            var orbit = document.createElement('div'); orbit.className = 'sp-orbit';
+            var truck = document.createElement('div'); truck.className = 'sp-truck'; truck.innerHTML = TRUCK_SVG;
+            orbit.appendChild(truck); host.appendChild(orbit);
+            gsap.set(truck, { x: c.r, rotation: c.dir > 0 ? 90 : -90 });
+            gsap.fromTo(orbit, { rotation: c.a }, { rotation: c.a + 360 * c.dir, duration: c.dur, ease: 'none', repeat: -1 });
+          });
+          gsap.from('#splash .sp-truck', { opacity: 0, scale: 0, duration: .5, stagger: .1, delay: .6, ease: 'back.out(2)' });
+        }
+
         // Sortie : « décollage » du logo, anneaux qui s'ouvrent, fondu + flou.
         window.__splashExit = function (splash, done) {
           try {
             // Stoppe l'intro et les ambiances encore en cours pour une sortie nette.
             if (tl) tl.kill();
-            gsap.killTweensOf('#splash .splash-logo, #splash .splash-halo, #splash .splash-name span, #splash .sp-ring, #splash .sp-radar, #splash .splash-sub, #splash .splash-bar');
+            gsap.killTweensOf('#splash .splash-logo, #splash .splash-halo, #splash .splash-name span, #splash .sp-ring, #splash .sp-radar, #splash .splash-sub, #splash .splash-bar, #splash .sp-orbit');
+            gsap.to('#splash .sp-trucks', { opacity: 0, duration: .3 });
             var out = gsap.timeline({ onComplete: done });
             out.to('#splash .splash-name span', { opacity: 0, y: -14, stagger: .02, duration: .28, ease: 'power2.in' }, 0)
                .to('#splash .splash-sub, #splash .splash-bar', { opacity: 0, duration: .22 }, 0)
