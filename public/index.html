@@ -117,7 +117,7 @@
     // d'affichage allongée pour laisser le cache se constituer sur les téléphones.
     (function () {
       var t0 = Date.now();
-      var MIN_MS = 3200;            // durée minimale d'affichage (mise en cache)
+      var MIN_MS = 4600;            // durée minimale d'affichage (mise en cache)
       var appReady = false;
       var swReady = !('serviceWorker' in navigator); // si pas de SW : non bloquant
       function removeSplash() { var s = document.getElementById('splash'); if (s && s.parentNode) s.parentNode.removeChild(s); }
@@ -203,15 +203,18 @@
             var truck = document.createElement('div'); truck.className = 'sp-truck'; truck.innerHTML = TRUCK_SVG;
             var trail = document.createElement('div'); trail.className = 'sp-trail';
             host.appendChild(trail); host.appendChild(truck);
-            // Le camion entre par le bord, roule doucement vers le logo et laisse
-            // derrière lui une route en pointillés qui se dessine, puis s'efface
-            // en arrivant au centre.
-            var t = gsap.timeline({ repeat: -1, delay: 0.6 + i * 0.6 });
-            t.set(truck, { x: sx, y: sy, rotation: face, opacity: 0, scale: 0.55 })
-             .set(trail, { x: sx, y: sy, rotation: face, width: 0, opacity: 0.55 })
-             .to(truck, { opacity: 1, duration: 0.5, ease: 'power1.out' }, 0)
-             .to(truck, { x: 0, y: 0, scale: 0.85, duration: dur, ease: 'power1.inOut' }, 0)
-             .to(trail, { width: D, duration: dur, ease: 'power1.inOut' }, 0)
+            // IMPORTANT : on cache/positionne les camions IMMÉDIATEMENT hors écran
+            // (immediateRender), sinon, pendant le délai de départ, ils resteraient
+            // empilés au centre (bug « un seul camion fixe au milieu »).
+            var t = gsap.timeline({ repeat: -1, delay: 0.4 + i * 0.32 });
+            // Trajet : bord de l'écran -> centre (logo).
+            t.fromTo(truck, { x: sx, y: sy, rotation: face },
+                             { x: 0, y: 0, duration: dur, ease: 'power1.inOut', immediateRender: true }, 0)
+             // Apparition puis disparition en arrivant.
+             .fromTo(truck, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: 'power1.out', immediateRender: true }, 0)
+             // Route en pointillés qui se dessine derrière le camion.
+             .fromTo(trail, { x: sx, y: sy, rotation: face, width: 0, opacity: 0.55 },
+                            { width: D, duration: dur, ease: 'power1.inOut', immediateRender: true }, 0)
              .to(truck, { opacity: 0, duration: 0.7, ease: 'power1.in' }, dur - 0.6)
              .to(trail, { opacity: 0, duration: 0.9, ease: 'power1.in' }, dur - 0.4);
           });
