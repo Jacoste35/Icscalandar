@@ -1792,10 +1792,14 @@ html.gsap-on #app { overflow-x: clip; }
 }
 
 /* --- Boutons tactiles : relief + léger enfoncement au clic --- */
-.btn { box-shadow: var(--sh-1); transition: transform .14s var(--ease), box-shadow .18s var(--ease), filter .18s var(--ease), background .18s var(--ease); }
-.btn.accent, .btn.primary, .btn.danger { background-image: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,0) 42%); }
-@media (hover:hover) and (pointer:fine) { .btn:hover { transform: translateY(-2px); box-shadow: var(--sh-2); filter: brightness(1.03); } }
-.btn:active { transform: translateY(1px) scale(.99); box-shadow: var(--sh-press); filter: brightness(.98); }
+/* NB : ne JAMAIS toucher à background/background-image ici — les boutons .accent
+   /.danger/.ok utilisent un dégradé (background-image) ; l'écraser rendait le
+   fond blanc et le texte blanc devenait invisible. On ne joue que sur l'ombre. */
+.btn { box-shadow: inset 0 1px 0 rgba(255,255,255,.18), var(--sh-1); transition: transform .14s var(--ease), box-shadow .18s var(--ease), filter .18s var(--ease); }
+@media (hover:hover) and (pointer:fine) { .btn:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(255,255,255,.20), var(--sh-2); filter: brightness(1.05); } }
+.btn:active { transform: translateY(1px) scale(.99); box-shadow: var(--sh-press); filter: brightness(.97); }
+.btn.ghost { box-shadow: none; }
+.btn.ghost:active { box-shadow: var(--sh-press); }
 
 /* --- Cartes : élévation + lévitation au survol --- */
 .card { box-shadow: var(--sh-1); transition: transform .24s var(--ease), box-shadow .24s var(--ease); }
