@@ -75,9 +75,11 @@ function geolocSplit(positions) {
 function geoStatusChips(active, depot, onDark) {
   const counts = { green: 0, yellow: 0, orange: 0, grey: 0 };
   (active || []).forEach((p) => { const s = p.lat == null ? 'grey' : p.status; counts[s] = (counts[s] || 0) + 1; });
+  // Point d'état avec halo lumineux de sa couleur (effet « voyant »).
+  const dot = (color) => `<i class="geo-chip-dot" style="background:${color};box-shadow:0 0 8px ${color},0 0 0 2px rgba(255,255,255,.4)"></i>`;
   const chip = (color, label) => onDark
-    ? `<span class="geo-chip geo-chip-d"><i class="geo-chip-dot" style="background:${color}"></i>${label}</span>`
-    : `<span class="geo-chip" style="background:${color}1a;color:${color}"><i class="geo-chip-dot" style="background:${color}"></i>${label}</span>`;
+    ? `<span class="geo-chip geo-chip-d">${dot(color)}${label}</span>`
+    : `<span class="geo-chip" style="background:${color}1a;color:${color}">${dot(color)}${label}</span>`;
   const stChip = (s, n) => { if (!n) return ''; const m = GEO_STATUS[s]; return chip(m.color, `${n} ${m.short}`); };
   let html = stChip('green', counts.green) + stChip('yellow', counts.yellow) + stChip('orange', counts.orange) + stChip('grey', counts.grey);
   if (!active || !active.length) html = chip('#94a3b8', 'aucun en activité');
