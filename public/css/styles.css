@@ -1880,3 +1880,24 @@ html.gsap-on #app { overflow-x: clip; }
   .geo-chip-d:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 11px 20px -8px rgba(0,0,0,.62); }
 }
 @media (prefers-reduced-motion: reduce) { .geo-main-icon { animation: none; } }
+
+/* =========================================================================
+   Contraste des boutons — onglets (view-switch) & boutons « ghost » lisibles.
+   Problème : les onglets inactifs étaient blancs sur fond blanc (invisibles).
+   ========================================================================= */
+.view-switch { background: transparent; border: 0; box-shadow: none; padding: 0; gap: .5rem; }
+.view-switch button {
+  background: #e8eef7; border: 1.5px solid #b6c5da; color: #1e2c3f; font-weight: 700;
+  border-radius: 11px; margin: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.65), 0 1px 2px rgba(16,33,60,.12);
+}
+@media (hover:hover) and (pointer:fine) {
+  .view-switch button:hover { background: #d8e3f4; border-color: #90a6c8; color: #16283e; }
+}
+.view-switch button.active {
+  background: var(--grad-brand); color: #fff; border-color: transparent;
+  box-shadow: 0 6px 14px -5px rgba(20,66,126,.7), inset 0 1px 0 rgba(255,255,255,.25);
+}
+/* Boutons « ghost » : contour plus marqué pour bien les voir sur fond clair. */
+.btn.ghost { border: 1.5px solid #b6c5da; color: var(--brand); font-weight: 700; }
+@media (hover:hover) and (pointer:fine) { .btn.ghost:hover { border-color: #8aa2c5; background: rgba(127,137,153,.12); } }
