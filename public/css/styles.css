@@ -1901,3 +1901,9 @@ html.gsap-on #app { overflow-x: clip; }
 /* Boutons « ghost » : contour plus marqué pour bien les voir sur fond clair. */
 .btn.ghost { border: 1.5px solid #b6c5da; color: var(--brand); font-weight: 700; }
 @media (hover:hover) and (pointer:fine) { .btn.ghost:hover { border-color: #8aa2c5; background: rgba(127,137,153,.12); } }
+
+/* ---- « Véhicule en atelier » : anomalie + niveau d'usure (25/50/75/100 %) --- */
+.mv-issues-list { display: flex; flex-direction: column; gap: .3rem; margin-top: .2rem; }
+.mv-issue-row { display: flex; align-items: center; gap: .6rem; }
+.mv-issue-row .veh-check { flex: 1 1 auto; margin: 0; min-width: 0; }
+.mv-issue-row .mv-wear { flex: 0 0 auto; min-width: 108px; }
