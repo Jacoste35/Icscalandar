@@ -209,6 +209,18 @@ function staffRequired(req, res, next) {
   next();
 }
 
+// Atelier : administrateur OU mécanicien (traitement des ordres de réparation).
+function mechanicOrAdmin(req, res, next) {
+  if (req.user.role === 'admin' || req.user.mecano) return next();
+  return res.status(403).json({ error: 'Réservé à l’atelier' });
+}
+
+// Encadrement OU atelier : admin / responsable / mécanicien (lecture flotte).
+function staffOrMechanic(req, res, next) {
+  if (req.user.role === 'admin' || req.user.role === 'responsable' || req.user.mecano) return next();
+  return res.status(403).json({ error: 'Réservé à l’encadrement ou l’atelier' });
+}
+
 function validDate(s) {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s + 'T00:00:00Z').getTime());
 }
@@ -840,7 +852,7 @@ function loginTaken(db, { email, username }, exceptId) {
 // Créer directement un utilisateur (actif) avec toutes ses données.
 app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone, hireDate, address, birthDate } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, role, congesN, congesN1, rcc, heuresSupp, isParent, phone, hireDate, address, birthDate, mecano } = req.body || {};
   if (!firstName || !lastName) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
   let uname = String(username || '').trim().toLowerCase();
   const mailAddr = String(email || '').trim().toLowerCase();
@@ -870,6 +882,7 @@ app.post('/api/admin/users', authRequired, adminRequired, async (req, res) => {
     rccAnchor: new Date().toISOString().slice(0, 10),
     passwordHash: await bcrypt.hash(String(password), 10),
     isParent: Boolean(isParent),
+    mecano: Boolean(mecano),
     role: ROLES.includes(role) ? role : 'employee',
     status: 'active',
     groupId: groupId || null,
@@ -930,7 +943,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   const db = getData();
   const user = db.users.find((u) => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
-  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate, address, birthDate, takenBaseline } = req.body || {};
+  const { firstName, lastName, username, email, password, groupId, congesN, congesN1, rcc, heuresSupp, role, isParent, phone, hireDate, address, birthDate, takenBaseline, mecano } = req.body || {};
   // Compteur « déjà pris » de base (historique hors application), éditable.
   if (takenBaseline && typeof takenBaseline === 'object') {
     user.takenBaseline = user.takenBaseline || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
@@ -975,6 +988,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   // Réamorce le cycle glissant de 3 mois du RCC à chaque (ré)attribution.
   if (rcc !== undefined) user.rccAnchor = new Date().toISOString().slice(0, 10);
   if (isParent !== undefined) user.isParent = Boolean(isParent);
+  if (mecano !== undefined) user.mecano = Boolean(mecano);
   if (ROLES.includes(role)) user.role = role;
   await save();
   res.json({ user: publicUser(user) });
@@ -1766,15 +1780,16 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
     decidedAt: null,
     decidedBy: null,
     adminNote: '',
-    resolution: null,     // 'done' | 'notdone'
+    resolution: null,     // 'done' | 'partial' | 'notdone' | 'none'
     resolutions: [],      // [{ issue, done }]
+    archived: false,      // clôturé puis rangé dans « Clôturés archivés »
   };
   // Le kilométrage le plus récent fait progresser le compteur du véhicule.
   if (kmNum > (Number(v.km) || 0)) v.km = kmNum;
   db.vehicleReports.push(report);
   await save();
-  // Push : prévient l'encadrement d'un signalement / demande d'entretien véhicule.
-  push.fire(push.notifyUsers(getData(), save, push.staffIds(getData()), {
+  // Push : prévient l'encadrement ET l'atelier (mécaniciens) d'un signalement.
+  push.fire(push.notifyUsers(getData(), save, [...new Set([...push.staffIds(getData()), ...push.mechanicIds(getData())])], {
     title: '🔧 Signalement véhicule',
     body: `${report.userName} — ${report.vehicleName} (${report.plate})${report.issues.length ? ' : ' + report.issues.slice(0, 3).join(', ') : ''}${report.note ? ' — ' + report.note.slice(0, 80) : ''}`,
     url: '/', tag: 'vreport-' + report.id,
@@ -1790,7 +1805,7 @@ app.get('/api/me/vehicle-reports', authRequired, (req, res) => {
 });
 
 // --- Côté encadrement : suivi complet de la flotte ---------------------------
-app.get('/api/staff/vehicles', authRequired, staffRequired, (req, res) => {
+app.get('/api/staff/vehicles', authRequired, staffOrMechanic, (req, res) => {
   const db = getData();
   const analysis = fleetAnalysis(db);
   const team = db.users
@@ -1976,13 +1991,14 @@ app.delete('/api/admin/vehicles/maint/:id', authRequired, adminRequired, async (
 // Décision sur un signalement véhicule (examiné / clôturé) — administrateur.
 // À la clôture : indique au chauffeur si les travaux ont été réalisés (avec
 // le détail par usure) et, sinon, le motif de non-réalisation.
-app.post('/api/admin/vehicle-reports/:id/decide', authRequired, adminRequired, async (req, res) => {
+app.post('/api/admin/vehicle-reports/:id/decide', authRequired, mechanicOrAdmin, async (req, res) => {
   const db = getData();
   const r = db.vehicleReports.find((x) => x.id === req.params.id);
   if (!r) return res.status(404).json({ error: 'Signalement introuvable' });
   const { decision, adminNote, resolutions, resolution, checkup } = req.body || {};
   if (!['reviewed', 'closed', 'pending'].includes(decision)) return res.status(400).json({ error: 'Décision invalide' });
   r.status = decision;
+  if (decision !== 'closed') r.archived = false; // une ré-ouverture sort des archives
   r.adminNote = String(adminNote || '').trim();
   if (Array.isArray(checkup)) r.checkup = checkup.map((c) => ({ label: String(c.label || '').slice(0, 120), ok: !!c.ok }));
   if (Array.isArray(resolutions)) {
@@ -2016,6 +2032,27 @@ app.post('/api/admin/vehicle-reports/:id/decide', authRequired, adminRequired, a
     }));
   }
   res.json({ report: r });
+});
+
+// Archiver / désarchiver un signalement CLÔTURÉ (rangement « Clôturés archivés »).
+app.post('/api/admin/vehicle-reports/:id/archive', authRequired, mechanicOrAdmin, async (req, res) => {
+  const db = getData();
+  const r = db.vehicleReports.find((x) => x.id === req.params.id);
+  if (!r) return res.status(404).json({ error: 'Signalement introuvable' });
+  const archived = req.body && req.body.archived === false ? false : true;
+  if (archived && r.status !== 'closed') return res.status(400).json({ error: 'Seuls les signalements clôturés peuvent être archivés.' });
+  r.archived = archived;
+  await save();
+  res.json({ report: r });
+});
+
+// Archiver EN BLOC tous les signalements clôturés non encore archivés.
+app.post('/api/admin/vehicle-reports/archive-closed', authRequired, mechanicOrAdmin, async (req, res) => {
+  const db = getData();
+  let n = 0;
+  (db.vehicleReports || []).forEach((r) => { if (r.status === 'closed' && !r.archived) { r.archived = true; n++; } });
+  if (n) await save();
+  res.json({ archived: n });
 });
 
 // Tour du véhicule : relevé des chocs / dommages (encadrement).
