@@ -2032,15 +2032,20 @@ app.post('/api/admin/vehicle-reports/:id/decide', authRequired, mechanicOrAdmin,
   r.status = decision;
   if (decision !== 'closed') r.archived = false; // une ré-ouverture sort des archives
   r.adminNote = String(adminNote || '').trim();
-  if (Array.isArray(checkup)) r.checkup = checkup.map((c) => ({ label: String(c.label || '').slice(0, 120), ok: !!c.ok }));
+  // Check-up rapide : Ok / K.O / non renseigné (null).
+  if (Array.isArray(checkup)) r.checkup = checkup.map((c) => ({ label: String(c.label || '').slice(0, 120), ok: (c.ok === null || c.ok === undefined) ? null : !!c.ok }));
+  // Résolution par pièce à 3 états : done (réalisé) / ordered (commande en cours) / notdone (non réalisé).
   if (Array.isArray(resolutions)) {
-    r.resolutions = resolutions.map((x) => ({ issue: String(x.issue || '').slice(0, 200), done: !!x.done }));
+    r.resolutions = resolutions.map((x) => {
+      const state = ['done', 'ordered', 'notdone'].includes(x.state) ? x.state : (x.done ? 'done' : '');
+      return { issue: String(x.issue || '').slice(0, 200), state, done: state === 'done' };
+    });
   }
   if (decision === 'closed') {
     if (resolution === 'none') {
       // « Aucune réparation à effectuer » : vérifié, rien à prévoir.
       r.resolution = 'none';
-      r.resolutions = (r.issues || []).map((i) => ({ issue: i, done: false }));
+      r.resolutions = (r.issues || []).map((i) => ({ issue: i, state: '', done: false }));
       if (!r.adminNote) r.adminNote = 'Vérifié : aucune réparation à effectuer.';
     } else {
       const total = r.resolutions.length || (r.issues ? r.issues.length : 0);
