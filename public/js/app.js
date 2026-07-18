@@ -441,6 +441,16 @@ function bindRegister() {
 function navSections() {
   const admin = State.user.role === 'admin';
   const staff = isStaff(); // admin OU responsable
+  // Mécanicien (atelier) non-encadrant : menu épuré, centré sur la flotte.
+  if (isMecano() && !staff) {
+    return [
+      { id: 'home', solo: true, items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
+      { id: 'space', icon: '🔧', title: 'Mon espace', items: [
+        { id: 'myvehicle', icon: '🔧', label: 'Véhicule en atelier' },
+        { id: 'stocks', icon: '🛠️', label: 'Suivi des entretiens et du stock' },
+      ] },
+    ];
+  }
   const groups = [];
   groups.push({ id: 'home', solo: true, items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] });
   groups.push({ id: 'planning', icon: '📅', title: 'Planning & Organisation', items: [
@@ -454,7 +464,7 @@ function navSections() {
     { id: 'team', icon: '👥', label: 'Mon équipe' },
     { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
   ];
-  // Mécanicien (non-encadrant) : accès atelier aux ordres de réparation.
+  // Mécanicien qui est aussi encadrant : accès atelier en plus.
   if (isMecano() && !admin) spaceItems.push({ id: 'stocks', icon: '🛠️', label: 'Suivi entretiens & stock' });
   groups.push({ id: 'space', icon: '👤', title: 'Mon espace', items: spaceItems });
   // Ressources Humaines
@@ -658,8 +668,11 @@ function renderApp() {
   <nav class="bottom-nav" id="bottom-nav">
     <button id="bn-menu"><span class="bn-ico">☰</span>Menu</button>
     <button data-view="dashboard" class="${State.view === 'dashboard' ? 'active' : ''}"><span class="bn-ico">🏠</span>Accueil</button>
-    <button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
-    <button data-view="mydata" class="${State.view === 'mydata' ? 'active' : ''}"><span class="bn-ico">👤</span>Profil</button>
+    ${(isMecano() && !isStaff())
+      ? `<button data-view="myvehicle" class="${State.view === 'myvehicle' ? 'active' : ''}"><span class="bn-ico">🔧</span>Atelier</button>
+         <button data-view="stocks" class="${State.view === 'stocks' ? 'active' : ''}"><span class="bn-ico">🛠️</span>Suivi</button>`
+      : `<button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
+         <button data-view="mydata" class="${State.view === 'mydata' ? 'active' : ''}"><span class="bn-ico">👤</span>Profil</button>`}
   </nav>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
   // Dépliage/repliage des groupes de menu (sans recharger la vue).
@@ -972,7 +985,74 @@ function startDashClock() {
   _dashClockTimer = setInterval(tick, 1000);
 }
 
+// Accueil dédié « atelier » (mécanicien) : uniquement le suivi de la flotte —
+// géoloc, signalements/ordres de réparation, entretiens à anticiper, et l'outil
+// de convocation des chauffeurs à l'atelier. Aucun panneau congés/RH.
+async function renderMechanicDashboard(main) {
+  const todayLong = frLongDate(iso(new Date()));
+  const heroDate = todayLong ? todayLong.charAt(0).toUpperCase() + todayLong.slice(1) : '';
+  main.innerHTML = `
+    <section class="dash-hero">
+      <div class="dash-hero-text">
+        <div class="dash-hello">Bonjour ${esc(State.user.firstName)} 🔧</div>
+        <div class="dash-date">${esc(heroDate)}</div>
+        <div class="dash-clock" id="dash-clock" aria-live="off">--:--:--</div>
+      </div>
+      <div class="dash-hero-actions">
+        <button class="hero-chip" data-herov="myvehicle">🔧 Véhicule en atelier</button>
+        <button class="hero-chip" data-herov="stocks">🛠️ Ordres de réparation</button>
+      </div>
+    </section>
+    <div id="mek-body" class="empty">Chargement…</div>`;
+  if (window.ICSAnim && ICSAnim.on) { ICSAnim.hero(main); ICSAnim.heroParallax(main); }
+  startDashClock();
+  main.querySelectorAll('[data-herov]').forEach((b) => b.onclick = () => { State.view = b.dataset.herov; renderApp(); });
+
+  let vehPendingPanel = '', entretiensPanel = '';
+  try {
+    const d = await api('GET', '/staff/vehicle-dashboard');
+    vehPendingPanel = dashVehiclePendingHTML(d.pendingReports);
+    entretiensPanel = dashEntretiensHTML(d.alerts) + ctRemindersHTML(d.ctReminders) + scheduledHTML(d.scheduled);
+  } catch (e) {}
+  let veh = null; try { veh = await api('GET', '/staff/vehicles'); } catch (e) {}
+
+  // Outil « Convoquer un chauffeur à l'atelier » (par véhicule attribué).
+  const drivers = []; const seen = new Set();
+  if (veh) (veh.vehicles || []).forEach((v) => { if (v.assignedUserId && !seen.has(v.assignedUserId)) { seen.add(v.assignedUserId); drivers.push({ id: v.assignedUserId, name: v.assignedUserName || '—', vid: v.id, vlabel: vehLabel(v) }); } });
+  const convoke = `<div class="card"><h3 style="margin:0 0 .5rem">📣 Convoquer un chauffeur à l'atelier</h3>
+    ${drivers.length ? `<div class="grid2">
+      <div><label>Chauffeur (véhicule)</label><select id="mek-driver">${drivers.map((d) => `<option value="${d.id}" data-vid="${d.vid}">${esc(d.name)} — ${esc(d.vlabel)}</option>`).join('')}</select></div>
+      <div><label>Message (facultatif)</label><input id="mek-msg" placeholder="Passe à l'atelier avec le véhicule…"></div>
+    </div>
+    <div style="margin-top:.6rem"><button class="btn accent sm" id="mek-notify">📣 Convoquer à l'atelier</button></div>`
+    : '<p class="help">Aucun chauffeur avec véhicule attribué pour le moment.</p>'}</div>`;
+
+  const geolocPanel = '<div id="dash-geoloc"><div class="card" style="padding:0;overflow:hidden;border:2px solid #14427e;border-radius:14px">'
+    + '<div style="padding:.85rem 1rem;background:linear-gradient(135deg,#14427e,#2563eb);color:#fff;font-weight:800;font-size:1.05rem">🛰️ Géolocalisation des chauffeurs <span style="font-weight:400;opacity:.85;font-size:.85rem">— chargement…</span></div></div></div>';
+
+  const dashGroup = (title, ...panels) => { const inner = panels.filter((p) => p && String(p).trim()).join('\n'); return inner ? `<h2 class="dash-divider">${title}</h2>${inner}` : ''; };
+  const body = document.getElementById('mek-body'); body.className = '';
+  body.innerHTML = dashGroup('🚚 Suivi de la flotte', geolocPanel, vehPendingPanel, entretiensPanel)
+    + dashGroup('🔧 Atelier', convoke)
+    + '<h2 class="dash-divider">⚙️ Réglages</h2><div id="dash-push"></div>';
+  tablesResponsive(body);
+  body.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
+  const nb = body.querySelector('#mek-notify');
+  if (nb) nb.onclick = async () => {
+    const sel = body.querySelector('#mek-driver'); if (!sel || !sel.value) { toast('Choisissez un chauffeur.', 'err'); return; }
+    const opt = sel.selectedOptions[0];
+    try {
+      await api('POST', '/mechanic/notify-driver', { userId: sel.value, vehicleId: opt.dataset.vid, message: (body.querySelector('#mek-msg') || {}).value || '' });
+      if (window.celebrate) celebrate('validate', { text: 'Chauffeur convoqué !', sub: 'Notification envoyée' }); else toast('Chauffeur convoqué.', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  if (typeof geolocStartDashboard === 'function' && body.querySelector('#dash-geoloc')) geolocStartDashboard();
+  if (!_previewMode) renderPushPanel();
+}
+
 async function renderDashboard(main) {
+  // Mécanicien (atelier) non-encadrant : accueil dédié à la flotte uniquement.
+  if (isMecano() && !isStaff()) return renderMechanicDashboard(main);
   const todayLong = frLongDate(iso(new Date()));
   const heroDate = todayLong ? todayLong.charAt(0).toUpperCase() + todayLong.slice(1) : '';
   const inPreview = State.user.role === 'admin' && _previewUserId;
@@ -3305,10 +3385,16 @@ const URGENCY_META = {
   surveillance: { label: 'À surveiller', cls: 'muted' },
 };
 const ISSUE_URGENCY = Object.fromEntries(VEHICLE_ISSUES.map((i) => [i.label, i.urgency]));
-function issueUrgencyBadge(label) {
-  const u = ISSUE_URGENCY[label]; if (!u) return '';
-  const m = URGENCY_META[u]; return ` <span class="pill ${m.cls}">${esc(m.label.split(' —')[0])}</span>`;
+// Les mentions « Urgent / Critique » sont remplacées par le niveau d'usure (%).
+function issueUrgencyBadge(label) { return ''; }
+// Pastille de niveau d'usure (25/50/75/100 %), colorée par gravité.
+function wearBadge(pct) {
+  pct = Number(pct); if (!pct) return '';
+  const cls = pct >= 100 ? 'danger' : pct >= 75 ? 'warn' : pct >= 50 ? '' : 'muted';
+  return ` <span class="pill ${cls}">usure ${pct}%</span>`;
 }
+// Usure d'une anomalie donnée dans un signalement.
+function reportWear(r, issue) { return (r.issueWear && r.issueWear[issue]) || 0; }
 
 // Types de dommage relevés lors d'un tour de véhicule.
 const IMPACT_TYPES = ['Rayure', 'Choc / enfoncement', 'Fissure', 'Bris de glace', 'Rouille', 'Pièce manquante / cassée', 'Autre'];
@@ -3427,8 +3513,13 @@ function vReportStatusClass(s) { return s === 'reviewed' ? 'ok' : s === 'closed'
 
 // --- Côté salarié : « Mon véhicule » ----------------------------------------
 async function renderMyVehicle(main) {
-  main.innerHTML = `<div class="page-head"><div><h1>Mon véhicule</h1>
-    <p>Sélectionnez votre véhicule et signalez toute usure ou anomalie constatée.</p></div></div>
+  const mecano = isMecano();
+  const pageTitle = mecano ? 'Véhicule en atelier' : 'Mon véhicule';
+  const pageSub = mecano
+    ? 'Relevez l’état d’usure des pièces. Toute usure ≥ 75 % convoque automatiquement le chauffeur à l’atelier.'
+    : 'Sélectionnez votre véhicule et signalez toute usure ou anomalie constatée.';
+  main.innerHTML = `<div class="page-head"><div><h1>${pageTitle}</h1>
+    <p>${pageSub}</p></div></div>
     <div id="mv-body" class="empty">Chargement…</div>`;
   let vehicles = [], myReports = [], conformity = [];
   try {
@@ -3449,8 +3540,14 @@ async function renderMyVehicle(main) {
   if (!vehicles.length) {
     body.innerHTML = conformityBanner + `<div class="alert info">Aucun véhicule n'est encore enregistré dans la flotte. Contactez la direction pour qu'elle ajoute les véhicules.</div>`;
   } else {
+    // Chaque anomalie : case à cocher + niveau d'usure (25/50/75/100 %).
     const issuesHTML = VEHICLE_ISSUES.map((it, i) => `
-      <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(it.label)}" id="mv-i${i}"> ${esc(it.label)}${issueUrgencyBadge(it.label)}</label>`).join('');
+      <div class="mv-issue-row">
+        <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(it.label)}" data-i="${i}"> ${esc(it.label)}</label>
+        <select class="mv-wear" data-i="${i}" aria-label="Niveau d'usure">
+          <option value="">Usure…</option><option value="25">25 %</option><option value="50">50 %</option><option value="75">75 %</option><option value="100">100 %</option>
+        </select>
+      </div>`).join('');
     body.innerHTML = conformityBanner + `
       <div class="card">
         <label>Véhicule en cours d'utilisation</label>
@@ -3462,14 +3559,16 @@ async function renderMyVehicle(main) {
           <div><label>Plaque d'immatriculation *</label><input id="mv-plate" placeholder="AA-123-BB" autocomplete="off"></div>
           <div><label>Kilométrage actuel *</label><input id="mv-km" type="number" min="0" inputmode="numeric" placeholder="ex. 84500"></div>
         </div>
-        <label style="margin-top:.8rem">Usures / anomalies constatées</label>
-        <div class="veh-issues">${issuesHTML}</div>
+        <label style="margin-top:.8rem">Usures / anomalies constatées <span class="help">— cochez et indiquez le niveau d'usure</span></label>
+        <div class="mv-issues-list">${issuesHTML}</div>
         <label style="margin-top:.8rem">Précisions (facultatif)</label>
         <textarea id="mv-note" placeholder="Décrivez le problème, sa localisation, depuis quand…" style="min-height:90px"></textarea>
         <div style="margin-top:1rem"><button class="btn accent" id="mv-send">Envoyer le signalement</button></div>
         <p class="help" style="margin-top:.5rem">Votre signalement est transmis à la direction et apparaît dans le suivi du véhicule.</p>
       </div>
-      <div class="card"><h3>Mes signalements récents</h3><div id="mv-mine"></div></div>`;
+      ${mecano
+        ? '<div class="card"><h3>🛠️ Demandes des chauffeurs à traiter</h3><p class="help" style="margin-top:0">Toutes les demandes concernant les véhicules, de tous les utilisateurs.</p><div id="mv-orders" class="empty">Chargement…</div></div>'
+        : '<div class="card"><h3>Mes signalements récents</h3><div id="mv-mine"></div></div>'}`;
 
     const sel = document.getElementById('mv-vehicle');
     const plate = document.getElementById('mv-plate');
@@ -3479,17 +3578,29 @@ async function renderMyVehicle(main) {
       if (o && o.value) { if (!plate.value) plate.value = o.dataset.plate || ''; if (!km.value && o.dataset.km && o.dataset.km !== '0') km.value = o.dataset.km; }
     };
     document.getElementById('mv-send').onclick = async () => {
-      const issues = Array.from(document.querySelectorAll('.mv-issue:checked')).map((c) => c.value);
-      const payload = { vehicleId: sel.value, plate: plate.value, km: km.value, issues, note: document.getElementById('mv-note').value };
+      const checked = Array.from(document.querySelectorAll('.mv-issue:checked'));
+      const issues = checked.map((c) => c.value);
+      // Niveau d'usure choisi pour chaque anomalie cochée.
+      const issueWear = {};
+      checked.forEach((c) => { const w = document.querySelector('.mv-wear[data-i="' + c.dataset.i + '"]'); if (w && w.value) issueWear[c.value] = Number(w.value); });
+      const payload = { vehicleId: sel.value, plate: plate.value, km: km.value, issues, issueWear, note: document.getElementById('mv-note').value };
       if (!payload.vehicleId) { toast('Choisissez votre véhicule.', 'err'); return; }
       try {
-        await api('POST', '/vehicles/report', payload);
-        if (window.celebrate) celebrate('validate', { text: 'Signalement envoyé !', sub: 'Merci, l\'atelier est informé' });
+        const r = await api('POST', '/vehicles/report', payload);
+        const maxW = Math.max(0, ...Object.values(issueWear));
+        const sub = maxW >= 75 ? 'Usure ≥ 75 % : le chauffeur est convoqué à l\'atelier.' : (mecano ? 'Relevé enregistré.' : 'Merci, l\'atelier est informé');
+        if (window.celebrate) celebrate('validate', { text: 'Signalement envoyé !', sub });
         else toast('Signalement envoyé. Merci !', 'ok');
         renderMyVehicle(main);
       } catch (e) { toast(e.message, 'err'); }
     };
-    renderMyVehReports(document.getElementById('mv-mine'), myReports);
+    if (mecano) {
+      // Mécanicien : afficher et traiter TOUS les ordres de réparation ici même.
+      try { _veh = await api('GET', '/staff/vehicles'); const o = document.getElementById('mv-orders'); if (o) vehTabPending(o); }
+      catch (e) { const o = document.getElementById('mv-orders'); if (o) o.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; }
+    } else {
+      renderMyVehReports(document.getElementById('mv-mine'), myReports);
+    }
   }
 }
 
@@ -3509,12 +3620,12 @@ function issuesWithResolution(r) {
   const closed = r.status === 'closed';
   const reviewed = r.status === 'reviewed';
   return `<ul class="vr-issues">${r.issues.map((i) => {
-    if (!hasRes || (!closed && !reviewed)) return `<li>${esc(i)}${issueUrgencyBadge(i)}</li>`;
+    if (!hasRes || (!closed && !reviewed)) return `<li>${esc(i)}${wearBadge(reportWear(r, i))}</li>`;
     const done = byIssue[i];
     // Pièce remplacée = « réalisé » en fin de ligne ; sinon « à faire » (en cours)
     // ou « non réalisé » (dossier clôturé).
     const badge = done ? '<span class="pill ok">réalisé</span>' : (closed ? '<span class="pill danger">non réalisé</span>' : '<span class="pill muted">à faire</span>');
-    return `<li>${esc(i)}${issueUrgencyBadge(i)} ${badge}</li>`;
+    return `<li>${esc(i)}${wearBadge(reportWear(r, i))} ${badge}</li>`;
   }).join('')}</ul>`;
 }
 
@@ -3909,7 +4020,7 @@ function vehTabPending(body) {
       <div><span class="help">Le</span><br>${fmtDateTime(r.createdAt)}</div>
     </div>
     <h4 style="margin:.6rem 0 .3rem">Travaux demandés</h4>
-    ${r.issues.length ? `<div class="vr-reslist">${r.issues.map((i) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}" ${(r.resolutions || []).find((x) => x.issue === i && x.done) ? 'checked' : ''}> Réalisé : ${esc(i)}${issueUrgencyBadge(i)}</label>`).join('')}</div>` : '<p class="help">Aucune usure cochée — voir la remarque du chauffeur.</p>'}
+    ${r.issues.length ? `<div class="vr-reslist">${r.issues.map((i) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}" ${(r.resolutions || []).find((x) => x.issue === i && x.done) ? 'checked' : ''}> Réalisé : ${esc(i)}${wearBadge(reportWear(r, i))}</label>`).join('')}</div>` : '<p class="help">Aucune usure cochée — voir la remarque du chauffeur.</p>'}
     ${r.note ? `<p style="margin:.3rem 0 0"><em>« ${esc(r.note)} »</em></p>` : ''}
     <h4 style="margin:.7rem 0 .3rem">Check-up atelier rapide</h4>
     <div class="vr-reslist ro-checkup">${REPAIR_CHECKUP.map((c) => `<label class="veh-check"><input type="checkbox" class="ro-chk" data-rep="${r.id}" data-c="${esc(c)}"> ${esc(c)}</label>`).join('')}</div>
@@ -3919,6 +4030,7 @@ function vehTabPending(body) {
       <button class="btn sm" data-decide="${r.id}" data-d="reviewed">Prendre en compte (laisser ouvert)</button>
       <button class="btn ok sm" data-decide="${r.id}" data-d="closed">Clôturer (travaux statués)</button>
       <button class="btn ghost sm" data-none="${r.id}">Aucune réparation à effectuer</button>
+      <button class="btn ghost sm" data-convoke="${r.id}" data-uid="${esc(r.userId)}" data-vid="${esc(r.vehicleId)}">📣 Convoquer le chauffeur</button>
     </div>
   </div>`;
 
@@ -3945,6 +4057,9 @@ function vehTabPending(body) {
     ${archived.length ? `<details class="card" style="margin-top:1.2rem"><summary><strong>📦 Clôturés archivés</strong> <span class="help">${archived.length}</span></summary><div style="margin-top:.6rem">${archived.map(summaryCard).join('')}</div></details>` : ''}`;
 
   if (!canProcess) return;
+  // Re-rend dans le MÊME conteneur (fonctionne aussi bien dans « Suivi » que dans
+  // « Véhicule en atelier »).
+  const refresh = () => vehTabPending(body);
   const collectAndDecide = async (id, decision, extra = {}) => {
     const rep = reports.find((x) => x.id === id);
     const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
@@ -3952,7 +4067,7 @@ function vehTabPending(body) {
     const checkup = REPAIR_CHECKUP.map((c) => ({ label: c, ok: !!body.querySelector(`.ro-chk[data-rep="${id}"][data-c="${cssEsc(c)}"]`)?.checked }));
     try {
       await api('POST', '/admin/vehicle-reports/' + id + '/decide', Object.assign({ decision, adminNote: note, resolutions, checkup }, extra));
-      await loadFleet(); vehTab('pending');
+      await loadFleet(); refresh();
       if (window.celebrate) celebrate('validate', { text: 'Rapport traité !', sub: 'Le chauffeur est informé' });
       else toast('Mis à jour. Le chauffeur est informé.', 'ok');
     }
@@ -3960,12 +4075,18 @@ function vehTabPending(body) {
   };
   body.querySelectorAll('[data-decide]').forEach((b) => b.onclick = () => collectAndDecide(b.dataset.decide, b.dataset.d));
   body.querySelectorAll('[data-none]').forEach((b) => b.onclick = () => collectAndDecide(b.dataset.none, 'closed', { resolution: 'none' }));
-  body.querySelectorAll('[data-reopen]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopen + '/decide', { decision: 'pending' }); await loadFleet(); vehTab('pending'); toast('Ré-ouvert.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
-  body.querySelectorAll('[data-reopenclose]').forEach((b) => b.onclick = async () => { const note = prompt('Commentaire de clôture (obligatoire si rien n\'a été fait) :', ''); try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopenclose + '/decide', { decision: 'closed', adminNote: note || 'Clôturé', resolution: 'none' }); await loadFleet(); vehTab('pending'); toast('Clôturé.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  // Convoquer le chauffeur (déclarant) du signalement à l'atelier.
+  body.querySelectorAll('[data-convoke]').forEach((b) => b.onclick = async () => {
+    const msg = prompt('Message au chauffeur (convocation à l\'atelier) :', 'Merci de passer à l\'atelier avec le véhicule dès que possible.');
+    if (msg === null) return;
+    try { await api('POST', '/mechanic/notify-driver', { userId: b.dataset.uid, vehicleId: b.dataset.vid, message: msg }); toast('Chauffeur convoqué.', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  });
+  body.querySelectorAll('[data-reopen]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopen + '/decide', { decision: 'pending' }); await loadFleet(); refresh(); toast('Ré-ouvert.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-reopenclose]').forEach((b) => b.onclick = async () => { const note = prompt('Commentaire de clôture (obligatoire si rien n\'a été fait) :', ''); try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopenclose + '/decide', { decision: 'closed', adminNote: note || 'Clôturé', resolution: 'none' }); await loadFleet(); refresh(); toast('Clôturé.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
   // Archivage / désarchivage des ordres clôturés.
-  body.querySelectorAll('[data-archive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.archive + '/archive', { archived: true }); await loadFleet(); vehTab('pending'); toast('Rangé dans « Clôturés archivés ».', 'ok'); } catch (e) { toast(e.message, 'err'); } });
-  body.querySelectorAll('[data-unarchive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.unarchive + '/archive', { archived: false }); await loadFleet(); vehTab('pending'); toast('Sorti des archives.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
-  const archAll = body.querySelector('#ro-archive-all'); if (archAll) archAll.onclick = async () => { if (!confirm('Archiver tous les ordres clôturés récents ? Ils resteront consultables dans « Clôturés archivés ».')) return; try { const r = await api('POST', '/admin/vehicle-reports/archive-closed', {}); await loadFleet(); vehTab('pending'); toast(`${r.archived || 0} ordre(s) archivé(s).`, 'ok'); } catch (e) { toast(e.message, 'err'); } };
+  body.querySelectorAll('[data-archive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.archive + '/archive', { archived: true }); await loadFleet(); refresh(); toast('Rangé dans « Clôturés archivés ».', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-unarchive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.unarchive + '/archive', { archived: false }); await loadFleet(); refresh(); toast('Sorti des archives.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  const archAll = body.querySelector('#ro-archive-all'); if (archAll) archAll.onclick = async () => { if (!confirm('Archiver tous les ordres clôturés récents ? Ils resteront consultables dans « Clôturés archivés ».')) return; try { const r = await api('POST', '/admin/vehicle-reports/archive-closed', {}); await loadFleet(); refresh(); toast(`${r.archived || 0} ordre(s) archivé(s).`, 'ok'); } catch (e) { toast(e.message, 'err'); } };
 }
 // Échappe une valeur pour un sélecteur d'attribut CSS.
 function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
@@ -4516,7 +4637,8 @@ async function renderStocks(main) {
       <button data-stab="costs">Coûts par véhicule</button>
       <button data-stab="parts">Stock de pièces & consommables</button>
       <button data-stab="categories">Catégories de pièces</button>`
-    : `<button data-stab="pending" class="active">🛠️ Ordres de réparation <span id="veh-pending-badge"></span></button>`;
+    : `<button data-stab="pending" class="active">🛠️ Ordres de réparation <span id="veh-pending-badge"></span></button>
+       <button data-stab="suivi">🔧 Suivi &amp; alertes flotte</button>`;
   main.innerHTML = `<div class="page-head"><div><h1>Suivi des entretiens et du stock</h1>
     <p>${isAdmin ? 'Entretiens des véhicules, stock de pièces et consommables, et coût réel d\'exploitation.' : 'Traitez les signalements des chauffeurs : ordres de réparation à réaliser.'}</p></div></div>
     <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">${tabsHTML}</div>

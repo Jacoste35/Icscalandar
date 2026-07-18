@@ -1707,7 +1707,7 @@ app.get('/api/staff/discipline', authRequired, staffRequired, (req, res) => {
 
 // Données véhicule pour la page d'accueil de l'encadrement : signalements en
 // attente + entretiens à anticiper.
-app.get('/api/staff/vehicle-dashboard', authRequired, staffRequired, (req, res) => {
+app.get('/api/staff/vehicle-dashboard', authRequired, staffOrMechanic, (req, res) => {
   const db = getData();
   const analysis = fleetAnalysis(db);
   const alerts = [];
@@ -1750,7 +1750,7 @@ app.get('/api/vehicles', authRequired, (req, res) => {
 
 app.post('/api/vehicles/report', authRequired, async (req, res) => {
   const db = getData();
-  const { vehicleId, plate, km, issues, note } = req.body || {};
+  const { vehicleId, plate, km, issues, note, issueWear } = req.body || {};
   const v = db.vehicles.find((x) => x.id === vehicleId);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable — sélectionnez votre véhicule dans la liste.' });
   const plateClean = formatPlate(plate);
@@ -1765,6 +1765,13 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
   if (!issueList.length && !String(note || '').trim()) {
     return res.status(400).json({ error: 'Indiquez au moins une usure constatée ou une précision.' });
   }
+  // Niveau d'usure par anomalie (25/50/75/100 %) — filtré sur les valeurs valides.
+  const wearMap = {};
+  const WEARS = [25, 50, 75, 100];
+  if (issueWear && typeof issueWear === 'object') {
+    for (const k of Object.keys(issueWear)) { const w = Number(issueWear[k]); if (issueList.includes(k) && WEARS.includes(w)) wearMap[k] = w; }
+  }
+  const maxWear = Object.values(wearMap).reduce((m, w) => Math.max(m, w), 0);
   const report = {
     id: nextId('vreport'),
     vehicleId: v.id,
@@ -1774,6 +1781,7 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
     userId: req.user.id,
     userName: `${req.user.firstName} ${req.user.lastName}`,
     issues: issueList,
+    issueWear: wearMap,   // { libellé: 25|50|75|100 }
     note: String(note || '').trim(),
     status: 'pending',
     createdAt: new Date().toISOString(),
@@ -1794,7 +1802,31 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
     body: `${report.userName} — ${report.vehicleName} (${report.plate})${report.issues.length ? ' : ' + report.issues.slice(0, 3).join(', ') : ''}${report.note ? ' — ' + report.note.slice(0, 80) : ''}`,
     url: '/', tag: 'vreport-' + report.id,
   }));
+  // Usure ≥ 75 % : on convoque le chauffeur attribué au véhicule à l'atelier.
+  if (maxWear >= 75 && v.assignedUserId && v.assignedUserId !== req.user.id) {
+    const worn = Object.keys(wearMap).filter((k) => wearMap[k] >= 75);
+    push.fire(push.notifyUser(getData(), save, v.assignedUserId, {
+      title: '🔧 Passage à l’atelier requis',
+      body: `${v.name} (${plateClean}) : usure ${maxWear}% relevée${worn.length ? ' (' + worn.slice(0, 2).join(', ') + ')' : ''}. Merci de vous rendre à l’atelier avec le véhicule.`,
+      url: '/', tag: 'atelier-' + report.id,
+    }));
+  }
   res.json({ report });
+});
+
+// Atelier : convoquer un chauffeur à l'atelier (notification poussée).
+app.post('/api/mechanic/notify-driver', authRequired, mechanicOrAdmin, async (req, res) => {
+  const db = getData();
+  const { userId, vehicleId, message } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Chauffeur introuvable' });
+  const v = vehicleId ? db.vehicles.find((x) => x.id === vehicleId) : null;
+  const vlabel = v ? `${v.name}${v.plate ? ' (' + v.plate + ')' : ''}` : '';
+  const body = String(message || '').trim() || `Merci de passer à l’atelier${vlabel ? ' avec ' + vlabel : ' avec votre véhicule'} dès que possible.`;
+  push.fire(push.notifyUser(db, save, u.id, {
+    title: '🔧 Convocation à l’atelier', body: body.slice(0, 200), url: '/', tag: 'atelier-call-' + u.id,
+  }));
+  res.json({ ok: true });
 });
 
 app.get('/api/me/vehicle-reports', authRequired, (req, res) => {
@@ -3495,7 +3527,7 @@ function syncAutoRetards(db, positions) {
   return changed;
 }
 
-app.get('/api/staff/geoloc/live', authRequired, staffRequired, async (req, res) => {
+app.get('/api/staff/geoloc/live', authRequired, staffOrMechanic, async (req, res) => {
   const data = getData(); ensureErp(data);
   const g = data.settings.pajgps;
   if (!g.enabled || !g.email || !g.passwordEnc) {
