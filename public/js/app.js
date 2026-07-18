@@ -50,6 +50,8 @@ function catColor(code) { const c = State.catByCode[code]; return c ? c.color : 
 function evColor(ev) { return State.cal.colorBy === 'group' ? ev.groupColor : ev.categoryColor; }
 function roleLabel(role) { return role === 'admin' ? 'Administrateur' : role === 'responsable' ? 'Responsable' : 'Salarié'; }
 function isStaff() { return State.user.role === 'admin' || State.user.role === 'responsable'; }
+// Mécanicien : accès atelier (suivi des ordres de réparation), sans être encadrement.
+function isMecano() { return !!(State.user && State.user.mecano); }
 // Libellé du "pool" (solde imputé) d'une demande, ex. " · Congés N-1".
 function poolLabel(r) {
   if (!r.pool) return '';
@@ -446,12 +448,15 @@ function navSections() {
     { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
     { id: 'requests', icon: '📝', label: 'Événements' },
   ] });
-  groups.push({ id: 'space', icon: '👤', title: 'Mon espace', items: [
+  const spaceItems = [
     { id: 'mydata', icon: '👤', label: 'Mon profil' },
     { id: 'mydocs', icon: '📁', label: 'Mes documents' },
     { id: 'team', icon: '👥', label: 'Mon équipe' },
     { id: 'myvehicle', icon: '🚐', label: 'Mon véhicule' },
-  ] });
+  ];
+  // Mécanicien (non-encadrant) : accès atelier aux ordres de réparation.
+  if (isMecano() && !admin) spaceItems.push({ id: 'stocks', icon: '🛠️', label: 'Suivi entretiens & stock' });
+  groups.push({ id: 'space', icon: '👤', title: 'Mon espace', items: spaceItems });
   // Ressources Humaines
   const rh = [];
   if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' });
@@ -3278,6 +3283,10 @@ const VEHICLE_ISSUES = [
   { label: 'Éclairage défectueux (feux / clignotants / stop à droite)', urgency: 'urgent' },
   { label: 'Éclairage défectueux (feux / clignotants / stop à gauche)', urgency: 'urgent' },
   { label: 'Embrayage / boîte de vitesses (point dur, à-coups)', urgency: 'urgent' },
+  { label: 'Amortisseur avant gauche (AVG) défectueux', urgency: 'urgent' },
+  { label: 'Amortisseur avant droit (AVD) défectueux', urgency: 'urgent' },
+  { label: 'Triangle de suspension avant gauche (AVG) à remplacer', urgency: 'urgent' },
+  { label: 'Triangle de suspension avant droit (AVD) à remplacer', urgency: 'urgent' },
   { label: 'Batterie faible / démarrage difficile', urgency: 'urgent' },
   { label: 'Pneus sous-gonflés / témoin de pression allumé', urgency: 'urgent' },
   { label: 'Bruit anormal ou vibration', urgency: 'urgent' },
@@ -3496,11 +3505,16 @@ function resolutionBadge(r) {
 function issuesWithResolution(r) {
   if (!r.issues || !r.issues.length) return '';
   const byIssue = {}; (r.resolutions || []).forEach((x) => { byIssue[x.issue] = x.done; });
-  const closed = r.status === 'closed' && (r.resolutions || []).length;
+  const hasRes = (r.resolutions || []).length;
+  const closed = r.status === 'closed';
+  const reviewed = r.status === 'reviewed';
   return `<ul class="vr-issues">${r.issues.map((i) => {
-    if (!closed) return `<li>${esc(i)}${issueUrgencyBadge(i)}</li>`;
+    if (!hasRes || (!closed && !reviewed)) return `<li>${esc(i)}${issueUrgencyBadge(i)}</li>`;
     const done = byIssue[i];
-    return `<li>${esc(i)}${issueUrgencyBadge(i)} ${done ? '<span class="pill ok">réalisé</span>' : '<span class="pill danger">non réalisé</span>'}</li>`;
+    // Pièce remplacée = « réalisé » en fin de ligne ; sinon « à faire » (en cours)
+    // ou « non réalisé » (dossier clôturé).
+    const badge = done ? '<span class="pill ok">réalisé</span>' : (closed ? '<span class="pill danger">non réalisé</span>' : '<span class="pill muted">à faire</span>');
+    return `<li>${esc(i)}${issueUrgencyBadge(i)} ${badge}</li>`;
   }).join('')}</ul>`;
 }
 
@@ -3872,11 +3886,14 @@ const REPAIR_CHECKUP = ['Niveaux (huile / liquides)', 'Éclairage & signalisatio
 // Onglet « Demandes concernant les véhicules en attente » — ordres de réparation.
 function vehTabPending(body) {
   const isAdmin = State.user.role === 'admin';
+  const canProcess = isAdmin || isMecano();      // atelier : admin OU mécanicien
   const reports = _veh.reports;
   const pending = reports.filter((r) => r.status === 'pending');
   // Non clôturés (pris en compte) que l'on peut ré-ouvrir ou clôturer.
   const openOrders = reports.filter((r) => r.status === 'reviewed');
-  const closed = reports.filter((r) => r.status === 'closed').slice(0, 20);
+  // Clôturés « récents » (non archivés) vs archivés.
+  const closed = reports.filter((r) => r.status === 'closed' && !r.archived).slice(0, 30);
+  const archived = reports.filter((r) => r.status === 'closed' && r.archived);
 
   // Carte « ordre de réparation » éditable (signalement en attente).
   const orderCard = (r) => `<div class="card repair-order">
@@ -3905,16 +3922,18 @@ function vehTabPending(body) {
     </div>
   </div>`;
 
-  // Carte récapitulative (traité / clôturé) avec ré-ouverture si non clôturé.
+  // Carte récapitulative (traité / clôturé) avec ré-ouverture si non clôturé,
+  // et archivage/désarchivage pour les clôturés.
   const summaryCard = (r) => `<div class="card veh-report">
     <div class="vr-head"><strong>${esc(r.vehicleName)}</strong> · ${esc(r.plate)} · ${kmFmt(r.km)}
       <span class="pill ${vReportStatusClass(r.status)}">${vReportStatusLabel(r.status)}</span> ${resolutionBadge(r)}</div>
     <div class="help">Signalé par ${esc(r.userName)} le ${fmtDateTime(r.createdAt)}</div>
     ${issuesWithResolution(r)}
     ${r.adminNote ? `<p class="help" style="margin:.3rem 0 0">↪ ${esc(r.adminNote)}</p>` : ''}
-    ${isAdmin ? `<div class="vr-actions" style="margin-top:.4rem">
+    ${canProcess ? `<div class="vr-actions" style="margin-top:.4rem">
       <button class="btn sm" data-reopen="${r.id}">Ré-ouvrir</button>
       ${r.status !== 'closed' ? `<button class="btn ok sm" data-reopenclose="${r.id}">Clôturer</button>` : ''}
+      ${r.status === 'closed' ? (r.archived ? `<button class="btn ghost sm" data-unarchive="${r.id}">↩ Désarchiver</button>` : `<button class="btn ghost sm" data-archive="${r.id}">📦 Archiver</button>`) : ''}
     </div>` : ''}
   </div>`;
 
@@ -3922,9 +3941,10 @@ function vehTabPending(body) {
     <h3>Ordres de réparation ouverts (${pending.length})</h3>
     ${pending.length ? pending.map(orderCard).join('') : '<div class="alert ok">Aucune demande en attente. 👍</div>'}
     ${openOrders.length ? `<h3 style="margin-top:1.2rem">Pris en compte — à clôturer (${openOrders.length})</h3>${openOrders.map(summaryCard).join('')}` : ''}
-    ${closed.length ? `<h3 style="margin-top:1.2rem">Clôturés récemment</h3>${closed.map(summaryCard).join('')}` : ''}`;
+    ${closed.length ? `<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:1.2rem"><h3 style="margin:0">Clôturés récemment (${closed.length})</h3>${canProcess ? '<button class="btn ghost sm" id="ro-archive-all">📦 Archiver les clôturés</button>' : ''}</div>${closed.map(summaryCard).join('')}` : ''}
+    ${archived.length ? `<details class="card" style="margin-top:1.2rem"><summary><strong>📦 Clôturés archivés</strong> <span class="help">${archived.length}</span></summary><div style="margin-top:.6rem">${archived.map(summaryCard).join('')}</div></details>` : ''}`;
 
-  if (!isAdmin) return;
+  if (!canProcess) return;
   const collectAndDecide = async (id, decision, extra = {}) => {
     const rep = reports.find((x) => x.id === id);
     const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
@@ -3942,6 +3962,10 @@ function vehTabPending(body) {
   body.querySelectorAll('[data-none]').forEach((b) => b.onclick = () => collectAndDecide(b.dataset.none, 'closed', { resolution: 'none' }));
   body.querySelectorAll('[data-reopen]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopen + '/decide', { decision: 'pending' }); await loadFleet(); vehTab('pending'); toast('Ré-ouvert.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
   body.querySelectorAll('[data-reopenclose]').forEach((b) => b.onclick = async () => { const note = prompt('Commentaire de clôture (obligatoire si rien n\'a été fait) :', ''); try { await api('POST', '/admin/vehicle-reports/' + b.dataset.reopenclose + '/decide', { decision: 'closed', adminNote: note || 'Clôturé', resolution: 'none' }); await loadFleet(); vehTab('pending'); toast('Clôturé.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  // Archivage / désarchivage des ordres clôturés.
+  body.querySelectorAll('[data-archive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.archive + '/archive', { archived: true }); await loadFleet(); vehTab('pending'); toast('Rangé dans « Clôturés archivés ».', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-unarchive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.unarchive + '/archive', { archived: false }); await loadFleet(); vehTab('pending'); toast('Sorti des archives.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
+  const archAll = body.querySelector('#ro-archive-all'); if (archAll) archAll.onclick = async () => { if (!confirm('Archiver tous les ordres clôturés récents ? Ils resteront consultables dans « Clôturés archivés ».')) return; try { const r = await api('POST', '/admin/vehicle-reports/archive-closed', {}); await loadFleet(); vehTab('pending'); toast(`${r.archived || 0} ordre(s) archivé(s).`, 'ok'); } catch (e) { toast(e.message, 'err'); } };
 }
 // Échappe une valeur pour un sélecteur d'attribut CSS.
 function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
@@ -4482,16 +4506,20 @@ function ctModal(vehicleId) {
 const eur = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
 
 async function renderStocks(main) {
-  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
-  main.innerHTML = `<div class="page-head"><div><h1>Suivi des entretiens et du stock</h1>
-    <p>Entretiens des véhicules, stock de pièces et consommables, et coût réel d'exploitation.</p></div></div>
-    <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
+  const isAdmin = State.user.role === 'admin';
+  const mecano = isMecano();
+  if (!isAdmin && !mecano) { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur ou à l'atelier.</div>`; return; }
+  // Mécanicien (non-admin) : uniquement les ordres de réparation à traiter.
+  const tabsHTML = isAdmin ? `
       <button data-stab="pending" class="active">Demandes concernant les véhicules <span id="veh-pending-badge"></span></button>
       <button data-stab="suivi">Suivi & alertes</button>
       <button data-stab="costs">Coûts par véhicule</button>
       <button data-stab="parts">Stock de pièces & consommables</button>
-      <button data-stab="categories">Catégories de pièces</button>
-    </div>
+      <button data-stab="categories">Catégories de pièces</button>`
+    : `<button data-stab="pending" class="active">🛠️ Ordres de réparation <span id="veh-pending-badge"></span></button>`;
+  main.innerHTML = `<div class="page-head"><div><h1>Suivi des entretiens et du stock</h1>
+    <p>${isAdmin ? 'Entretiens des véhicules, stock de pièces et consommables, et coût réel d\'exploitation.' : 'Traitez les signalements des chauffeurs : ordres de réparation à réaliser.'}</p></div></div>
+    <div class="view-switch" id="stk-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">${tabsHTML}</div>
     <div id="stk-body" class="empty">Chargement…</div>`;
   const tabs = main.querySelector('#stk-tabs');
   tabs.querySelectorAll('[data-stab]').forEach((b) => b.onclick = () => {
@@ -8579,6 +8607,11 @@ function userModal(u, body) {
         <div><label>Rôle</label><select id="eu-role"><option value="employee" ${u&&u.role==='employee'?'selected':''}>Salarié</option><option value="responsable" ${u&&u.role==='responsable'?'selected':''}>Responsable</option><option value="admin" ${u&&u.role==='admin'?'selected':''}>Administrateur</option></select></div>
       </div>
       <div class="row">
+        <div><label>Mécanicien (accès atelier)</label><select id="eu-mecano"><option value="">Non</option><option value="1" ${u&&u.mecano?'selected':''}>Oui</option></select></div>
+        <div></div>
+      </div>
+      <p class="help" style="margin:.1rem 0 0">Un mécanicien accède à « Mon véhicule » et au « Suivi entretiens &amp; stock » pour traiter les ordres de réparation des chauffeurs (même sans être encadrant).</p>
+      <div class="row">
         <div><label>Congés N (j)</label><input type="number" step="0.5" id="eu-congesN" value="${b.congesN}"></div>
         <div><label>Congés N-1 (j)</label><input type="number" step="0.5" id="eu-congesN1" value="${b.congesN1}"></div>
       </div>
@@ -8596,6 +8629,7 @@ function userModal(u, body) {
           username: val('#eu-username'), email: val('#eu-email'), phone: val('#eu-phone'), hireDate: val('#eu-hire'),
           address: val('#eu-address'), birthDate: val('#eu-birth'),
           isParent: !!val('#eu-parent'),
+          mecano: !!val('#eu-mecano'),
           password: val('#eu-password'),
           groupId: val('#eu-groupId'), role: val('#eu-role'),
           congesN: val('#eu-congesN'), congesN1: val('#eu-congesN1'),
