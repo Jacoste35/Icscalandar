@@ -1549,7 +1549,8 @@ function conflictAlertHTML(events, team) {
   const conflicts = [];
   for (const gid of groupsToCheck) {
     if (!gid) continue;
-    const evs = events.filter((e) => groupOf[e.userId] === gid && e.status === 'approved' && e.endDate >= today);
+    // Les retards (RET) ne rendent pas absent : ils ne créent jamais de conflit.
+    const evs = events.filter((e) => groupOf[e.userId] === gid && e.category !== 'RET' && e.status === 'approved' && e.endDate >= today);
     for (let i = 0; i < evs.length; i++) for (let j = i + 1; j < evs.length; j++) {
       const a = evs[i], bb = evs[j];
       if (a.userId !== bb.userId && a.startDate <= bb.endDate && a.endDate >= bb.startDate) {
