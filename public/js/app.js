@@ -445,9 +445,10 @@ function navSections() {
   if (isMecano() && !staff) {
     return [
       { id: 'home', solo: true, items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] },
-      { id: 'space', icon: '🔧', title: 'Mon espace', items: [
+      { id: 'space', icon: '🔧', title: 'Espace Atelier', items: [
         { id: 'myvehicle', icon: '🔧', label: 'Véhicule en atelier' },
         { id: 'stocks', icon: '🛠️', label: 'Suivi des entretiens et du stock' },
+        { id: 'convocation', icon: '📣', label: 'Convocation chauffeur' },
       ] },
     ];
   }
@@ -729,6 +730,7 @@ function renderView() {
   if (v === 'organigramme') return renderOrganigramme(main);
   if (v === 'absmgmt') return renderAbsenceManagement(main);
   if (v === 'myvehicle') return renderMyVehicle(main);
+  if (v === 'convocation') return renderConvocation(main);
   if (v === 'vehmgmt') return renderVehicleManagement(main);
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
@@ -3387,11 +3389,31 @@ const URGENCY_META = {
 const ISSUE_URGENCY = Object.fromEntries(VEHICLE_ISSUES.map((i) => [i.label, i.urgency]));
 // Les mentions « Urgent / Critique » sont remplacées par le niveau d'usure (%).
 function issueUrgencyBadge(label) { return ''; }
-// Pastille de niveau d'usure (25/50/75/100 %), colorée par gravité.
+// Anomalies « usables / consommables » (les seules à recevoir un niveau d'usure).
+// Les défauts binaires (turbo, voyants, fuite, pare-brise…) restent simples.
+const WEARABLE_ISSUES = new Set([
+  'Freins avant usés (plaquettes / disques)',
+  'Freins arrière usés (plaquettes / disques)',
+  'Garniture de frein à main (ne tient plus la charge)',
+  'Pneus avant usés',
+  'Pneus arrière usés',
+  'Embrayage / boîte de vitesses (point dur, à-coups)',
+  'Amortisseur avant gauche (AVG) défectueux',
+  'Amortisseur avant droit (AVD) défectueux',
+  'Triangle de suspension avant gauche (AVG) à remplacer',
+  'Triangle de suspension avant droit (AVD) à remplacer',
+  'Batterie faible / démarrage difficile',
+  'Vidange à prévoir',
+  'Essuie-glaces à remplacer',
+]);
+function isWearable(label) { return WEARABLE_ISSUES.has(label); }
+// Couleur d'un niveau d'usure : vert (25) → jaune (50) → orange (75) → rouge (100).
+function wearColor(pct) { pct = Number(pct); return pct >= 100 ? '#dc2626' : pct >= 75 ? '#ea580c' : pct >= 50 ? '#ca8a04' : '#16a34a'; }
+// Pastille de niveau d'usure, colorée du vert au rouge selon l'état.
 function wearBadge(pct) {
   pct = Number(pct); if (!pct) return '';
-  const cls = pct >= 100 ? 'danger' : pct >= 75 ? 'warn' : pct >= 50 ? '' : 'muted';
-  return ` <span class="pill ${cls}">usure ${pct}%</span>`;
+  const c = wearColor(pct);
+  return ` <span class="pill" style="background:${c}1a;color:${c};border:1px solid ${c}66;font-weight:800">usure ${pct}%</span>`;
 }
 // Usure d'une anomalie donnée dans un signalement.
 function reportWear(r, issue) { return (r.issueWear && r.issueWear[issue]) || 0; }
@@ -3540,14 +3562,18 @@ async function renderMyVehicle(main) {
   if (!vehicles.length) {
     body.innerHTML = conformityBanner + `<div class="alert info">Aucun véhicule n'est encore enregistré dans la flotte. Contactez la direction pour qu'elle ajoute les véhicules.</div>`;
   } else {
-    // Chaque anomalie : case à cocher + niveau d'usure (25/50/75/100 %).
-    const issuesHTML = VEHICLE_ISSUES.map((it, i) => `
-      <div class="mv-issue-row">
+    // Chaque anomalie : case à cocher. Les pièces « usables » ont en plus un
+    // niveau d'usure sous forme de cases colorées (tout reste visible, même sur
+    // téléphone). Les défauts binaires (turbo, voyants…) n'ont pas de %.
+    const issuesHTML = VEHICLE_ISSUES.map((it, i) => {
+      const wear = isWearable(it.label)
+        ? `<div class="mv-wear-opts" data-i="${i}">${[25, 50, 75, 100].map((p) => `<label class="wear-opt w${p}"><input type="radio" name="mv-wear-${i}" value="${p}"><span>${p}%</span></label>`).join('')}</div>`
+        : '';
+      return `<div class="mv-issue-row">
         <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(it.label)}" data-i="${i}"> ${esc(it.label)}</label>
-        <select class="mv-wear" data-i="${i}" aria-label="Niveau d'usure">
-          <option value="">Usure…</option><option value="25">25 %</option><option value="50">50 %</option><option value="75">75 %</option><option value="100">100 %</option>
-        </select>
-      </div>`).join('');
+        ${wear}
+      </div>`;
+    }).join('');
     body.innerHTML = conformityBanner + `
       <div class="card">
         <label>Véhicule en cours d'utilisation</label>
@@ -3580,9 +3606,9 @@ async function renderMyVehicle(main) {
     document.getElementById('mv-send').onclick = async () => {
       const checked = Array.from(document.querySelectorAll('.mv-issue:checked'));
       const issues = checked.map((c) => c.value);
-      // Niveau d'usure choisi pour chaque anomalie cochée.
+      // Niveau d'usure choisi (case cochée) pour chaque anomalie usable sélectionnée.
       const issueWear = {};
-      checked.forEach((c) => { const w = document.querySelector('.mv-wear[data-i="' + c.dataset.i + '"]'); if (w && w.value) issueWear[c.value] = Number(w.value); });
+      checked.forEach((c) => { const r = document.querySelector('input[name="mv-wear-' + c.dataset.i + '"]:checked'); if (r) issueWear[c.value] = Number(r.value); });
       const payload = { vehicleId: sel.value, plate: plate.value, km: km.value, issues, issueWear, note: document.getElementById('mv-note').value };
       if (!payload.vehicleId) { toast('Choisissez votre véhicule.', 'err'); return; }
       try {
@@ -3604,6 +3630,77 @@ async function renderMyVehicle(main) {
   }
 }
 
+// Motifs d'intervention proposés pour la convocation à l'atelier.
+const CONVOCATION_MOTIFS = ['Révision', 'Changement pneus', 'Changement freins', 'Vidange', 'Amortisseurs / triangles', 'Contrôle technique', 'Changement embrayage', 'Diagnostic / autre'];
+// Messages prédéfinis. {plate}/{motif} sont remplacés par le véhicule et le motif choisis.
+const CONVOCATION_TEMPLATES = [
+  { label: 'Révision du véhicule', build: (p, m) => `Bonjour, merci de vous rendre à l'atelier pour la révision du véhicule ${p}.` },
+  { label: 'Intervention (motif choisi)', build: (p, m) => `Bonjour, merci de vous rendre à l'atelier avec le véhicule ${p} pour l'intervention suivante : ${m}.` },
+  { label: 'Passage dès que possible', build: (p, m) => `Bonjour, merci de passer à l'atelier avec le véhicule ${p} dès que possible.` },
+  { label: 'Dépôt du véhicule', build: (p, m) => `Bonjour, une intervention (${m}) est prévue sur le véhicule ${p}. Merci de le déposer à l'atelier.` },
+];
+
+// Onglet « Convocation chauffeur » (Espace Atelier) : notifier le chauffeur
+// associé à un véhicule de se présenter à l'atelier, message prérempli.
+async function renderConvocation(main) {
+  main.innerHTML = `<div class="page-head"><div><h1>Convocation chauffeur</h1>
+    <p>Envoyez une notification au chauffeur associé à un véhicule pour le convoquer à l'atelier.</p></div></div>
+    <div id="cv-body" class="empty">Chargement…</div>`;
+  let vehicles = [];
+  try { vehicles = (await api('GET', '/staff/vehicles')).vehicles || []; }
+  catch (e) { document.getElementById('cv-body').innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  const assigned = vehicles.filter((v) => v.assignedUserId);
+  const body = document.getElementById('cv-body'); body.className = '';
+  if (!assigned.length) {
+    body.innerHTML = `<div class="alert info">Aucun véhicule n'a de chauffeur attribué pour le moment. Attribuez d'abord un chauffeur au véhicule pour pouvoir le convoquer.</div>`;
+    return;
+  }
+  const vehOpts = assigned.map((v) => `<option value="${esc(v.id)}" data-uid="${esc(v.assignedUserId)}" data-driver="${esc(v.assignedUserName || '—')}" data-plate="${esc(v.plate || '')}">${esc(vehLabel(v))} — ${esc(v.assignedUserName || 'chauffeur ?')}</option>`).join('');
+  const motifOpts = CONVOCATION_MOTIFS.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+  const tmplOpts = CONVOCATION_TEMPLATES.map((t, i) => `<option value="${i}">${esc(t.label)}</option>`).join('');
+  body.innerHTML = `
+    <div class="card">
+      <div class="grid2">
+        <div><label>Véhicule</label><select id="cv-veh">${vehOpts}</select></div>
+        <div><label>Chauffeur associé</label><input id="cv-driver" readonly></div>
+      </div>
+      <label style="margin-top:.8rem">Motif d'intervention</label>
+      <select id="cv-motif">${motifOpts}</select>
+      <label style="margin-top:.8rem">Message prédéfini</label>
+      <select id="cv-tmpl">${tmplOpts}</select>
+      <label style="margin-top:.8rem">Message envoyé au chauffeur</label>
+      <textarea id="cv-msg" style="min-height:90px"></textarea>
+      <div style="margin-top:1rem"><button class="btn accent" id="cv-send">📣 Convoquer à l'atelier</button></div>
+      <p class="help" style="margin-top:.5rem">La notification est envoyée directement au chauffeur qui utilise ce véhicule.</p>
+    </div>`;
+  const vehSel = body.querySelector('#cv-veh');
+  const driverEl = body.querySelector('#cv-driver');
+  const motifSel = body.querySelector('#cv-motif');
+  const tmplSel = body.querySelector('#cv-tmpl');
+  const msgEl = body.querySelector('#cv-msg');
+  const rebuild = () => {
+    const opt = vehSel.selectedOptions[0]; if (!opt) return;
+    driverEl.value = opt.dataset.driver || '';
+    const plate = opt.dataset.plate || opt.textContent.trim();
+    const motif = motifSel.value || '';
+    const tmpl = CONVOCATION_TEMPLATES[Number(tmplSel.value) || 0] || CONVOCATION_TEMPLATES[0];
+    msgEl.value = tmpl.build(plate, motif);
+  };
+  vehSel.onchange = rebuild; motifSel.onchange = rebuild; tmplSel.onchange = rebuild;
+  rebuild();
+  body.querySelector('#cv-send').onclick = async () => {
+    const opt = vehSel.selectedOptions[0];
+    if (!opt || !opt.dataset.uid) { toast('Choisissez un véhicule avec chauffeur.', 'err'); return; }
+    const message = (msgEl.value || '').trim();
+    if (!message) { toast('Le message est vide.', 'err'); return; }
+    try {
+      await api('POST', '/mechanic/notify-driver', { userId: opt.dataset.uid, vehicleId: vehSel.value, message });
+      if (window.celebrate) celebrate('validate', { text: 'Chauffeur convoqué !', sub: 'Notification envoyée' });
+      else toast('Chauffeur convoqué.', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
 function resolutionBadge(r) {
   if (r.status !== 'closed') return '';
   if (r.resolution === 'done') return `<span class="pill ok">Travaux réalisés ✔</span>`;
@@ -3615,16 +3712,18 @@ function resolutionBadge(r) {
 // Détail des usures avec leur statut réalisé / non réalisé (après clôture).
 function issuesWithResolution(r) {
   if (!r.issues || !r.issues.length) return '';
-  const byIssue = {}; (r.resolutions || []).forEach((x) => { byIssue[x.issue] = x.done; });
+  const byState = {}; (r.resolutions || []).forEach((x) => { byState[x.issue] = x.state || (x.done ? 'done' : ''); });
   const hasRes = (r.resolutions || []).length;
   const closed = r.status === 'closed';
   const reviewed = r.status === 'reviewed';
   return `<ul class="vr-issues">${r.issues.map((i) => {
     if (!hasRes || (!closed && !reviewed)) return `<li>${esc(i)}${wearBadge(reportWear(r, i))}</li>`;
-    const done = byIssue[i];
-    // Pièce remplacée = « réalisé » en fin de ligne ; sinon « à faire » (en cours)
-    // ou « non réalisé » (dossier clôturé).
-    const badge = done ? '<span class="pill ok">réalisé</span>' : (closed ? '<span class="pill danger">non réalisé</span>' : '<span class="pill muted">à faire</span>');
+    const st = byState[i];
+    // État de traitement en fin de ligne : réalisé / commande en cours / non réalisé.
+    const badge = st === 'done' ? '<span class="pill ok">réalisé</span>'
+      : st === 'ordered' ? '<span class="pill warn">commande en cours</span>'
+      : st === 'notdone' ? '<span class="pill danger">non réalisé</span>'
+      : (closed ? '<span class="pill danger">non réalisé</span>' : '<span class="pill muted">à faire</span>');
     return `<li>${esc(i)}${wearBadge(reportWear(r, i))} ${badge}</li>`;
   }).join('')}</ul>`;
 }
@@ -4019,11 +4118,22 @@ function vehTabPending(body) {
       <div><span class="help">Déclarant</span><br>${esc(r.userName)}</div>
       <div><span class="help">Le</span><br>${fmtDateTime(r.createdAt)}</div>
     </div>
-    <h4 style="margin:.6rem 0 .3rem">Travaux demandés</h4>
-    ${r.issues.length ? `<div class="vr-reslist">${r.issues.map((i) => `<label class="veh-check"><input type="checkbox" class="vr-res" data-rep="${r.id}" data-issue="${esc(i)}" ${(r.resolutions || []).find((x) => x.issue === i && x.done) ? 'checked' : ''}> Réalisé : ${esc(i)}${wearBadge(reportWear(r, i))}</label>`).join('')}</div>` : '<p class="help">Aucune usure cochée — voir la remarque du chauffeur.</p>'}
+    <h4 style="margin:.6rem 0 .3rem">Travaux demandés — statuer chaque ligne</h4>
+    ${r.issues.length ? `<div class="ro-lines">${r.issues.map((i, k) => { const cur = (r.resolutions || []).find((x) => x.issue === i) || {}; const st = cur.state || (cur.done ? 'done' : ''); const nm = 'res-' + r.id + '-' + k;
+      return `<div class="ro-line"><span class="ro-line-lbl">${esc(i)}${wearBadge(reportWear(r, i))}</span>
+        <span class="ro-opts">
+          <label class="ro-opt ok"><input type="radio" class="vr-res" name="${nm}" data-rep="${r.id}" data-issue="${esc(i)}" value="done" ${st === 'done' ? 'checked' : ''}><span>Réalisé</span></label>
+          <label class="ro-opt mid"><input type="radio" class="vr-res" name="${nm}" data-rep="${r.id}" data-issue="${esc(i)}" value="ordered" ${st === 'ordered' ? 'checked' : ''}><span>Commande en cours</span></label>
+          <label class="ro-opt ko"><input type="radio" class="vr-res" name="${nm}" data-rep="${r.id}" data-issue="${esc(i)}" value="notdone" ${st === 'notdone' ? 'checked' : ''}><span>Non réalisé</span></label>
+        </span></div>`; }).join('')}</div>` : '<p class="help">Aucune usure cochée — voir la remarque du chauffeur.</p>'}
     ${r.note ? `<p style="margin:.3rem 0 0"><em>« ${esc(r.note)} »</em></p>` : ''}
     <h4 style="margin:.7rem 0 .3rem">Check-up atelier rapide</h4>
-    <div class="vr-reslist ro-checkup">${REPAIR_CHECKUP.map((c) => `<label class="veh-check"><input type="checkbox" class="ro-chk" data-rep="${r.id}" data-c="${esc(c)}"> ${esc(c)}</label>`).join('')}</div>
+    <div class="ro-lines ro-checkup">${REPAIR_CHECKUP.map((c, k) => { const nm = 'chk-' + r.id + '-' + k; const cu = (r.checkup || []).find((x) => x.label === c); const v = cu ? (cu.ok === true ? 'ok' : cu.ok === false ? 'ko' : '') : '';
+      return `<div class="ro-line"><span class="ro-line-lbl">${esc(c)} :</span>
+        <span class="ro-opts">
+          <label class="ro-opt ok"><input type="radio" class="ro-chk" name="${nm}" data-rep="${r.id}" data-c="${esc(c)}" value="ok" ${v === 'ok' ? 'checked' : ''}><span>Ok</span></label>
+          <label class="ro-opt ko"><input type="radio" class="ro-chk" name="${nm}" data-rep="${r.id}" data-c="${esc(c)}" value="ko" ${v === 'ko' ? 'checked' : ''}><span>K.O</span></label>
+        </span></div>`; }).join('')}</div>
     <label style="margin-top:.5rem">Commentaire de clôture / motif</label>
     <input class="vr-note" data-note="${r.id}" placeholder="Travaux réalisés, pièces, ou motif de non-réalisation…" value="${esc(r.adminNote || '')}">
     <div class="vr-actions" style="margin-top:.5rem">
@@ -4063,8 +4173,8 @@ function vehTabPending(body) {
   const collectAndDecide = async (id, decision, extra = {}) => {
     const rep = reports.find((x) => x.id === id);
     const note = (body.querySelector(`[data-note="${id}"]`) || {}).value || '';
-    const resolutions = rep && rep.issues ? rep.issues.map((i) => ({ issue: i, done: !!body.querySelector(`.vr-res[data-rep="${id}"][data-issue="${cssEsc(i)}"]`)?.checked })) : [];
-    const checkup = REPAIR_CHECKUP.map((c) => ({ label: c, ok: !!body.querySelector(`.ro-chk[data-rep="${id}"][data-c="${cssEsc(c)}"]`)?.checked }));
+    const resolutions = rep && rep.issues ? rep.issues.map((i) => { const el = body.querySelector(`.vr-res[data-rep="${id}"][data-issue="${cssEsc(i)}"]:checked`); const state = el ? el.value : ''; return { issue: i, state, done: state === 'done' }; }) : [];
+    const checkup = REPAIR_CHECKUP.map((c) => { const el = body.querySelector(`.ro-chk[data-rep="${id}"][data-c="${cssEsc(c)}"]:checked`); return { label: c, ok: el ? (el.value === 'ok') : null }; });
     try {
       await api('POST', '/admin/vehicle-reports/' + id + '/decide', Object.assign({ decision, adminNote: note, resolutions, checkup }, extra));
       await loadFleet(); refresh();

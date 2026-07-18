@@ -1903,7 +1903,35 @@ html.gsap-on #app { overflow-x: clip; }
 @media (hover:hover) and (pointer:fine) { .btn.ghost:hover { border-color: #8aa2c5; background: rgba(127,137,153,.12); } }
 
 /* ---- « Véhicule en atelier » : anomalie + niveau d'usure (25/50/75/100 %) --- */
-.mv-issues-list { display: flex; flex-direction: column; gap: .3rem; margin-top: .2rem; }
-.mv-issue-row { display: flex; align-items: center; gap: .6rem; }
-.mv-issue-row .veh-check { flex: 1 1 auto; margin: 0; min-width: 0; }
-.mv-issue-row .mv-wear { flex: 0 0 auto; min-width: 108px; }
+.mv-issues-list { display: flex; flex-direction: column; gap: .5rem; margin-top: .2rem; }
+.mv-issue-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; padding: .35rem .1rem; border-bottom: 1px solid #eef2f7; }
+.mv-issue-row:last-child { border-bottom: 0; }
+.mv-issue-row .veh-check { flex: 1 1 240px; margin: 0; min-width: 0; }
+/* Cases à cocher d'usure : chips colorées vert→rouge, tout visible même sur mobile. */
+.mv-wear-opts { display: flex; flex: 0 0 auto; gap: .3rem; flex-wrap: wrap; }
+.wear-opt { position: relative; }
+.wear-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
+.wear-opt span { display: inline-block; min-width: 42px; text-align: center; padding: .28rem .45rem; border-radius: 999px; font-weight: 800; font-size: .82rem; border: 2px solid; cursor: pointer; user-select: none; transition: transform .08s, box-shadow .12s; }
+.wear-opt.w25 span { color: #16a34a; border-color: #86efac; background: #f0fdf4; }
+.wear-opt.w50 span { color: #ca8a04; border-color: #fde68a; background: #fefce8; }
+.wear-opt.w75 span { color: #ea580c; border-color: #fed7aa; background: #fff7ed; }
+.wear-opt.w100 span { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
+.wear-opt input:checked + span { color: #fff; transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,.18); }
+.wear-opt.w25 input:checked + span { background: #16a34a; border-color: #16a34a; }
+.wear-opt.w50 input:checked + span { background: #ca8a04; border-color: #ca8a04; }
+.wear-opt.w75 input:checked + span { background: #ea580c; border-color: #ea580c; }
+.wear-opt.w100 input:checked + span { background: #dc2626; border-color: #dc2626; }
+
+/* ---- Ordre de réparation : lignes de pièces avec état à cocher (3 options) --- */
+.ro-lines { display: flex; flex-direction: column; gap: .55rem; margin: .3rem 0 .2rem; }
+.ro-line { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .6rem; padding: .4rem 0; border-bottom: 1px solid #eef2f7; }
+.ro-line:last-child { border-bottom: 0; }
+.ro-line-lbl { flex: 1 1 220px; font-weight: 600; min-width: 0; }
+.ro-opts { display: flex; flex: 0 0 auto; gap: .3rem; flex-wrap: wrap; }
+.ro-opt { position: relative; }
+.ro-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
+.ro-opt span { display: inline-block; padding: .28rem .55rem; border-radius: 999px; font-weight: 700; font-size: .82rem; border: 2px solid #d6dee9; background: #f7f9fc; color: #475569; cursor: pointer; user-select: none; transition: transform .08s, box-shadow .12s; }
+.ro-opt input:checked + span { color: #fff; transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,.16); }
+.ro-opt.ok input:checked + span { background: #16a34a; border-color: #16a34a; }
+.ro-opt.mid input:checked + span { background: #ca8a04; border-color: #ca8a04; }
+.ro-opt.ko input:checked + span { background: #dc2626; border-color: #dc2626; }
