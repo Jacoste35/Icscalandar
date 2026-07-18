@@ -448,6 +448,7 @@ function navSections() {
       { id: 'space', icon: '🔧', title: 'Espace Atelier', items: [
         { id: 'myvehicle', icon: '🔧', label: 'Véhicule en atelier' },
         { id: 'stocks', icon: '🛠️', label: 'Suivi des entretiens et du stock' },
+        { id: 'vehmgmt', icon: '🚐', label: 'Gestion des véhicules' },
         { id: 'convocation', icon: '📣', label: 'Convocation chauffeur' },
       ] },
     ];
@@ -3407,16 +3408,20 @@ const WEARABLE_ISSUES = new Set([
   'Essuie-glaces à remplacer',
 ]);
 function isWearable(label) { return WEARABLE_ISSUES.has(label); }
-// Couleur d'un niveau d'usure : vert (25) → jaune (50) → orange (75) → rouge (100).
-function wearColor(pct) { pct = Number(pct); return pct >= 100 ? '#dc2626' : pct >= 75 ? '#ea580c' : pct >= 50 ? '#ca8a04' : '#16a34a'; }
-// Pastille de niveau d'usure, colorée du vert au rouge selon l'état.
+// Niveaux d'usure proposés : 0 % = neuf, puis 25 → 100 %.
+const WEAR_LEVELS = [0, 25, 50, 75, 100];
+// Couleur d'un niveau d'usure : bleu (0 = neuf) · vert (25) → jaune (50) → orange (75) → rouge (100).
+function wearColor(pct) { pct = Number(pct); return pct >= 100 ? '#dc2626' : pct >= 75 ? '#ea580c' : pct >= 50 ? '#ca8a04' : pct >= 25 ? '#16a34a' : '#2563eb'; }
+// Pastille de niveau d'usure, colorée du bleu (neuf) au rouge selon l'état.
 function wearBadge(pct) {
-  pct = Number(pct); if (!pct) return '';
+  if (pct === null || pct === undefined || pct === '') return '';
+  pct = Number(pct); if (!Number.isFinite(pct)) return '';
   const c = wearColor(pct);
-  return ` <span class="pill" style="background:${c}1a;color:${c};border:1px solid ${c}66;font-weight:800">usure ${pct}%</span>`;
+  const txt = pct === 0 ? 'neuf' : `usure ${pct}%`;
+  return ` <span class="pill" style="background:${c}1a;color:${c};border:1px solid ${c}66;font-weight:800">${txt}</span>`;
 }
-// Usure d'une anomalie donnée dans un signalement.
-function reportWear(r, issue) { return (r.issueWear && r.issueWear[issue]) || 0; }
+// Usure d'une anomalie donnée dans un signalement (null si non renseignée).
+function reportWear(r, issue) { return (r.issueWear && (issue in r.issueWear)) ? Number(r.issueWear[issue]) : null; }
 
 // Types de dommage relevés lors d'un tour de véhicule.
 const IMPACT_TYPES = ['Rayure', 'Choc / enfoncement', 'Fissure', 'Bris de glace', 'Rouille', 'Pièce manquante / cassée', 'Autre'];
@@ -3448,7 +3453,7 @@ function dashVehiclePendingHTML(reports) {
       <strong>${esc(r.vehicleName)}</strong> (${esc(r.plate)}) · ${kmFmt(r.km)} — ${esc(r.userName)}
       ${r.issues && r.issues.length ? `<div class="help">${r.issues.map(esc).join(' · ')}</div>` : ''}${r.note ? `<div class="help">${esc(r.note)}</div>` : ''}
     </li>`).join('')}</ul>
-    <button class="btn ghost sm" onclick="State.view='vehmgmt';renderApp()">Traiter dans Gestion des véhicules</button>
+    <button class="btn ghost sm" onclick="State.view=(window.isMecano&&isMecano()&&!isStaff())?'stocks':'vehmgmt';renderApp()">Traiter les demandes</button>
   </div>`;
 }
 // Accueil : alertes de stock bas (rouge ≤1, jaune 2, vert 3).
@@ -3567,7 +3572,7 @@ async function renderMyVehicle(main) {
     // téléphone). Les défauts binaires (turbo, voyants…) n'ont pas de %.
     const issuesHTML = VEHICLE_ISSUES.map((it, i) => {
       const wear = isWearable(it.label)
-        ? `<div class="mv-wear-opts" data-i="${i}">${[25, 50, 75, 100].map((p) => `<label class="wear-opt w${p}"><input type="radio" name="mv-wear-${i}" value="${p}"><span>${p}%</span></label>`).join('')}</div>`
+        ? `<div class="mv-wear-opts" data-i="${i}">${WEAR_LEVELS.map((p) => `<label class="wear-opt w${p}"><input type="radio" name="mv-wear-${i}" value="${p}"><span>${p === 0 ? 'Neuf' : p + '%'}</span></label>`).join('')}</div>`
         : '';
       return `<div class="mv-issue-row">
         <label class="veh-check"><input type="checkbox" class="mv-issue" value="${esc(it.label)}" data-i="${i}"> ${esc(it.label)}</label>
@@ -3587,13 +3592,17 @@ async function renderMyVehicle(main) {
         </div>
         <label style="margin-top:.8rem">Usures / anomalies constatées <span class="help">— cochez et indiquez le niveau d'usure</span></label>
         <div class="mv-issues-list">${issuesHTML}</div>
+        <div id="mv-service" style="display:none;margin-top:.8rem">
+          <label>Échéance de la prochaine révision (km) <span class="help">— facultatif : déclenche un rappel automatique à 5 000 km puis 500 km avant l'échéance</span></label>
+          <input id="mv-service-km" type="number" min="0" inputmode="numeric" placeholder="ex. 120000">
+        </div>
         <label style="margin-top:.8rem">Précisions (facultatif)</label>
         <textarea id="mv-note" placeholder="Décrivez le problème, sa localisation, depuis quand…" style="min-height:90px"></textarea>
         <div style="margin-top:1rem"><button class="btn accent" id="mv-send">Envoyer le signalement</button></div>
         <p class="help" style="margin-top:.5rem">Votre signalement est transmis à la direction et apparaît dans le suivi du véhicule.</p>
       </div>
       ${mecano
-        ? '<div class="card"><h3>🛠️ Demandes des chauffeurs à traiter</h3><p class="help" style="margin-top:0">Toutes les demandes concernant les véhicules, de tous les utilisateurs.</p><div id="mv-orders" class="empty">Chargement…</div></div>'
+        ? '<div style="margin-top:1rem"><h2 class="dash-divider" style="margin-bottom:.3rem">🛠️ Demandes des chauffeurs à traiter</h2><p class="help" style="margin:0 0 .8rem">Toutes les demandes concernant les véhicules, de tous les utilisateurs.</p><div id="mv-orders" class="empty">Chargement…</div></div>'
         : '<div class="card"><h3>Mes signalements récents</h3><div id="mv-mine"></div></div>'}`;
 
     const sel = document.getElementById('mv-vehicle');
@@ -3603,13 +3612,18 @@ async function renderMyVehicle(main) {
       const o = sel.selectedOptions[0];
       if (o && o.value) { if (!plate.value) plate.value = o.dataset.plate || ''; if (!km.value && o.dataset.km && o.dataset.km !== '0') km.value = o.dataset.km; }
     };
+    // Affiche le champ « échéance de révision » dès qu'une révision est cochée.
+    const svcBox = document.getElementById('mv-service');
+    const syncService = () => { const on = Array.from(document.querySelectorAll('.mv-issue:checked')).some((c) => /r[ée]vision/i.test(c.value)); if (svcBox) svcBox.style.display = on ? '' : 'none'; };
+    document.querySelectorAll('.mv-issue').forEach((c) => c.addEventListener('change', syncService));
     document.getElementById('mv-send').onclick = async () => {
       const checked = Array.from(document.querySelectorAll('.mv-issue:checked'));
       const issues = checked.map((c) => c.value);
       // Niveau d'usure choisi (case cochée) pour chaque anomalie usable sélectionnée.
       const issueWear = {};
       checked.forEach((c) => { const r = document.querySelector('input[name="mv-wear-' + c.dataset.i + '"]:checked'); if (r) issueWear[c.value] = Number(r.value); });
-      const payload = { vehicleId: sel.value, plate: plate.value, km: km.value, issues, issueWear, note: document.getElementById('mv-note').value };
+      const svcKm = (document.getElementById('mv-service-km') || {}).value || '';
+      const payload = { vehicleId: sel.value, plate: plate.value, km: km.value, issues, issueWear, serviceDueKm: svcKm, note: document.getElementById('mv-note').value };
       if (!payload.vehicleId) { toast('Choisissez votre véhicule.', 'err'); return; }
       try {
         const r = await api('POST', '/vehicles/report', payload);
@@ -3747,7 +3761,7 @@ function renderMyVehReports(el, reports) {
 let _veh = null; // cache des données de flotte pour la vue encadrement
 
 async function renderVehicleManagement(main) {
-  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  if (!isStaff() && !isMecano()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement ou à l'atelier.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>Gestion des véhicules</h1>
     <p>Tour du véhicule (état des lieux, propreté, équipements, documents). Le suivi & les alertes et les demandes sont dans « Suivi des entretiens et du stock ».</p></div></div>
     <div class="view-switch" id="vt-tabs" style="margin-bottom:1.2rem;flex-wrap:wrap">
@@ -4160,11 +4174,22 @@ function vehTabPending(body) {
   </div>`;
 
   body.innerHTML = `
-    <h3>Ordres de réparation ouverts (${pending.length})</h3>
-    ${pending.length ? pending.map(orderCard).join('') : '<div class="alert ok">Aucune demande en attente. 👍</div>'}
-    ${openOrders.length ? `<h3 style="margin-top:1.2rem">Pris en compte — à clôturer (${openOrders.length})</h3>${openOrders.map(summaryCard).join('')}` : ''}
-    ${closed.length ? `<div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:1.2rem"><h3 style="margin:0">Clôturés récemment (${closed.length})</h3>${canProcess ? '<button class="btn ghost sm" id="ro-archive-all">📦 Archiver les clôturés</button>' : ''}</div>${closed.map(summaryCard).join('')}` : ''}
-    ${archived.length ? `<details class="card" style="margin-top:1.2rem"><summary><strong>📦 Clôturés archivés</strong> <span class="help">${archived.length}</span></summary><div style="margin-top:.6rem">${archived.map(summaryCard).join('')}</div></details>` : ''}`;
+    <div class="ro-section">
+      <div class="ro-section-head"><span class="ro-count danger">${pending.length}</span><h3>À traiter — ordres de réparation ouverts</h3></div>
+      ${pending.length ? pending.map(orderCard).join('') : '<div class="alert ok">Aucune demande en attente. 👍</div>'}
+    </div>
+    ${openOrders.length ? `<details class="ro-section" open>
+      <summary class="ro-section-head"><span class="ro-count warn">${openOrders.length}</span><h3>Pris en compte — à clôturer</h3></summary>
+      <div class="ro-cards">${openOrders.map(summaryCard).join('')}</div>
+    </details>` : ''}
+    ${closed.length ? `<details class="ro-section">
+      <summary class="ro-section-head"><span class="ro-count ok">${closed.length}</span><h3>Clôturés récemment</h3>${canProcess ? '<button class="btn ghost sm" id="ro-archive-all" onclick="event.preventDefault();event.stopPropagation()">📦 Archiver les clôturés</button>' : ''}</summary>
+      <div class="ro-cards">${closed.map(summaryCard).join('')}</div>
+    </details>` : ''}
+    ${archived.length ? `<details class="ro-section">
+      <summary class="ro-section-head"><span class="ro-count muted">${archived.length}</span><h3>📦 Clôturés archivés</h3></summary>
+      <div class="ro-cards">${archived.map(summaryCard).join('')}</div>
+    </details>` : ''}`;
 
   if (!canProcess) return;
   // Re-rend dans le MÊME conteneur (fonctionne aussi bien dans « Suivi » que dans
@@ -4196,7 +4221,7 @@ function vehTabPending(body) {
   // Archivage / désarchivage des ordres clôturés.
   body.querySelectorAll('[data-archive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.archive + '/archive', { archived: true }); await loadFleet(); refresh(); toast('Rangé dans « Clôturés archivés ».', 'ok'); } catch (e) { toast(e.message, 'err'); } });
   body.querySelectorAll('[data-unarchive]').forEach((b) => b.onclick = async () => { try { await api('POST', '/admin/vehicle-reports/' + b.dataset.unarchive + '/archive', { archived: false }); await loadFleet(); refresh(); toast('Sorti des archives.', 'ok'); } catch (e) { toast(e.message, 'err'); } });
-  const archAll = body.querySelector('#ro-archive-all'); if (archAll) archAll.onclick = async () => { if (!confirm('Archiver tous les ordres clôturés récents ? Ils resteront consultables dans « Clôturés archivés ».')) return; try { const r = await api('POST', '/admin/vehicle-reports/archive-closed', {}); await loadFleet(); refresh(); toast(`${r.archived || 0} ordre(s) archivé(s).`, 'ok'); } catch (e) { toast(e.message, 'err'); } };
+  const archAll = body.querySelector('#ro-archive-all'); if (archAll) archAll.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); if (!confirm('Archiver tous les ordres clôturés récents ? Ils resteront consultables dans « Clôturés archivés ».')) return; try { const r = await api('POST', '/admin/vehicle-reports/archive-closed', {}); await loadFleet(); refresh(); toast(`${r.archived || 0} ordre(s) archivé(s).`, 'ok'); } catch (e2) { toast(e2.message, 'err'); } };
 }
 // Échappe une valeur pour un sélecteur d'attribut CSS.
 function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }

@@ -1351,6 +1351,8 @@ app.put('/api/admin/school-holidays', authRequired, adminRequired, async (req, r
 // ---------------------------------------------------------------------------
 
 const VEHICLE_ALERT_KM = 3000; // marge d'alerte avant l'échéance d'un entretien
+const SERVICE_ALERT_KM = 5000;    // « il reste < 5000 km avant la prochaine révision »
+const SERVICE_IMMINENT_KM = 500;  // révision imminente : message chauffeur + atelier
 
 // Points de contrôle d'un « tour du véhicule ».
 //   group : 'doc' (documents/équipements) | 'etat' (propreté & état)
@@ -1602,6 +1604,40 @@ function fleetAnalysis(db) {
   return { vehicles, consumables, alertKm: VEHICLE_ALERT_KM, drivers, models: VEHICLE_MODELS };
 }
 
+// Rappels automatiques d'échéance de révision (entretiens programmés au km).
+// Deux paliers, avec anti-spam (drapeaux notified5000 / notified500) :
+//   • ≤ 5000 km restants  → alerte « prochaine révision à anticiper » (atelier + chauffeur) ;
+//   • ≤ 500 km restants   → alerte « révision imminente » (atelier + chauffeur).
+function checkServiceReminders(db, saveFn) {
+  const schedules = (db.vehicleSchedule || []).filter((s) => !s.done && s.dueKm != null);
+  if (!schedules.length) return;
+  let changed = false;
+  const mechs = push.mechanicIds(db);
+  schedules.forEach((s) => {
+    const v = db.vehicles.find((x) => x.id === s.vehicleId); if (!v) return;
+    const remaining = Number(s.dueKm) - effectiveKm(db, v);
+    const vlabel = `${v.name}${v.plate ? ' (' + v.plate + ')' : ''}`;
+    const targets = () => { const t = new Set(mechs); if (v.assignedUserId) t.add(v.assignedUserId); return [...t]; };
+    if (remaining <= SERVICE_IMMINENT_KM && !s.notified500) {
+      s.notified500 = true; s.notified5000 = true; changed = true;
+      const txt = remaining <= 0 ? `échéance dépassée de ${Math.abs(Math.round(remaining))} km` : `il reste ${Math.round(remaining)} km`;
+      push.fire(push.notifyUsers(db, saveFn, targets(), {
+        title: '⏰ Révision imminente',
+        body: `${vlabel} : ${s.label} — ${txt} avant l’échéance (${s.dueKm} km). Programmez le passage à l’atelier.`,
+        url: '/', tag: 'service-500-' + s.id,
+      }));
+    } else if (remaining <= SERVICE_ALERT_KM && remaining > SERVICE_IMMINENT_KM && !s.notified5000) {
+      s.notified5000 = true; changed = true;
+      push.fire(push.notifyUsers(db, saveFn, targets(), {
+        title: '🔧 Prochaine révision à anticiper',
+        body: `${vlabel} : ${s.label} — il reste moins de 5000 km avant la prochaine révision (échéance ${s.dueKm} km).`,
+        url: '/', tag: 'service-5000-' + s.id,
+      }));
+    }
+  });
+  if (changed && saveFn) { try { saveFn(); } catch (e) { /* best-effort */ } }
+}
+
 // Motifs d'absence ouvrant droit, selon le règlement intérieur, à un rappel,
 // un avertissement ou une sanction. Affiché à l'encadrement sur l'accueil.
 const SANCTIONABLE_ABSENCES = {
@@ -1709,6 +1745,7 @@ app.get('/api/staff/discipline', authRequired, staffRequired, (req, res) => {
 // attente + entretiens à anticiper.
 app.get('/api/staff/vehicle-dashboard', authRequired, staffOrMechanic, (req, res) => {
   const db = getData();
+  checkServiceReminders(db, save); // déclenche les rappels de révision (5000 / 500 km)
   const analysis = fleetAnalysis(db);
   const alerts = [];
   analysis.vehicles.forEach((v) => v.items.forEach((it) => {
@@ -1731,7 +1768,7 @@ app.get('/api/staff/vehicle-dashboard', authRequired, staffOrMechanic, (req, res
     const v = db.vehicles.find((x) => x.id === s.vehicleId) || {};
     const curKm = effectiveKm(db, v);
     let near = false, over = false;
-    if (s.dueKm != null) { const r = s.dueKm - curKm; if (r <= 0) over = true; else if (r <= VEHICLE_ALERT_KM) near = true; }
+    if (s.dueKm != null) { const r = s.dueKm - curKm; if (r <= 0) over = true; else if (r <= SERVICE_ALERT_KM) near = true; }
     if (s.dueDate) { if (s.dueDate < today) over = true; else if (s.dueDate <= addDays(today, 30)) near = true; }
     return { vehicleName: v.name, plate: v.plate, label: s.label, dueKm: s.dueKm, dueDate: s.dueDate, over, near };
   }).filter((s) => s.over || s.near);
@@ -1750,7 +1787,7 @@ app.get('/api/vehicles', authRequired, (req, res) => {
 
 app.post('/api/vehicles/report', authRequired, async (req, res) => {
   const db = getData();
-  const { vehicleId, plate, km, issues, note, issueWear } = req.body || {};
+  const { vehicleId, plate, km, issues, note, issueWear, serviceDueKm } = req.body || {};
   const v = db.vehicles.find((x) => x.id === vehicleId);
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable — sélectionnez votre véhicule dans la liste.' });
   const plateClean = formatPlate(plate);
@@ -1767,7 +1804,7 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
   }
   // Niveau d'usure par anomalie (25/50/75/100 %) — filtré sur les valeurs valides.
   const wearMap = {};
-  const WEARS = [25, 50, 75, 100];
+  const WEARS = [0, 25, 50, 75, 100]; // 0 % = pièce neuve
   if (issueWear && typeof issueWear === 'object') {
     for (const k of Object.keys(issueWear)) { const w = Number(issueWear[k]); if (issueList.includes(k) && WEARS.includes(w)) wearMap[k] = w; }
   }
@@ -1795,6 +1832,17 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
   // Le kilométrage le plus récent fait progresser le compteur du véhicule.
   if (kmNum > (Number(v.km) || 0)) v.km = kmNum;
   db.vehicleReports.push(report);
+  // Échéance de révision saisie : on programme (ou met à jour) l'entretien afin
+  // de déclencher les rappels automatiques (5000 km puis 500 km avant l'échéance).
+  const dueKmNum = intStr(serviceDueKm);
+  const revIssue = issueList.find((i) => /r[ée]vision/i.test(i));
+  if (dueKmNum != null && dueKmNum > 0 && revIssue) {
+    db.vehicleSchedule = db.vehicleSchedule || [];
+    const label = revIssue.replace(/\s*à prévoir\s*$/i, '').trim() || 'Révision';
+    let s = db.vehicleSchedule.find((x) => x.vehicleId === v.id && !x.done && x.label === label);
+    if (s) { s.dueKm = dueKmNum; s.notified5000 = false; s.notified500 = false; }
+    else db.vehicleSchedule.push({ id: nextId('vsched'), vehicleId: v.id, label, dueKm: dueKmNum, dueDate: null, note: 'Échéance saisie lors d’un signalement.', done: false, notified5000: false, notified500: false, createdAt: new Date().toISOString() });
+  }
   await save();
   // Push : prévient l'encadrement ET l'atelier (mécaniciens) d'un signalement.
   push.fire(push.notifyUsers(getData(), save, [...new Set([...push.staffIds(getData()), ...push.mechanicIds(getData())])], {
@@ -1810,7 +1858,20 @@ app.post('/api/vehicles/report', authRequired, async (req, res) => {
       body: `${v.name} (${plateClean}) : usure ${maxWear}% relevée${worn.length ? ' (' + worn.slice(0, 2).join(', ') + ')' : ''}. Merci de vous rendre à l’atelier avec le véhicule.`,
       url: '/', tag: 'atelier-' + report.id,
     }));
+  } else if (maxWear >= 50 && maxWear < 75) {
+    // Usure 50–75 % : l'entretien approche — on informe le chauffeur ET l'atelier.
+    const worn = Object.keys(wearMap).filter((k) => wearMap[k] >= 50);
+    const targets = new Set(push.mechanicIds(getData()));
+    if (v.assignedUserId) targets.add(v.assignedUserId);
+    targets.delete(req.user.id);
+    push.fire(push.notifyUsers(getData(), save, [...targets], {
+      title: '🛠️ Entretien à prévoir prochainement',
+      body: `${v.name} (${plateClean}) : usure ${maxWear}%${worn.length ? ' (' + worn.slice(0, 2).join(', ') + ')' : ''}. L’entretien arrivera prochainement à échéance.`,
+      url: '/', tag: 'atelier-soon-' + report.id,
+    }));
   }
+  // Rappels de révision (échéances kilométriques) après mise à jour du compteur.
+  checkServiceReminders(getData(), save);
   res.json({ report });
 });
 
@@ -2369,8 +2430,8 @@ app.post('/api/admin/vehicles/:id/schedule', authRequired, adminRequired, async 
   if (!v) return res.status(404).json({ error: 'Véhicule introuvable' });
   const { label, dueKm, dueDate, note } = req.body || {};
   if (!String(label || '').trim()) return res.status(400).json({ error: 'Intitulé obligatoire' });
-  const s = { id: nextId('vsched'), vehicleId: v.id, label: String(label).trim(), dueKm: intStr(dueKm), dueDate: validDate(dueDate) ? dueDate : null, note: String(note || '').trim(), done: false, createdAt: new Date().toISOString() };
-  db.vehicleSchedule.push(s); await save(); res.json({ schedule: s });
+  const s = { id: nextId('vsched'), vehicleId: v.id, label: String(label).trim(), dueKm: intStr(dueKm), dueDate: validDate(dueDate) ? dueDate : null, note: String(note || '').trim(), done: false, notified5000: false, notified500: false, createdAt: new Date().toISOString() };
+  db.vehicleSchedule.push(s); await save(); checkServiceReminders(db, save); res.json({ schedule: s });
 });
 app.put('/api/admin/vehicles/schedule/:id', authRequired, adminRequired, async (req, res) => {
   const db = getData();

@@ -1912,11 +1912,13 @@ html.gsap-on #app { overflow-x: clip; }
 .wear-opt { position: relative; }
 .wear-opt input { position: absolute; opacity: 0; width: 0; height: 0; }
 .wear-opt span { display: inline-block; min-width: 42px; text-align: center; padding: .28rem .45rem; border-radius: 999px; font-weight: 800; font-size: .82rem; border: 2px solid; cursor: pointer; user-select: none; transition: transform .08s, box-shadow .12s; }
+.wear-opt.w0 span { color: #2563eb; border-color: #bfdbfe; background: #eff6ff; }
 .wear-opt.w25 span { color: #16a34a; border-color: #86efac; background: #f0fdf4; }
 .wear-opt.w50 span { color: #ca8a04; border-color: #fde68a; background: #fefce8; }
 .wear-opt.w75 span { color: #ea580c; border-color: #fed7aa; background: #fff7ed; }
 .wear-opt.w100 span { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
 .wear-opt input:checked + span { color: #fff; transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,.18); }
+.wear-opt.w0 input:checked + span { background: #2563eb; border-color: #2563eb; }
 .wear-opt.w25 input:checked + span { background: #16a34a; border-color: #16a34a; }
 .wear-opt.w50 input:checked + span { background: #ca8a04; border-color: #ca8a04; }
 .wear-opt.w75 input:checked + span { background: #ea580c; border-color: #ea580c; }
@@ -1935,3 +1937,19 @@ html.gsap-on #app { overflow-x: clip; }
 .ro-opt.ok input:checked + span { background: #16a34a; border-color: #16a34a; }
 .ro-opt.mid input:checked + span { background: #ca8a04; border-color: #ca8a04; }
 .ro-opt.ko input:checked + span { background: #dc2626; border-color: #dc2626; }
+
+/* ---- Regroupement des ordres de réparation (sections repliables) ---------- */
+.ro-section { margin: 0 0 1.1rem; }
+details.ro-section > summary { list-style: none; cursor: pointer; }
+details.ro-section > summary::-webkit-details-marker { display: none; }
+.ro-section-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: 0 0 .5rem; }
+.ro-section-head h3 { margin: 0; font-size: 1.05rem; }
+details.ro-section > summary.ro-section-head::before { content: '▸'; color: #64748b; font-weight: 900; transition: transform .12s; }
+details.ro-section[open] > summary.ro-section-head::before { transform: rotate(90deg); }
+.ro-section-head .btn { margin-left: auto; }
+.ro-count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.7rem; height: 1.7rem; padding: 0 .4rem; border-radius: 999px; font-weight: 800; font-size: .9rem; color: #fff; }
+.ro-count.danger { background: #dc2626; }
+.ro-count.warn { background: #ea580c; }
+.ro-count.ok { background: #16a34a; }
+.ro-count.muted { background: #94a3b8; }
+.ro-cards { display: flex; flex-direction: column; gap: .6rem; }
