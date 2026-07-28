@@ -60,7 +60,7 @@ function mount(app, ctx) {
   // Messages sortants non encore envoyés (notifications + réponses direction).
   r.get('/outbox', botAuth, (req, res) => {
     const pending = (getData().waOutbox || []).filter((m) => !m.sentAt).slice(0, 30)
-      .map((m) => ({ id: m.id, phone: m.phone, text: m.text }));
+      .map((m) => ({ id: m.id, phone: m.phone || null, group: m.group || null, mentionPhone: m.mentionPhone || null, text: m.text }));
     res.json({ messages: pending });
   });
 
@@ -122,6 +122,42 @@ function mount(app, ctx) {
       url: '/', tag: 'vreport-' + report.id,
     }));
     res.json({ ok: true, plate: report.plate, vehicleName: report.vehicleName });
+  });
+
+  // Un chauffeur a-t-il un retour de tournée en attente aujourd'hui ?
+  r.post('/tour-pending', botAuth, (req, res) => {
+    const phone = wa.normPhone((req.body || {}).phone);
+    const data = getData();
+    const u = findUserByPhone(data, phone);
+    if (!u) return res.json({ pending: false });
+    const today = new Date().toISOString().slice(0, 10);
+    const e = (data.tourReturns || []).find((x) => x.userId === u.id && x.date === today && x.status === 'pending');
+    res.json({ pending: !!e, firstName: u.firstName, vehicleName: e ? e.vehicleName : null });
+  });
+
+  // Enregistre un retour de tournée (n° tournée, colis, points) au nom du chauffeur.
+  r.post('/tour-return', botAuth, async (req, res) => {
+    const b = req.body || {};
+    const phone = wa.normPhone(b.phone);
+    const data = getData();
+    const u = findUserByPhone(data, phone);
+    if (!u) return res.status(404).json({ error: 'Salarié non reconnu' });
+    const parcels = parseInt(b.parcels, 10), points = parseInt(b.points, 10);
+    if (!Number.isFinite(parcels) || !Number.isFinite(points)) return res.status(400).json({ error: 'Colis / points invalides' });
+    const today = new Date().toISOString().slice(0, 10);
+    data.tourReturns = data.tourReturns || [];
+    let e = data.tourReturns.find((x) => x.userId === u.id && x.date === today);
+    if (!e) {
+      const v = (data.vehicles || []).find((x) => x.assignedUserId === u.id) || {};
+      e = { id: nextId('tourret'), date: today, vehicleId: v.id || null, vehicleName: v.name || '', plate: v.plate || '', userId: u.id, userName: `${u.firstName} ${u.lastName}`, groupId: u.groupId || null, groupName: '', depotKey: null, createdAt: new Date().toISOString() };
+      data.tourReturns.push(e);
+    }
+    e.tourNo = String(b.tourNo || '').slice(0, 20);
+    e.parcels = parcels; e.points = points; e.status = 'done'; e.submittedAt = new Date().toISOString();
+    const pr = (data.settings && data.settings.tourPricing) || {};
+    e.revenue = Math.round((points * (Number(pr.perPoint) || 0) + parcels * (Number(pr.perParcel) || 0)) * 100) / 100;
+    await save();
+    res.json({ ok: true, firstName: u.firstName, vehicleName: e.vehicleName, plate: e.plate, tourNo: e.tourNo, parcels, points });
   });
 
   app.use('/api/bot', r);

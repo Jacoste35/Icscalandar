@@ -3822,7 +3822,72 @@ app.get('/api/staff/geoloc/live', authRequired, staffOrMechanic, async (req, res
   try { speedRecap = pajgps.weeklySpeedRecap(data); } catch (e) { speedRecap = []; console.error('Géoloc recap:', e && e.stack ? e.stack : e); }
   // Consigne les retards automatiques (> 5 min) constatés par la géoloc.
   try { if (syncAutoRetards(data, positions)) await save(); } catch (e) { console.error('Auto-retards:', e && e.message); }
+  // Retour au dépôt détecté → demande le retour de tournée au chauffeur (WhatsApp).
+  try { if (syncTourReturnPrompts(data, positions)) await save(); } catch (e) { console.error('Retour tournée:', e && e.message); }
   res.json({ positions, day, error: errMsg, enabled: true, configured: true, config: pubCfg(g), speedRecap });
+});
+
+// Correspondance groupe métier → clé de dépôt (et de groupe WhatsApp).
+const DEPOT_GROUP_KEY = { grp_gls: 'gls', grp_ciblex: 'ciblex', grp_fedex: 'fedex' };
+// Détecte les retours au dépôt et relance le chauffeur (une fois/jour/chauffeur)
+// dans son groupe métier pour obtenir son retour de tournée.
+function syncTourReturnPrompts(db, positions) {
+  if (!process.env.BOT_TOKEN) return false; // bot non configuré : rien à faire
+  const today = new Date().toISOString().slice(0, 10);
+  db.tourReturns = db.tourReturns || [];
+  let changed = false;
+  for (const p of (positions || [])) {
+    const di = p.depotInfo;
+    if (!di || !di.atDepotNow || !(di.count >= 2)) continue; // vrai retour (sorti puis revenu)
+    const uid = p.driverId, gid = p.groupId;
+    if (!uid || !gid) continue;
+    const key = DEPOT_GROUP_KEY[gid]; if (!key) continue; // uniquement GLS / Ciblex / FedEx
+    if (db.tourReturns.some((x) => x.userId === uid && x.date === today)) continue; // déjà demandé/saisi
+    const u = (db.users || []).find((x) => x.id === uid);
+    const firstName = u ? u.firstName : String(p.driverName || '').split(' ')[0];
+    db.tourReturns.push({
+      id: nextId('tourret'), date: today, vehicleId: p.vehicleId || null, vehicleName: p.vehicleName || p.name || '',
+      plate: p.plate || '', userId: uid, userName: p.driverName || (u ? `${u.firstName} ${u.lastName}` : ''),
+      groupId: gid, groupName: p.groupName || '', depotKey: key,
+      tourNo: null, parcels: null, points: null, revenue: null, status: 'pending', createdAt: new Date().toISOString(),
+    });
+    const mentionPhone = u && ((u.whatsapp && u.whatsapp.phone) || u.phone);
+    wa.enqueueGroup(db, save, key, `🚚 ${firstName}, tu es rentré au dépôt. Merci d'indiquer ton *retour de tournée* en répondant : *n° tournée / nb colis / nb points* (ex : 12 / 250 / 180).`, mentionPhone);
+    changed = true;
+  }
+  return changed;
+}
+
+// Retours de tournée d'une journée + estimation de rentabilité.
+app.get('/api/staff/tour-returns', authRequired, staffOrMechanic, (req, res) => {
+  const db = getData();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : new Date().toISOString().slice(0, 10);
+  const pr = (db.settings && db.settings.tourPricing) || { perPoint: 0, perParcel: 0 };
+  const perPoint = Number(pr.perPoint) || 0, perParcel = Number(pr.perParcel) || 0;
+  const list = (db.tourReturns || []).filter((x) => x.date === date).map((x) => {
+    const revenue = (Number(x.points) || 0) * perPoint + (Number(x.parcels) || 0) * perParcel;
+    return Object.assign({}, x, { revenue: Math.round(revenue * 100) / 100 });
+  }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const done = list.filter((x) => x.status === 'done');
+  const totals = {
+    returns: list.length, pending: list.filter((x) => x.status === 'pending').length,
+    parcels: done.reduce((s, x) => s + (Number(x.parcels) || 0), 0),
+    points: done.reduce((s, x) => s + (Number(x.points) || 0), 0),
+    revenue: Math.round(done.reduce((s, x) => s + (Number(x.revenue) || 0), 0) * 100) / 100,
+  };
+  res.json({ date, returns: list, totals, pricing: { perPoint, perParcel }, waEnabled: !!process.env.BOT_TOKEN });
+});
+// Tarifs d'estimation (prix par point / par colis) — administrateur.
+app.put('/api/staff/tour-pricing', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const b = req.body || {};
+  db.settings = db.settings || {};
+  db.settings.tourPricing = {
+    perPoint: Math.max(0, Number(b.perPoint) || 0),
+    perParcel: Math.max(0, Number(b.perParcel) || 0),
+  };
+  await save();
+  res.json({ pricing: db.settings.tourPricing });
 });
 
 function pubCfg(g) { return { speedLimit: g.speedLimit || 115, dayStart: g.dayStart || '05:00', dayEnd: g.dayEnd || '18:00' }; }
