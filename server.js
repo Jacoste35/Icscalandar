@@ -4288,7 +4288,7 @@ app.delete('/api/staff/fuel/:id', authRequired, adminRequired, async (req, res) 
 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, staffRequired, getData, save });
-require('./routes/bot').mount(app, { express, getData, save, signToken });
+require('./routes/bot').mount(app, { express, getData, save, signToken, nextId, push });
 
 // SPA fallback
 app.get('*', (req, res) => {
