@@ -462,9 +462,11 @@ app.post('/api/me/push-unsubscribe', authRequired, async (req, res) => {
 
 // Le salarié met à jour ses propres informations (statut de parent, téléphone).
 app.put('/api/me', authRequired, async (req, res) => {
-  const { isParent, phone } = req.body || {};
+  const { isParent, phone, emailNotifications } = req.body || {};
   if (isParent !== undefined) req.user.isParent = Boolean(isParent);
   if (phone !== undefined) req.user.phone = String(phone || '').trim() || null;
+  // Consentement aux emails d'information (mises à jour concernant le salarié).
+  if (emailNotifications !== undefined) req.user.emailNotifications = Boolean(emailNotifications);
   await save();
   res.json({ user: publicUser(req.user) });
 });
@@ -1052,13 +1054,13 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   if (hireDate !== undefined) user.hireDate = validDate(hireDate) ? hireDate : null;
   if (username !== undefined || email !== undefined) {
     const uname = username !== undefined ? String(username).trim().toLowerCase() : (user.username || '');
-    const mail = email !== undefined ? String(email).trim().toLowerCase() : (user.email || '');
-    if (!uname && !mail) return res.status(400).json({ error: 'Renseignez un nom de compte ou un email' });
-    if (loginTaken(db, { email: mail, username: uname }, user.id)) {
+    const emailAddr = email !== undefined ? String(email).trim().toLowerCase() : (user.email || '');
+    if (!uname && !emailAddr) return res.status(400).json({ error: 'Renseignez un nom de compte ou un email' });
+    if (loginTaken(db, { email: emailAddr, username: uname }, user.id)) {
       return res.status(409).json({ error: 'Ce nom de compte ou cet email est déjà utilisé' });
     }
     user.username = uname || null;
-    user.email = mail || null;
+    user.email = emailAddr || null;
   }
   if (password) {
     if (String(password).length < 6) return res.status(400).json({ error: 'Mot de passe de 6 caractères minimum' });
@@ -1069,6 +1071,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
     if (groupId && !db.groups.some((g) => g.id === groupId)) return res.status(400).json({ error: 'Groupe invalide' });
     user.groupId = groupId || null;
   }
+  const prevBal = Object.assign({ congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 }, user.balances);
   user.balances = {
     congesN: congesN !== undefined ? Number(congesN) || 0 : user.balances.congesN,
     congesN1: congesN1 !== undefined ? Number(congesN1) || 0 : user.balances.congesN1,
@@ -1082,6 +1085,19 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
   if (mecano !== undefined) user.mecano = Boolean(mecano);
   if (ROLES.includes(role)) user.role = role;
   await save();
+  // Email au salarié si ses compteurs de congés / heures ont changé.
+  const balChanges = [];
+  if (congesN !== undefined && user.balances.congesN !== prevBal.congesN) balChanges.push(`Congés payés (année en cours) : ${user.balances.congesN} j`);
+  if (congesN1 !== undefined && user.balances.congesN1 !== prevBal.congesN1) balChanges.push(`Congés payés (année précédente) : ${user.balances.congesN1} j`);
+  if (rcc !== undefined && user.balances.rcc !== prevBal.rcc) balChanges.push(`RCC : ${user.balances.rcc} j`);
+  if (heuresSupp !== undefined && user.balances.heuresSupp !== prevBal.heuresSupp) balChanges.push(`Heures supplémentaires : ${user.balances.heuresSupp} h`);
+  if (balChanges.length) {
+    push.fire(mail.notifyUserEmail(getData(), user.id, {
+      subject: 'Vos compteurs de congés ont été mis à jour',
+      heading: 'Mise à jour de vos compteurs',
+      lines: balChanges,
+    }));
+  }
   res.json({ user: publicUser(user) });
 });
 
@@ -1978,6 +1994,11 @@ app.post('/api/mechanic/notify-driver', authRequired, mechanicOrAdmin, async (re
   push.fire(push.notifyUser(db, save, u.id, {
     title: '🔧 Convocation à l’atelier', body: body.slice(0, 200), url: '/', tag: 'atelier-call-' + u.id,
   }));
+  push.fire(mail.notifyUserEmail(db, u.id, {
+    subject: 'Convocation à l’atelier',
+    heading: 'Passage à l’atelier demandé',
+    lines: [body, vlabel ? `Véhicule concerné : ${vlabel}` : null],
+  }));
   res.json({ ok: true });
 });
 
@@ -2218,6 +2239,11 @@ app.post('/api/admin/vehicle-reports/:id/decide', authRequired, mechanicOrAdmin,
       title: '🔧 Signalement véhicule traité',
       body: `${r.vehicleName} (${r.plate}) : ${resLbl}.${r.adminNote ? ' ' + r.adminNote.slice(0, 100) : ''}`,
       url: '/', tag: 'vreport-' + r.id,
+    }));
+    push.fire(mail.notifyUserEmail(getData(), r.userId, {
+      subject: 'Votre signalement véhicule a été traité',
+      heading: `Signalement traité — ${r.vehicleName} (${r.plate})`,
+      lines: [`Suite : ${resLbl}.`, r.adminNote ? `Note de l'atelier : ${r.adminNote}` : null],
     }));
   }
   res.json({ report: r });
@@ -3141,6 +3167,11 @@ app.put('/api/staff/hsup-settlement', authRequired, adminRequired, async (req, r
     s.overpayApplied = overpay;
   }
   await save();
+  push.fire(mail.notifyUserEmail(getData(), userId, {
+    subject: 'Vos heures supplémentaires ont été mises à jour',
+    heading: `Heures supplémentaires — ${month}`,
+    lines: [`Nouveau solde d'heures supplémentaires : ${u.balances.heuresSupp} h.`, paidHours != null ? `Heures payées enregistrées : ${s.paidHours} h.` : null],
+  }));
   res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });
 
