@@ -147,6 +147,8 @@ function geoVehCardHTML(p) {
   // Dépôt du groupe : heure de départ / retour / temps passé sur place.
   const di = p.depotInfo;
   const depotLine = (di && (di.depart || di.retour || di.dwellMin)) ? `<div class="geo-depotline">🏭 ${esc(di.label || 'Dépôt')} · départ <strong>${di.depart ? gTime(di.depart) : '—'}</strong> · retour <strong>${di.retour ? gTime(di.retour) : '—'}</strong>${di.dwellMin ? ` · sur place <strong>${gDuration(di.dwellMin)}</strong>` : ''}</div>` : '';
+  // Passages dans le périmètre du dépôt : nombre + heure d'entrée de chaque passage.
+  const depotVisitsLine = (di && di.visits && di.visits.length) ? `<div class="geo-depotvisits">📍 <strong>${di.count}</strong> passage${di.count > 1 ? 's' : ''} au périmètre ${esc(di.label || '')} aujourd'hui · ${di.visits.map((v) => `entrée <strong>${gTime(v.enter)}</strong>${v.open ? ' <em>(sur place)</em>' : (v.exit ? ` → ${gTime(v.exit)}` : '')}`).join(' · ')}</div>` : '';
   // Passages AS24 (arrêt > 3 min) : station + heure + durée.
   const fuelStopsLine = (p.fuelStops && p.fuelStops.length) ? `<div class="geo-fuelstops">⛽ ${p.fuelStops.map((f) => `${esc(f.name)} à <strong>${gTime(f.at)}</strong> (${gDuration(f.minutes)})`).join(' · ')}</div>` : '';
   return `<div class="geo-card geo-${st}">
@@ -159,6 +161,7 @@ function geoVehCardHTML(p) {
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">maj ${esc(gTime(p.ts))}</span></div>
     ${activityLine}
     ${depotLine}
+    ${depotVisitsLine}
     ${fuelStopsLine}
     ${groupLine}
     ${fuelLine}

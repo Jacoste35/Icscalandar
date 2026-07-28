@@ -1735,6 +1735,8 @@ td { color: var(--ink); }
 
 /* Géoloc : ligne dépôt (départ/retour/temps sur place) + passages AS24 */
 .geo-depotline { font-size: .84rem; color: #475569; margin-top: .15rem; }
+.geo-depotvisits { font-size: .84rem; color: #1e40af; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: .3rem .55rem; margin-top: .35rem; }
+.geo-depotvisits em { color: #2563eb; font-style: normal; font-weight: 700; }
 .geo-fuelstops { font-size: .84rem; color: #9a3412; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: .3rem .55rem; margin-top: .35rem; }
 
 /* Tour de véhicule : éléments présents / conformes en vert, manquements */
