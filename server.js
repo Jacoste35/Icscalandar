@@ -13,6 +13,7 @@ const db = require('./lib/db');
 const { getData, save, nextId, enableAccrual } = db;
 const holidays = require('./lib/holidays');
 const mail = require('./lib/mail');
+const wa = require('./lib/wa');
 const pajgps = require('./lib/erp/pajgps');
 const payslip = require('./lib/erp/payslip');
 const fuelimport = require('./lib/erp/fuelimport');
@@ -171,7 +172,7 @@ function closedPeriodOverlap(startDate, endDate) {
 
 function publicUser(u) {
   if (!u) return null;
-  const { passwordHash, ...rest } = u;
+  const { passwordHash, waLinkCode, ...rest } = u;
   return rest;
 }
 
@@ -469,6 +470,80 @@ app.put('/api/me', authRequired, async (req, res) => {
   if (emailNotifications !== undefined) req.user.emailNotifications = Boolean(emailNotifications);
   await save();
   res.json({ user: publicUser(req.user) });
+});
+
+// --- Bot WhatsApp : liaison du compte du salarié ---------------------------
+// Génère un code à usage unique (6 chiffres, 15 min) à envoyer au bot WhatsApp.
+app.post('/api/me/wa-link-code', authRequired, async (req, res) => {
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  req.user.waLinkCode = { code, expires: Date.now() + 15 * 60 * 1000 };
+  await save();
+  res.json({ code, expiresInMin: 15, botNumber: process.env.WA_BOT_NUMBER || null });
+});
+// Délie le WhatsApp du salarié.
+app.post('/api/me/wa-unlink', authRequired, async (req, res) => {
+  req.user.whatsapp = null; req.user.waLinkCode = null;
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+// Active / désactive les messages WhatsApp (consentement).
+app.post('/api/me/wa-notifications', authRequired, async (req, res) => {
+  req.user.waNotifications = Boolean((req.body || {}).enabled);
+  await save();
+  res.json({ user: publicUser(req.user) });
+});
+// Message libre d'un salarié vers la direction (envoyé depuis le bot WhatsApp).
+app.post('/api/me/contact-direction', authRequired, async (req, res) => {
+  const text = String((req.body || {}).text || '').trim().slice(0, 2000);
+  if (!text) return res.status(400).json({ error: 'Message vide' });
+  const db = getData();
+  db.botMessages = db.botMessages || [];
+  db.botMessages.push({
+    id: nextId('botmsg'), userId: req.user.id, userName: `${req.user.firstName} ${req.user.lastName}`,
+    from: 'employee', text, at: new Date().toISOString(), handledBy: null,
+  });
+  await save();
+  const label = `${req.user.firstName} ${req.user.lastName}`;
+  push.fire(push.notifyUsers(getData(), save, push.adminIds(getData()), {
+    title: '💬 Message WhatsApp d’un salarié', body: `${label} : ${text.slice(0, 120)}`, url: '/', tag: 'wamsg',
+  }));
+  res.json({ ok: true });
+});
+
+// Administrateur : fils de discussion WhatsApp (salariés ↔ direction).
+app.get('/api/admin/wa-messages', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const byUser = {};
+  (db.botMessages || []).forEach((m) => { (byUser[m.userId] = byUser[m.userId] || []).push(m); });
+  const threads = Object.keys(byUser).map((uid) => {
+    const u = db.users.find((x) => x.id === uid);
+    const msgs = byUser[uid].slice().sort((a, b) => a.at.localeCompare(b.at));
+    const last = msgs[msgs.length - 1];
+    return {
+      userId: uid, userName: u ? `${u.firstName} ${u.lastName}` : (byUser[uid][0].userName || 'Salarié'),
+      linked: !!(u && u.whatsapp && u.whatsapp.phone),
+      unread: msgs.filter((m) => m.from === 'employee' && !m.handledBy).length,
+      lastAt: last ? last.at : null, messages: msgs,
+    };
+  }).sort((a, b) => String(b.lastAt || '').localeCompare(String(a.lastAt || '')));
+  res.json({ threads, waEnabled: !!process.env.BOT_TOKEN });
+});
+// Administrateur : répond à un salarié via WhatsApp (mis en file pour le bot).
+app.post('/api/admin/wa-messages/reply', authRequired, adminRequired, async (req, res) => {
+  const { userId, text } = req.body || {};
+  const msg = String(text || '').trim().slice(0, 1500);
+  if (!msg) return res.status(400).json({ error: 'Message vide' });
+  const db = getData();
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+  if (!u.whatsapp || !u.whatsapp.phone) return res.status(400).json({ error: 'Ce salarié n’a pas lié WhatsApp.' });
+  db.botMessages = db.botMessages || [];
+  db.botMessages.push({ id: nextId('botmsg'), userId, userName: `${u.firstName} ${u.lastName}`, from: 'direction', text: msg, at: new Date().toISOString(), handledBy: req.user.id });
+  // Marque les messages du salarié comme traités.
+  (db.botMessages || []).forEach((m) => { if (m.userId === userId && m.from === 'employee' && !m.handledBy) m.handledBy = req.user.id; });
+  wa.enqueue(db, save, userId, `💬 Direction : ${msg}`);
+  await save();
+  res.json({ ok: true });
 });
 
 // Acceptation des conditions d'utilisation (page de garde au 1er accès).
@@ -1097,6 +1172,7 @@ app.put('/api/admin/users/:id', authRequired, adminRequired, async (req, res) =>
       heading: 'Mise à jour de vos compteurs',
       lines: balChanges,
     }));
+    wa.enqueue(getData(), save, user.id, `🌴 Mise à jour de vos compteurs :\n${balChanges.map((l) => '• ' + l).join('\n')}`);
   }
   res.json({ user: publicUser(user) });
 });
@@ -1364,6 +1440,7 @@ app.post('/api/admin/requests/:id/decide', authRequired, adminRequired, async (r
   if (reqUser && reqUser.email) {
     mail.sendLeaveStatus({ to: reqUser.email, firstName: reqUser.firstName, status: decision, category: categoryLabel(r.category), startDate: r.startDate, endDate: r.endDate, note: r.adminNote });
   }
+  wa.enqueue(getData(), save, r.userId, `${decision === 'approved' ? '✅ Congé validé' : '❌ Demande refusée'} — ${categoryLabel(r.category)} du ${frDate(r.startDate)} au ${frDate(r.endDate)}.${r.adminNote ? ' ' + r.adminNote : ''}`);
   // Push : informe le salarié de la décision sur sa demande.
   push.fire(push.notifyUser(getData(), save, r.userId, {
     title: decision === 'approved' ? 'Congé validé ✅' : 'Demande refusée',
@@ -1999,6 +2076,7 @@ app.post('/api/mechanic/notify-driver', authRequired, mechanicOrAdmin, async (re
     heading: 'Passage à l’atelier demandé',
     lines: [body, vlabel ? `Véhicule concerné : ${vlabel}` : null],
   }));
+  wa.enqueue(db, save, u.id, `🔧 Convocation à l’atelier : ${body}${vlabel ? `\nVéhicule : ${vlabel}` : ''}`);
   res.json({ ok: true });
 });
 
@@ -2245,6 +2323,7 @@ app.post('/api/admin/vehicle-reports/:id/decide', authRequired, mechanicOrAdmin,
       heading: `Signalement traité — ${r.vehicleName} (${r.plate})`,
       lines: [`Suite : ${resLbl}.`, r.adminNote ? `Note de l'atelier : ${r.adminNote}` : null],
     }));
+    wa.enqueue(getData(), save, r.userId, `🔧 Signalement ${r.vehicleName} (${r.plate}) traité : ${resLbl}.${r.adminNote ? ' ' + r.adminNote.slice(0, 100) : ''}`);
   }
   res.json({ report: r });
 });
@@ -3172,6 +3251,7 @@ app.put('/api/staff/hsup-settlement', authRequired, adminRequired, async (req, r
     heading: `Heures supplémentaires — ${month}`,
     lines: [`Nouveau solde d'heures supplémentaires : ${u.balances.heuresSupp} h.`, paidHours != null ? `Heures payées enregistrées : ${s.paidHours} h.` : null],
   }));
+  wa.enqueue(getData(), save, userId, `⏱️ Heures supplémentaires (${month}) mises à jour. Nouveau solde : ${u.balances.heuresSupp} h.`);
   res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });
 
@@ -4208,6 +4288,7 @@ app.delete('/api/staff/fuel/:id', authRequired, adminRequired, async (req, res) 
 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, staffRequired, getData, save });
+require('./routes/bot').mount(app, { express, getData, save, signToken });
 
 // SPA fallback
 app.get('*', (req, res) => {

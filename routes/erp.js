@@ -24,6 +24,7 @@ const docsign = require('../lib/erp/docsign');
 const discipline = require('../lib/erp/discipline');
 const push = require('../lib/push');
 const mail = require('../lib/mail');
+const wa = require('../lib/wa');
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -605,6 +606,7 @@ function mount(app, deps) {
       heading: `Nouveau document : ${doc.label}`,
       lines: ['Un document a été mis à votre disposition. Merci de le consulter et d’en accuser réception dans l’application.'],
     }));
+    wa.enqueue(data, save, doc.userId, `📄 Nouveau document : « ${doc.label} ». Merci de le consulter et d’en accuser réception dans l’application.`);
   };
 
   // Encadrement : prépare un document. Admin → envoi immédiat. Responsable →
