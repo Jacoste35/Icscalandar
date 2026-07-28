@@ -71,7 +71,7 @@ Les messages « Contacter la direction » arrivent dans l'app :
 **Ressources Humaines → Messages WhatsApp**. La réponse de la direction est
 renvoyée automatiquement au salarié sur WhatsApp.
 
-## Menu du bot
+## Menu du bot (messages privés)
 
 ```
 1  Mes soldes de congés
@@ -82,3 +82,32 @@ renvoyée automatiquement au salarié sur WhatsApp.
 6  Contacter la direction
 menu  revenir au menu
 ```
+
+## Groupes « entretien » (intake véhicule)
+
+Ajoutez le bot à un groupe WhatsApp dont le **sujet** contient un mot-clé
+d'entretien (par défaut : `entretien`, `atelier`, `mécano`, `véhicule`,
+`flotte` — configurable via `WA_GROUP_KEYWORDS`). Dans ce groupe :
+
+- le bot **reste silencieux** sur les discussions ordinaires ;
+- dès qu'un message ressemble à un signalement (« problème de frein sur le 533 »),
+  il **reconnaît le salarié par son numéro** (WhatsApp lié *ou* téléphone de sa
+  fiche) et son **véhicule attribué** ;
+- il confirme le véhicule (« …ton problème concerne le véhicule *AA-123-BB* ? »),
+  demande la position si besoin (avant/arrière, AVG/AVD), puis **dépose le
+  signalement sur le site** (visible dans l'atelier) ;
+- si une info manque (véhicule inconnu, problème imprécis), il **demande des
+  précisions**.
+
+Pour que la reconnaissance fonctionne, le **numéro du salarié** doit figurer dans
+sa fiche (ou son WhatsApp doit être lié). Les groupes où les numéros des
+participants sont masqués par WhatsApp (`@lid`) ne permettent pas
+l'identification : le bot répond alors qu'il ne reconnaît pas le numéro.
+
+## Humanisation / discrétion
+
+Le bot lit les messages, affiche « en train d'écrire… » et répond avec un délai
+aléatoire proportionnel au texte ; les envois de la file sont espacés. Cela réduit
+le profil « robot ». Recommandations complémentaires : **numéro dédié** avec nom
+et photo de profil, montée en charge progressive, pas d'envoi de masse à des
+numéros non liés.
