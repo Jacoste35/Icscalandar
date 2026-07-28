@@ -331,14 +331,75 @@ function renderAuth(tab = 'login') {
         <div class="auth-tabs">
           <button data-tab="login" class="${tab==='login'?'active':''}">Connexion</button>
           <button data-tab="register" class="${tab==='register'?'active':''}">Inscription</button>
+          <button data-tab="postuler" class="${tab==='postuler'?'active':''}">Postuler</button>
         </div>
         <div id="auth-form"></div>
       </div>
     </div>
   </div>`;
   $app.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => renderAuth(b.dataset.tab));
-  document.getElementById('auth-form').innerHTML = tab === 'login' ? loginForm() : registerForm();
-  if (tab === 'login') bindLogin(); else bindRegister();
+  document.getElementById('auth-form').innerHTML = tab === 'login' ? loginForm() : tab === 'postuler' ? candidatureForm() : registerForm();
+  if (tab === 'login') bindLogin(); else if (tab === 'postuler') bindCandidature(); else bindRegister();
+}
+
+// Formulaire de dépôt de candidature (public, sur la page de connexion).
+function candidatureForm() {
+  return `
+    <h2>Déposer une candidature</h2>
+    <p class="sub">Envoyez votre CV, votre lettre de motivation et un message. La direction vous recontactera.</p>
+    <form id="form-cand">
+      <div class="row">
+        <div><label>Prénom *</label><input name="firstName" required autocomplete="given-name" /></div>
+        <div><label>Nom *</label><input name="lastName" required autocomplete="family-name" /></div>
+      </div>
+      <label>Email *</label>
+      <input name="email" type="email" required autocomplete="email" />
+      <label>Téléphone</label>
+      <input name="phone" type="tel" autocomplete="tel" placeholder="06 12 34 56 78" />
+      <label>CV * <span class="help">(PDF, Word, JPG ou PNG — 5 Mo max)</span></label>
+      <input name="cv" type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,application/pdf,image/*" required />
+      <label>Lettre de motivation <span class="help">(facultatif si vous écrivez un message)</span></label>
+      <input name="letter" type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,application/pdf,image/*" />
+      <label>Message</label>
+      <textarea name="message" rows="4" placeholder="Présentez-vous, votre poste recherché, vos disponibilités…"></textarea>
+      <button class="btn full accent" type="submit">Envoyer ma candidature</button>
+      <p class="help">Vos données servent uniquement au traitement de votre candidature (RGPD).</p>
+    </form>`;
+}
+// Lit un fichier en dataURL (base64) pour l'envoi JSON.
+function fileToData(input) {
+  return new Promise((resolve, reject) => {
+    const file = input && input.files && input.files[0];
+    if (!file) { resolve(null); return; }
+    if (file.size > 5 * 1024 * 1024) { reject(new Error(`« ${file.name} » dépasse 5 Mo.`)); return; }
+    const fr = new FileReader();
+    fr.onload = () => resolve({ name: file.name, type: file.type, data: fr.result });
+    fr.onerror = () => reject(new Error('Lecture du fichier impossible.'));
+    fr.readAsDataURL(file);
+  });
+}
+function bindCandidature() {
+  const f = document.getElementById('form-cand');
+  f.phone.addEventListener('blur', () => { f.phone.value = formatPhone(f.phone.value); });
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!isValidEmail(f.email.value)) { toast('Adresse email invalide.', 'err'); return; }
+    if (!isValidPhone(f.phone.value)) { toast('Numéro de téléphone invalide.', 'err'); return; }
+    const btn = f.querySelector('button[type="submit"]');
+    btn.disabled = true; const old = btn.textContent; btn.textContent = 'Envoi…';
+    try {
+      const cv = await fileToData(f.cv);
+      const letter = await fileToData(f.letter);
+      if (!cv) { toast('Le CV est obligatoire.', 'err'); btn.disabled = false; btn.textContent = old; return; }
+      const r = await api('POST', '/candidature', {
+        firstName: f.firstName.value, lastName: f.lastName.value, email: f.email.value,
+        phone: formatPhone(f.phone.value), message: f.message.value, cv, letter,
+      });
+      if (window.celebrate) celebrate('validate', { text: 'Candidature envoyée !', sub: 'Merci, la direction vous recontactera' });
+      else toast(r.message || 'Candidature envoyée.', 'ok');
+      renderAuth('login');
+    } catch (err) { toast(err.message, 'err'); btn.disabled = false; btn.textContent = old; }
+  };
 }
 
 function loginForm() {
@@ -474,6 +535,7 @@ function navSections() {
   if (admin || staff) rh.push({ id: 'absmgmt', icon: '🗂️', label: 'Gestion des absences' });
   if (admin || staff) rh.push({ id: 'hours', icon: '⏱️', label: 'Gestion des heures' });
   if (admin || staff) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des procédures' });
+  if (admin) rh.push({ id: 'candidatures', icon: '📨', label: 'Candidatures' });
   if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
   // Exploitation & Transport
   const exp = [];
@@ -735,6 +797,7 @@ function renderView() {
   if (v === 'vehmgmt') return renderVehicleManagement(main);
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
+  if (v === 'candidatures') return renderCandidatures(main);
   if (v === 'stocks') return renderStocks(main);
   if (v === 'fleet') return renderFleet(main);
   if (v === 'finance') return renderFinance(main);
@@ -1178,8 +1241,9 @@ async function renderDashboard(main) {
       geolocPanel = '<div id="dash-geoloc"><div class="card" style="padding:0;overflow:hidden;border:2px solid #14427e;border-radius:14px">'
         + '<div style="padding:.85rem 1rem;background:linear-gradient(135deg,#14427e,#2563eb);color:#fff;font-weight:800;font-size:1.05rem">🛰️ Géolocalisation des chauffeurs <span style="font-weight:400;opacity:.85;font-size:.85rem">— chargement…</span></div></div></div>';
     }
-    let kmAnomalyPanel = '', licenciementPanel = '', docValidationPanel = '';
+    let kmAnomalyPanel = '', licenciementPanel = '', docValidationPanel = '', candPanel = '';
     if (isAdmin) {
+      try { const { candidatures, unread } = await api('GET', '/admin/candidatures'); candPanel = candidaturesAlertHTML(candidatures, unread); } catch (e) {}
       try { const { alerts } = await api('GET', '/admin/stock-alerts'); stockAlertPanel = stockAlertHTML(alerts); } catch (e) {}
       try { const { anomalies } = await api('GET', '/staff/km-anomalies'); kmAnomalyPanel = kmAnomalyHTML(anomalies); } catch (e) {}
       try { const { files } = await api('GET', '/admin/erp/documents/disciplinary-files'); licenciementPanel = licenciementHTML((files || []).filter((f) => f.level === 'licenciement')); } catch (e) {}
@@ -1251,7 +1315,7 @@ async function renderDashboard(main) {
     dashBody.className = '';
     dashBody.innerHTML = `
       ${previewBar}
-      ${dashGroup('📌 À ne pas manquer', licenciementPanel, retardReviewPanel, retardPropPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
+      ${dashGroup('📌 À ne pas manquer', licenciementPanel, candPanel, retardReviewPanel, retardPropPanel, docValidationPanel, pendingPanel, conflictPanel, myDocsPanel, messagesPanel)}
       ${dashGroup('🧮 Mon espace', compteursCard, anc, myLeavePanel, weekSuggestPanel, retardCards)}
       ${dashGroup('🚚 Exploitation &amp; véhicules', geolocPanel, kmAnomalyPanel, stockAlertPanel, needsMaintPanel, disciplinePanel, vehPendingPanel, entretiensPanel, vehicleWarnPanel)}
       ${dashGroup('👥 Mon équipe', priorityPanel, classement, colleaguesPanel)}
@@ -3456,6 +3520,20 @@ function dashVehiclePendingHTML(reports) {
     <button class="btn ghost sm" onclick="State.view=(window.isMecano&&isMecano()&&!isStaff())?'stocks':'vehmgmt';renderApp()">Traiter les demandes</button>
   </div>`;
 }
+// Accueil : candidatures reçues (nouvelles mises en avant).
+function candidaturesAlertHTML(candidatures, unread) {
+  const list = (candidatures || []).filter((c) => c.status !== 'archived');
+  if (!list.length) return '';
+  const shown = list.slice(0, 4);
+  return `<div class="card" style="border-left:5px solid ${unread ? 'var(--accent)' : 'var(--brand)'}">
+    <h3 style="margin:0 0 .4rem">📨 Candidatures reçues ${unread ? `<span class="pill danger">${unread} nouvelle${unread > 1 ? 's' : ''}</span>` : ''}</h3>
+    <ul class="veh-alert-list">${shown.map((c) => `<li>
+      ${c.status === 'new' ? '<span class="pill danger">Nouveau</span> ' : ''}<strong>${esc(c.firstName)} ${esc(c.lastName)}</strong> <span class="help">${esc(c.email)}${c.phone ? ' · ' + esc(c.phone) : ''} · ${fmtDate(c.createdAt)}</span>
+    </li>`).join('')}</ul>
+    ${list.length > shown.length ? `<p class="help" style="margin:.2rem 0 .5rem">+ ${list.length - shown.length} autre(s)…</p>` : ''}
+    <button class="btn ghost sm" onclick="State.view='candidatures';renderApp()">Ouvrir les candidatures</button>
+  </div>`;
+}
 // Accueil : alertes de stock bas (rouge ≤1, jaune 2, vert 3).
 function stockAlertHTML(alerts) {
   if (!alerts || !alerts.length) return '';
@@ -3713,6 +3791,63 @@ async function renderConvocation(main) {
       else toast('Chauffeur convoqué.', 'ok');
     } catch (e) { toast(e.message, 'err'); }
   };
+}
+
+/* =========================================================================
+   CANDIDATURES (dépôt public + espace administrateur)
+   ========================================================================= */
+// Télécharge un fichier de candidature (CV / lettre) à partir du base64 serveur.
+async function downloadCandFile(id, which) {
+  try {
+    const f = await api('GET', `/admin/candidatures/${id}/file/${which}`);
+    const bin = atob(f.data); const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const blob = new Blob([arr], { type: f.type || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = f.name || 'fichier'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) { toast(e.message, 'err'); }
+}
+async function renderCandidatures(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Candidatures</h1>
+    <p>Candidatures spontanées reçues depuis la page de connexion (CV, lettre de motivation et message).</p></div></div>
+    <div id="cand-body" class="empty">Chargement…</div>`;
+  const body = document.getElementById('cand-body');
+  let list = [];
+  try { list = (await api('GET', '/admin/candidatures')).candidatures; }
+  catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  renderCandList(body, list);
+}
+function renderCandList(body, list) {
+  body.className = '';
+  if (!list.length) { body.innerHTML = `<div class="alert info">Aucune candidature pour le moment.</div>`; return; }
+  const active = list.filter((c) => c.status !== 'archived');
+  const archived = list.filter((c) => c.status === 'archived');
+  const statusPill = (c) => c.status === 'new' ? '<span class="pill danger">Nouveau</span>' : c.status === 'archived' ? '<span class="pill muted">Archivée</span>' : '<span class="pill ok">Lue</span>';
+  const card = (c) => `<div class="card cand-card${c.status === 'new' ? ' cand-new' : ''}">
+    <div class="cand-head">
+      <div><strong>${esc(c.firstName)} ${esc(c.lastName)}</strong> ${statusPill(c)}</div>
+      <span class="help">${fmtDateTime(c.createdAt)}</span>
+    </div>
+    <div class="cand-contact">✉️ <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>${c.phone ? ` · 📞 <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : ''}</div>
+    ${c.message ? `<p class="cand-msg">${esc(c.message)}</p>` : ''}
+    <div class="cand-files">
+      ${c.cv ? `<button class="btn sm" data-dl="${c.id}" data-which="cv">📄 CV${c.cv.name ? ' — ' + esc(c.cv.name) : ''}</button>` : ''}
+      ${c.letter ? `<button class="btn sm" data-dl="${c.id}" data-which="letter">✉️ Lettre${c.letter.name ? ' — ' + esc(c.letter.name) : ''}</button>` : ''}
+    </div>
+    <div class="vr-actions" style="margin-top:.5rem">
+      ${c.status !== 'read' && c.status !== 'archived' ? `<button class="btn ghost sm" data-mark="${c.id}" data-st="read">Marquer lue</button>` : ''}
+      ${c.status !== 'archived' ? `<button class="btn ghost sm" data-mark="${c.id}" data-st="archived">📦 Archiver</button>` : `<button class="btn ghost sm" data-mark="${c.id}" data-st="read">↩ Désarchiver</button>`}
+      <button class="btn danger sm" data-del="${c.id}">Supprimer</button>
+    </div>
+  </div>`;
+  body.innerHTML = `${active.length ? active.map(card).join('') : '<div class="alert info">Aucune candidature active.</div>'}
+    ${archived.length ? `<details class="card" style="margin-top:1rem"><summary><strong>📦 Candidatures archivées</strong> <span class="help">${archived.length}</span></summary><div style="margin-top:.6rem">${archived.map(card).join('')}</div></details>` : ''}`;
+  const reload = async () => { try { const l = (await api('GET', '/admin/candidatures')).candidatures; renderCandList(body, l); } catch (e) {} };
+  body.querySelectorAll('[data-dl]').forEach((b) => b.onclick = async () => { await downloadCandFile(b.dataset.dl, b.dataset.which); reload(); });
+  body.querySelectorAll('[data-mark]').forEach((b) => b.onclick = async () => { try { await api('POST', `/admin/candidatures/${b.dataset.mark}/status`, { status: b.dataset.st }); reload(); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer définitivement cette candidature ?')) return; try { await api('DELETE', `/admin/candidatures/${b.dataset.del}`); reload(); } catch (e) { toast(e.message, 'err'); } });
 }
 
 function resolutionBadge(r) {

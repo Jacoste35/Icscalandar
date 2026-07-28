@@ -49,7 +49,7 @@ app.use((req, res, next) => {
 
 // Limite confortable : permet d'importer jusqu'à 365 jours d'activité par
 // chauffeur (suivi des HSUP sur 12 mois glissants) sans rejet.
-app.use(express.json({ limit: '8mb' }));
+app.use(express.json({ limit: '16mb' })); // marge pour les candidatures (CV + lettre en base64)
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, p) => {
     if (p.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
@@ -314,6 +314,97 @@ app.post('/api/register', loginRateLimit, async (req, res) => {
       ? `Compte administrateur créé. Votre nom de compte est « ${user.username} ». Vous pouvez vous connecter.`
       : `Demande envoyée. Votre nom de compte est « ${user.username} ». Un administrateur doit valider votre compte et attribuer vos soldes.`,
   });
+});
+
+// --- Dépôt de candidature (page de connexion, public) -----------------------
+// Un candidat peut adresser CV + lettre de motivation + message sans compte.
+const CAND_MAX_BYTES = 5 * 1024 * 1024; // 5 Mo par fichier
+const CAND_TYPES = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'image/heic'];
+// Nettoie et valide un fichier reçu (dataURL ou base64) ; renvoie {name,type,data} ou une erreur.
+function sanitizeCandFile(f, fallbackName) {
+  if (!f || !f.data) return null;
+  let data = String(f.data);
+  const m = data.match(/^data:([^;]+);base64,(.*)$/);
+  let type = String(f.type || (m && m[1]) || '').toLowerCase();
+  if (m) data = m[2];
+  data = data.replace(/\s/g, '');
+  if (!/^[A-Za-z0-9+/=]+$/.test(data)) return { error: 'Fichier illisible.' };
+  const bytes = Math.floor(data.length * 3 / 4);
+  if (bytes > CAND_MAX_BYTES) return { error: 'Fichier trop volumineux (5 Mo maximum).' };
+  if (type && !CAND_TYPES.includes(type)) return { error: 'Format non accepté (PDF, Word, JPG ou PNG).' };
+  const name = String(f.name || fallbackName || 'fichier').slice(0, 160);
+  return { name, type: type || 'application/octet-stream', data };
+}
+app.post('/api/candidature', loginRateLimit, async (req, res) => {
+  const b = req.body || {};
+  const firstName = String(b.firstName || '').trim();
+  const lastName = String(b.lastName || '').trim();
+  const email = String(b.email || '').trim().toLowerCase();
+  const phone = String(b.phone || '').trim();
+  const message = String(b.message || '').trim().slice(0, 4000);
+  if (!firstName || !lastName) return res.status(400).json({ error: 'Prénom et nom obligatoires.' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return res.status(400).json({ error: 'Adresse email invalide.' });
+  const cv = sanitizeCandFile(b.cv, `CV ${firstName} ${lastName}`);
+  const letter = sanitizeCandFile(b.letter, `Lettre ${firstName} ${lastName}`);
+  if (!cv) return res.status(400).json({ error: 'Le CV est obligatoire.' });
+  if (cv.error) return res.status(400).json({ error: 'CV : ' + cv.error });
+  if (letter && letter.error) return res.status(400).json({ error: 'Lettre : ' + letter.error });
+  if (!message && !letter) return res.status(400).json({ error: 'Joignez une lettre de motivation ou écrivez un message.' });
+  const db = getData();
+  db.candidatures = db.candidatures || [];
+  const cand = {
+    id: nextId('cand'),
+    firstName: capitalizeName(firstName), lastName: capitalizeName(lastName),
+    email, phone: phone || null, message,
+    cv, letter: (letter && !letter.error) ? letter : null,
+    status: 'new', createdAt: new Date().toISOString(),
+  };
+  db.candidatures.push(cand);
+  await save();
+  push.fire(push.notifyUsers(getData(), save, push.adminIds(getData()), {
+    title: '📨 Nouvelle candidature',
+    body: `${cand.firstName} ${cand.lastName} a déposé une candidature (CV${cand.letter ? ' + lettre' : ''}).`,
+    url: '/', tag: 'cand-' + cand.id,
+  }));
+  res.json({ ok: true, message: 'Votre candidature a bien été transmise. Merci !' });
+});
+// Liste des candidatures (métadonnées, sans les fichiers) — administrateur.
+app.get('/api/admin/candidatures', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const list = (db.candidatures || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({
+    id: c.id, firstName: c.firstName, lastName: c.lastName, email: c.email, phone: c.phone,
+    message: c.message, status: c.status, createdAt: c.createdAt,
+    cv: c.cv ? { name: c.cv.name, type: c.cv.type } : null,
+    letter: c.letter ? { name: c.letter.name, type: c.letter.type } : null,
+  }));
+  res.json({ candidatures: list, unread: list.filter((c) => c.status === 'new').length });
+});
+// Téléchargement d'un fichier de candidature (CV ou lettre) — administrateur.
+app.get('/api/admin/candidatures/:id/file/:which', authRequired, adminRequired, (req, res) => {
+  const db = getData();
+  const c = (db.candidatures || []).find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidature introuvable' });
+  const f = req.params.which === 'letter' ? c.letter : c.cv;
+  if (!f) return res.status(404).json({ error: 'Fichier absent' });
+  if (c.status === 'new') { c.status = 'read'; save().catch(() => {}); }
+  res.json({ name: f.name, type: f.type, data: f.data });
+});
+// Mise à jour du statut (lu / archivé) — administrateur.
+app.post('/api/admin/candidatures/:id/status', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const c = (db.candidatures || []).find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidature introuvable' });
+  const st = String((req.body || {}).status || '');
+  if (!['new', 'read', 'archived'].includes(st)) return res.status(400).json({ error: 'Statut invalide' });
+  c.status = st; await save(); res.json({ ok: true });
+});
+// Suppression d'une candidature — administrateur.
+app.delete('/api/admin/candidatures/:id', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const before = (db.candidatures || []).length;
+  db.candidatures = (db.candidatures || []).filter((x) => x.id !== req.params.id);
+  if (db.candidatures.length === before) return res.status(404).json({ error: 'Candidature introuvable' });
+  await save(); res.json({ ok: true });
 });
 
 app.post('/api/login', loginRateLimit, async (req, res) => {

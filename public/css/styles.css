@@ -1955,3 +1955,14 @@ details.ro-section[open] > summary.ro-section-head::before { transform: rotate(9
 .ro-count.ok { background: #16a34a; }
 .ro-count.muted { background: #94a3b8; }
 .ro-cards { display: flex; flex-direction: column; gap: .6rem; }
+
+/* ---- Candidatures (dépôt public + espace admin) --------------------------- */
+.auth-tabs button { font-size: .92rem; }
+@media (max-width: 460px) { .auth-tabs button { padding: .5rem .3rem; font-size: .82rem; } }
+.cand-card { border-left: 4px solid #cbd5e1; }
+.cand-card.cand-new { border-left-color: var(--accent, #ea580c); background: #fff7ed; }
+.cand-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
+.cand-contact { font-size: .9rem; margin: .3rem 0; }
+.cand-contact a { color: var(--brand); text-decoration: none; }
+.cand-msg { margin: .4rem 0; padding: .5rem .7rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; white-space: pre-wrap; }
+.cand-files { display: flex; gap: .5rem; flex-wrap: wrap; margin: .4rem 0; }
