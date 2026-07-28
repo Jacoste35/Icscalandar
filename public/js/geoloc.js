@@ -49,6 +49,23 @@ function gIsToday(iso) { try { return gDate(iso) === gDate(Date.now()); } catch 
 function gStopSince(iso) { if (!iso) return '—'; return gIsToday(iso) ? gTime(iso) : `le ${gDate(iso)} à ${gTime(iso)}`; }
 // Date + heure complètes (pour le pied de tableau dépôt).
 function gDateTime(iso) { return iso ? `le ${gDate(iso)} à ${gTime(iso)}` : '—'; }
+// Bloc « dépôt » clair : départ / retour explicites, cas « encore au dépôt » ou
+// « pas encore rentré », puis le détail des passages (entrée → sortie).
+function geoDepotBlock(di) {
+  if (!di || !di.count) return '';
+  const label = esc(di.label || 'Dépôt');
+  const bits = [];
+  if (di.depart) bits.push(`Départ <strong>${gTime(di.depart)}</strong>`);
+  if (di.retour) bits.push(`Retour <strong>${gTime(di.retour)}</strong>${di.atDepotNow ? ' <em>(au dépôt)</em>' : ''}`);
+  else if (di.depart && !di.atDepotNow) bits.push('<em>pas encore rentré</em>');
+  else if (!di.depart && di.atDepotNow) bits.push(`Au dépôt depuis <strong>${gTime(di.firstEnter)}</strong> <em>(pas encore parti)</em>`);
+  if (di.dwellMin) bits.push(`sur place <strong>${gDuration(di.dwellMin)}</strong>`);
+  const status = bits.length ? `<div class="geo-depot-status">${bits.join(' · ')}</div>` : '';
+  const passages = (di.visits && di.visits.length)
+    ? `<div class="geo-depot-passages">🅿️ ${di.count} passage${di.count > 1 ? 's' : ''} : ${di.visits.map((v) => `${gTime(v.enter)} ${v.exit ? '→ ' + gTime(v.exit) : '→ …'}`).join(' · ')}</div>`
+    : '';
+  return `<div class="geo-depotline"><div class="geo-depot-head">🏭 ${label}</div>${status}${passages}</div>`;
+}
 // Véhicule stationné au dépôt -> « Disponible au dépôt ».
 // Priorité au rayon GPS (atDepot calculé côté serveur), repli sur l'adresse.
 function geoIsDepot(p) {
@@ -144,11 +161,10 @@ function geoVehCardHTML(p) {
   const driverDup = p.driverName && label.toLowerCase().includes(String(p.driverName).toLowerCase());
   const driverPart = (p.driverName && !driverDup) ? `${p.groupName ? ' · ' : ''}👤 ${esc(p.driverName)}` : '';
   const groupLine = (p.groupName || (p.driverName && !driverDup)) ? `<div class="geo-group">${p.groupName ? `👥 ${esc(p.groupName)}` : ''}${driverPart}</div>` : '';
-  // Dépôt du groupe : heure de départ / retour / temps passé sur place.
+  // Dépôt du groupe : passage(s) dans le périmètre, avec un statut clair pour le
+  // départ et le retour (et le cas « encore au dépôt » / « pas encore rentré »).
   const di = p.depotInfo;
-  const depotLine = (di && (di.depart || di.retour || di.dwellMin)) ? `<div class="geo-depotline">🏭 ${esc(di.label || 'Dépôt')} · départ <strong>${di.depart ? gTime(di.depart) : '—'}</strong> · retour <strong>${di.retour ? gTime(di.retour) : '—'}</strong>${di.dwellMin ? ` · sur place <strong>${gDuration(di.dwellMin)}</strong>` : ''}</div>` : '';
-  // Passages dans le périmètre du dépôt : nombre + heure d'entrée de chaque passage.
-  const depotVisitsLine = (di && di.visits && di.visits.length) ? `<div class="geo-depotvisits">📍 <strong>${di.count}</strong> passage${di.count > 1 ? 's' : ''} au périmètre ${esc(di.label || '')} aujourd'hui · ${di.visits.map((v) => `entrée <strong>${gTime(v.enter)}</strong>${v.open ? ' <em>(sur place)</em>' : (v.exit ? ` → ${gTime(v.exit)}` : '')}`).join(' · ')}</div>` : '';
+  const depotLine = geoDepotBlock(di);
   // Passages AS24 (arrêt > 3 min) : station + heure + durée.
   const fuelStopsLine = (p.fuelStops && p.fuelStops.length) ? `<div class="geo-fuelstops">⛽ ${p.fuelStops.map((f) => `${esc(f.name)} à <strong>${gTime(f.at)}</strong> (${gDuration(f.minutes)})`).join(' · ')}</div>` : '';
   return `<div class="geo-card geo-${st}">
@@ -161,7 +177,6 @@ function geoVehCardHTML(p) {
     <div class="geo-status-line"><span class="geo-badge" style="background:${m.color}1a;color:${m.color}">${esc(m.label)}</span><span class="help">maj ${esc(gTime(p.ts))}</span></div>
     ${activityLine}
     ${depotLine}
-    ${depotVisitsLine}
     ${fuelStopsLine}
     ${groupLine}
     ${fuelLine}

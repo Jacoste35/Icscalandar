@@ -240,6 +240,39 @@ function closeModal() {
   else m.remove();
 }
 
+/* ---- Visionneuse de document plein écran (dans l'app) -------------------- */
+// Affiche un document HTML complet dans une surcouche plein écran avec un
+// bouton de fermeture (croix) et un bouton Imprimer / PDF. Remplace les
+// window.open('_blank') qui, en application installée (PWA), ouvraient une
+// fenêtre sans croix — impossible à fermer pour revenir à l'application.
+function openDocViewer(html, opts = {}) {
+  const title = opts.title || 'Document';
+  const ov = document.createElement('div');
+  ov.className = 'docviewer-overlay';
+  ov.innerHTML = `
+    <div class="docviewer-bar">
+      <span class="docviewer-title">${esc(title)}</span>
+      <div class="docviewer-actions">
+        <button class="btn accent sm" data-dv-print>🖨️ Imprimer / PDF</button>
+        <button class="btn ghost sm" data-dv-close aria-label="Fermer la visualisation">✕ Fermer</button>
+      </div>
+    </div>
+    <iframe class="docviewer-frame" title="${esc(title)}"></iframe>`;
+  document.body.appendChild(ov);
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+  const frame = ov.querySelector('.docviewer-frame');
+  const doPrint = () => { try { frame.contentWindow.focus(); frame.contentWindow.print(); } catch (e) { try { window.print(); } catch (e2) {} } };
+  if (opts.autoprint) frame.addEventListener('load', () => setTimeout(doPrint, 350), { once: true });
+  frame.srcdoc = html;
+  const close = () => { document.body.style.overflow = prevOverflow; ov.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  ov.querySelector('[data-dv-close]').onclick = close;
+  ov.querySelector('[data-dv-print]').onclick = doPrint;
+  return ov;
+}
+
 /* ------------------------------ Auth ------------------------------------ */
 function logout(silent) {
   State.token = null; State.user = null;
@@ -4223,10 +4256,8 @@ function editMaintModal(maintId, vehicleId) {
 function vehicleMaintPDF(vehicleId) {
   const v = _veh.vehicles.find((x) => x.id === vehicleId) || {};
   const rows = maintLogRows(vehicleId).slice().sort((a, b) => a.label.localeCompare(b.label) || a.m.km - b.m.km);
-  const w = window.open('', '_blank');
-  if (!w) { toast('Autorisez les fenêtres pop-up pour générer le PDF.', 'err'); return; }
   const tr = rows.map((r) => `<tr><td>${esc(r.label)}</td><td>${kmFmt(r.m.km)}</td><td>${r.gap != null ? kmFmt(r.gap) : '—'}</td><td>${fmtDate(r.m.date)}</td><td>${esc(r.m.note || '')}</td></tr>`).join('');
-  w.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Carnet d'entretien — ${esc(v.name || '')}</title>
+  const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Carnet d'entretien — ${esc(v.name || '')}</title>
     <style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:24px}h1{color:#14427e;margin:0 0 .2rem}table{width:100%;border-collapse:collapse;margin-top:1rem}th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;font-size:13px}th{background:#eef2f7}.sub{color:#475569}</style></head>
     <body>
       <h1>Carnet d'entretien</h1>
@@ -4234,9 +4265,8 @@ function vehicleMaintPDF(vehicleId) {
       <div class="sub">Kilométrage actuel : ${kmFmt(v.curKm || v.km)} · Usage : ${v.usage === 'ville' ? 'Ville' : 'Route + ville'} · Édité le ${fmtDate(iso(new Date()))}</div>
       <table><thead><tr><th>Pièce</th><th>Kilométrage</th><th>Écart depuis précédent</th><th>Date</th><th>Note</th></tr></thead>
       <tbody>${tr || '<tr><td colspan="5">Aucun entretien enregistré.</td></tr>'}</tbody></table>
-    </body></html>`);
-  w.document.close();
-  setTimeout(() => { w.focus(); w.print(); }, 300);
+    </body></html>`;
+  openDocViewer(html, { title: `Carnet d'entretien — ${v.name || ''}`, autoprint: true });
 }
 
 // Liste de contrôle rapide pour un ordre de réparation.
@@ -5097,15 +5127,13 @@ function expenseListModal(row, body) {
    ERP intégré — Gestion documentaire / facturation / justificatifs
    ========================================================================= */
 // Ouvre une réponse HTML d'une route ERP (authentifiée) dans un onglet imprimable.
-async function erpOpenHtml(method, path, body) {
+async function erpOpenHtml(method, path, body, title) {
   const opts = { method, headers: { Authorization: 'Bearer ' + State.token } };
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch('/api' + path, opts);
   if (!res.ok) { toast('Génération impossible.', 'err'); return; }
   const html = await res.text();
-  const w = window.open('', '_blank');
-  if (w) { w.document.open(); w.document.write(html); w.document.close(); }
-  else { const url = URL.createObjectURL(new Blob([html], { type: 'text/html' })); window.open(url, '_blank'); }
+  openDocViewer(html, { title: title || 'Document' });
 }
 
 // --- Gestion documentaire (génération + PDF des courriers/contrats) ----------
@@ -6906,9 +6934,7 @@ function tndParams(body) {
 
 // Proposition tarifaire à en-tête de l'entreprise (impression / PDF).
 function tenderProposalPDF(p, c) {
-  const w = window.open('', '_blank');
-  if (!w) { toast('Autorisez les fenêtres pop-up pour générer le PDF.', 'err'); return; }
-  w.document.write(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Proposition tarifaire — INTER COLIS SERVICES</title>
+  const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Proposition tarifaire — INTER COLIS SERVICES</title>
     <style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:32px;line-height:1.5}
       .head{display:flex;justify-content:space-between;border-bottom:3px solid #14427e;padding-bottom:12px}
       .head h1{color:#14427e;margin:0;font-size:20px}.head .co{font-size:12px;color:#475569}
@@ -6931,9 +6957,8 @@ function tenderProposalPDF(p, c) {
       </tbody></table>
       <p class="foot">Prix hors taxes, hors péages et hors prestations annexes. Proposition valable 30 jours. Conditions de règlement : 30 jours date de facture. Document non contractuel établi à titre indicatif.</p>
       <p class="foot">Pour INTER COLIS SERVICES — La Direction</p>
-    </body></html>`);
-  w.document.close();
-  setTimeout(() => { w.focus(); w.print(); }, 300);
+    </body></html>`;
+  openDocViewer(html, { title: 'Proposition tarifaire', autoprint: true });
 }
 
 /* =========================================================================
@@ -9106,15 +9131,13 @@ function attestationModal(u) {
     footHTML: `<button class="btn ghost" data-close>Fermer</button><button class="btn accent" id="att-print-btn">🖨️ Imprimer / PDF</button>`,
     onMount: (ov) => {
       ov.querySelector('#att-print-btn').onclick = () => {
-        // Impression ciblée de l'attestation via une fenêtre dédiée.
-        const w = window.open('', '_blank');
-        w.document.write(`<html><head><title>Attestation - ${esc(u.firstName)} ${esc(u.lastName)}</title>
+        // Visionneuse plein écran (fermable) avec impression de l'attestation.
+        const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Attestation - ${esc(u.firstName)} ${esc(u.lastName)}</title>
           <style>body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;padding:2.5rem;line-height:1.6}
           .att-head{display:flex;gap:1rem;align-items:center;border-bottom:2px solid #14427e;padding-bottom:1rem}
           .att-logo{width:64px;height:64px;object-fit:contain}
-          h2{color:#14427e}</style></head><body>${ov.querySelector('#attest-print').innerHTML}</body></html>`);
-        w.document.close();
-        setTimeout(() => { w.focus(); w.print(); }, 300);
+          h2{color:#14427e}</style></head><body>${ov.querySelector('#attest-print').innerHTML}</body></html>`;
+        openDocViewer(html, { title: `Attestation — ${u.firstName} ${u.lastName}`, autoprint: true });
       };
     },
   });
