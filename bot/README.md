@@ -104,6 +104,23 @@ sa fiche (ou son WhatsApp doit être lié). Les groupes où les numéros des
 participants sont masqués par WhatsApp (`@lid`) ne permettent pas
 l'identification : le bot répond alors qu'il ne reconnaît pas le numéro.
 
+## Groupes métier (retours de tournée)
+
+Ajoutez le bot aux groupes des chauffeurs dont le **sujet** contient `GLS`,
+`Ciblex` ou `FedEx`. Quand la **géolocalisation** détecte qu'un véhicule
+**revient à son dépôt**, l'app poste automatiquement dans le bon groupe :
+
+> 🚚 *Prénom*, tu es rentré au dépôt. Merci d'indiquer ton *retour de tournée*
+> en répondant : *n° tournée / nb colis / nb points* (ex : 12 / 250 / 180).
+
+Le chauffeur répond (dans le groupe **ou** en privé au bot) : le retour est
+enregistré et visible dans l'app → **Exploitation → Retours de tournée**, avec
+une estimation de CA (prix par point / par colis paramétrable) pour juger la
+rentabilité de la journée.
+
+L'identification du chauffeur se fait par son numéro (WhatsApp lié ou téléphone
+de sa fiche). Une seule relance par chauffeur et par jour.
+
 ## Humanisation / discrétion
 
 Le bot lit les messages, affiche « en train d'écrire… » et répond avec un délai

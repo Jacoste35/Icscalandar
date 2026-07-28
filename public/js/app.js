@@ -577,6 +577,7 @@ function navSections() {
   // if (admin) exp.push({ id: 'tours', icon: '🛣️', label: 'Gestion des Tournées' });
   if (admin || staff) exp.push({ id: 'geoloc', icon: '🛰️', label: 'Géolocalisation' });
   if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Gestion du carburant' });
+  if (admin || staff) exp.push({ id: 'tourreturns', icon: '🚚', label: 'Retours de tournée' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
   if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
   if (admin) exp.push({ id: 'stocks', icon: '🛠️', label: 'Suivi entretiens & stock' });
@@ -833,6 +834,7 @@ function renderView() {
   if (v === 'admin') return renderAdmin(main);
   if (v === 'candidatures') return renderCandidatures(main);
   if (v === 'wamsg') return renderWaMessages(main);
+  if (v === 'tourreturns') return renderTourReturns(main);
   if (v === 'stocks') return renderStocks(main);
   if (v === 'fleet') return renderFleet(main);
   if (v === 'finance') return renderFinance(main);
@@ -3983,6 +3985,65 @@ function renderWaThreads(body, data) {
     try { await api('POST', '/admin/wa-messages/reply', { userId: uid, text }); if (window.celebrate) celebrate('validate', { text: 'Réponse envoyée !', sub: 'Sur WhatsApp' }); else toast('Réponse envoyée.', 'ok'); reload(); }
     catch (e) { toast(e.message, 'err'); b.disabled = false; }
   });
+}
+
+/* =========================================================================
+   RETOURS DE TOURNÉE (saisis via WhatsApp) + estimation de rentabilité
+   ========================================================================= */
+let _tourDate = null;
+async function renderTourReturns(main) {
+  if (!isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  const isAdmin = State.user.role === 'admin';
+  const date = _tourDate || iso(new Date());
+  main.innerHTML = `<div class="page-head"><div><h1>Retours de tournée</h1>
+    <p>Numéro de tournée, colis et points livrés — transmis par les chauffeurs sur WhatsApp au retour au dépôt.</p></div>
+    <input type="date" id="tr-date" value="${date}" style="width:auto"></div>
+    <div id="tr-body" class="empty">Chargement…</div>`;
+  main.querySelector('#tr-date').onchange = (e) => { _tourDate = e.target.value; renderTourReturns(main); };
+  const body = document.getElementById('tr-body');
+  let data;
+  try { data = await api('GET', '/staff/tour-returns?date=' + encodeURIComponent(date)); }
+  catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  body.className = '';
+  const t = data.totals, pr = data.pricing;
+  const rows = (data.returns || []).map((r) => `<tr>
+    <td>${esc(r.userName || '—')}</td>
+    <td>${esc(r.vehicleName || '')}${r.plate ? ' (' + esc(r.plate) + ')' : ''}</td>
+    <td>${r.status === 'done' ? esc(r.tourNo || '—') : '<span class="pill warn">en attente</span>'}</td>
+    <td style="text-align:right">${r.parcels != null ? r.parcels : '—'}</td>
+    <td style="text-align:right">${r.points != null ? r.points : '—'}</td>
+    <td style="text-align:right">${r.status === 'done' ? eur(r.revenue || 0) : '—'}</td>
+  </tr>`).join('');
+  body.innerHTML = `
+    ${!data.waEnabled ? `<div class="alert warn">Le bot WhatsApp n'est pas encore activé (variable <code>BOT_TOKEN</code>). Les retours pourront aussi être saisis dès son activation.</div>` : ''}
+    <div class="grid cols-4">
+      ${statCard('Retours reçus', t.returns - t.pending, t.pending ? '/ ' + t.returns : '')}
+      ${statCard('Colis livrés', t.parcels, '')}
+      ${statCard('Points livrés', t.points, '')}
+      ${statCard('CA estimé', eur(t.revenue), '')}
+    </div>
+    <div class="card">
+      <div class="table-wrap"><table>
+        <thead><tr><th>Chauffeur</th><th>Véhicule</th><th>Tournée</th><th style="text-align:right">Colis</th><th style="text-align:right">Points</th><th style="text-align:right">CA estimé</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="help">Aucun retour pour cette date.</td></tr>'}</tbody>
+      </table></div>
+      <p class="help" style="margin-top:.6rem">La rentabilité de la journée se lit en rapprochant ce CA estimé du <strong>coût du jour</strong> (Exploitation → Géolocalisation).</p>
+    </div>
+    ${isAdmin ? `<div class="card">
+      <h3 style="margin:0 0 .5rem">Tarifs d'estimation</h3>
+      <div class="grid2">
+        <div><label>Prix par point livré (€)</label><input id="tr-perpoint" type="number" step="0.01" min="0" value="${pr.perPoint || 0}"></div>
+        <div><label>Prix par colis (€)</label><input id="tr-perparcel" type="number" step="0.01" min="0" value="${pr.perParcel || 0}"></div>
+      </div>
+      <div style="margin-top:.7rem"><button class="btn accent sm" id="tr-save">Enregistrer les tarifs</button></div>
+      <p class="help">Sert au calcul du CA estimé (points × prix/point + colis × prix/colis).</p>
+    </div>` : ''}`;
+  tablesResponsive(body);
+  const save = body.querySelector('#tr-save');
+  if (save) save.onclick = async () => {
+    try { await api('PUT', '/staff/tour-pricing', { perPoint: body.querySelector('#tr-perpoint').value, perParcel: body.querySelector('#tr-perparcel').value }); toast('Tarifs enregistrés.', 'ok'); renderTourReturns(main); }
+    catch (e) { toast(e.message, 'err'); }
+  };
 }
 
 function resolutionBadge(r) {

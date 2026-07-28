@@ -137,6 +137,28 @@ function matchVehicle(text, fleet) {
 let fleet = [];
 async function refreshFleet() { try { const r = await apiBot('/vehicles'); if (r.ok) fleet = r.data.vehicles || []; } catch (e) {} }
 
+// --- Retour de tournée (n° tournée / colis / points) -----------------------
+function looksLikeTourReturn(text) {
+  return /colis|points?\b/i.test(text) || /\b\d{1,4}\s*[/,;\-]\s*\d{1,5}\s*[/,;\-]\s*\d{1,5}\b/.test(text);
+}
+function parseTourReturn(text) {
+  let tourNo = '', parcels = null, points = null;
+  const m = text.match(/(\d{1,4})\s*[/,;\-]\s*(\d{1,5})\s*[/,;\-]\s*(\d{1,5})/);
+  if (m) { tourNo = m[1]; parcels = parseInt(m[2], 10); points = parseInt(m[3], 10); }
+  else {
+    const mc = text.match(/(\d{1,5})\s*colis/i); if (mc) parcels = parseInt(mc[1], 10);
+    const mp = text.match(/(\d{1,5})\s*points?/i); if (mp) points = parseInt(mp[1], 10);
+    const mt = text.match(/tourn[eé]*e?\s*n?[°:.\s]*([a-z]?\d{1,5})/i) || text.match(/\bT\s*[-:.]?\s*(\d{1,5})\b/i);
+    if (mt) tourNo = mt[1];
+  }
+  if (!Number.isFinite(parcels) || !Number.isFinite(points)) return null;
+  return { tourNo, parcels, points };
+}
+async function submitTourReturn(phone, parsed) {
+  const r = await apiBot('/tour-return', Object.assign({ phone }, parsed));
+  return r;
+}
+
 // ===========================================================================
 //  MODE PRIVÉ (menu guidé)
 // ===========================================================================
@@ -312,14 +334,40 @@ async function finalizeGroup(key, stt) {
 //  CONNEXION WHATSAPP (Baileys) + humanisation
 // ===========================================================================
 let sock = null;
-const groupPurposeCache = new Map(); // jid -> 'entretien' | 'other'
+const groupMeta = new Map(); // jid -> sujet du groupe
 
+async function loadGroups() {
+  try { const all = await sock.groupFetchAllParticipating(); for (const jid of Object.keys(all || {})) groupMeta.set(jid, (all[jid] && all[jid].subject) || ''); }
+  catch (e) {}
+}
+function purposeOfSubject(s) {
+  if (GROUP_KW.test(s || '')) return 'entretien';
+  const n = String(s || '').toLowerCase();
+  if (n.includes('ciblex')) return 'metier:ciblex';
+  if (n.includes('gls')) return 'metier:gls';
+  if (n.includes('fedex')) return 'metier:fedex';
+  return 'other';
+}
 async function groupPurpose(jid) {
-  if (groupPurposeCache.has(jid)) return groupPurposeCache.get(jid);
-  let purpose = 'other';
-  try { const meta = await sock.groupMetadata(jid); if (meta && GROUP_KW.test(meta.subject || '')) purpose = 'entretien'; } catch (e) {}
-  groupPurposeCache.set(jid, purpose);
-  return purpose;
+  let subj = groupMeta.get(jid);
+  if (subj === undefined) { try { const meta = await sock.groupMetadata(jid); subj = (meta && meta.subject) || ''; } catch (e) { subj = ''; } groupMeta.set(jid, subj); }
+  return purposeOfSubject(subj);
+}
+function findGroupJid(key) {
+  const k = String(key || '').toLowerCase();
+  for (const [jid, subj] of groupMeta) { if (String(subj).toLowerCase().includes(k)) return jid; }
+  return null;
+}
+
+// Groupe métier (GLS/Ciblex/FedEx) : collecte des retours de tournée.
+async function handleGroupMetier(phone, text) {
+  if (!looksLikeTourReturn(text)) return null; // pas un retour de tournée → silence
+  const parsed = parseTourReturn(text);
+  if (!parsed) return `Pour enregistrer ton retour, réponds au format : *n° tournée / nb colis / nb points* (ex : 12 / 250 / 180).`;
+  const r = await submitTourReturn(phone, parsed);
+  if (r.ok && r.data && r.data.ok) return `✅ Merci ${r.data.firstName || ''}, retour enregistré : tournée ${parsed.tourNo || '—'} · ${parsed.parcels} colis · ${parsed.points} points.`;
+  if (r.status === 404) return null; // numéro non reconnu → discret dans le groupe
+  return `❌ Enregistrement impossible. Réessaie ou passe par l'application.`;
 }
 
 // Envoi « humain » : indicateur d'écriture + délai proportionnel au texte.
@@ -342,8 +390,11 @@ async function pollOutbox() {
     const msgs = (r.data && r.data.messages) || [];
     const done = [];
     for (const m of msgs) {
-      try { await humanSend(m.phone + '@s.whatsapp.net', m.text); done.push(m.id); await sleep(rand(1200, 2600)); }
-      catch (e) { /* on réessaie au prochain tour */ }
+      try {
+        if (m.group) { const jid = findGroupJid(m.group); if (!jid) continue; await humanSend(jid, m.text); done.push(m.id); }
+        else if (m.phone) { await humanSend(m.phone + '@s.whatsapp.net', m.text); done.push(m.id); }
+        await sleep(rand(1200, 2600));
+      } catch (e) { /* on réessaie au prochain tour */ }
     }
     if (done.length) await apiBot('/outbox/ack', { ids: done });
   } catch (e) { /* app injoignable */ }
@@ -359,7 +410,7 @@ async function start() {
   sock.ev.on('connection.update', (u) => {
     const { connection, lastDisconnect, qr } = u;
     if (qr) { console.log('\n📲 Scannez ce QR code avec WhatsApp (Appareils connectés) :\n'); qrcode.generate(qr, { small: true }); }
-    if (connection === 'open') console.log('✅ Bot WhatsApp connecté.');
+    if (connection === 'open') { console.log('✅ Bot WhatsApp connecté.'); loadGroups(); }
     if (connection === 'close') {
       const code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output && lastDisconnect.error.output.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
@@ -379,12 +430,14 @@ async function start() {
         const isGroup = jid.endsWith('@g.us');
 
         if (isGroup) {
-          if ((await groupPurpose(jid)) !== 'entretien') continue; // silencieux hors groupe entretien
+          const purpose = await groupPurpose(jid);
+          if (purpose === 'other') continue; // silencieux hors groupes configurés
           const part = msg.key.participant || '';
           if (!part.endsWith('@s.whatsapp.net')) continue; // participant masqué (@lid) : non résolvable
           const phone = part.split('@')[0].replace(/\D/g, '');
-          const senderName = (msg.pushName || '').trim();
-          const reply = await handleGroupEntretien(jid, phone, senderName, text);
+          let reply = null;
+          if (purpose === 'entretien') reply = await handleGroupEntretien(jid, phone, (msg.pushName || '').trim(), text);
+          else if (purpose.startsWith('metier')) reply = await handleGroupMetier(phone, text);
           if (reply) { try { await sock.readMessages([msg.key]); } catch (e) {} await humanSend(jid, reply); }
           continue;
         }
@@ -392,6 +445,14 @@ async function start() {
         if (!jid.endsWith('@s.whatsapp.net')) continue; // statuts / diffusions
         const phone = jid.split('@')[0].replace(/\D/g, '');
         try { await sock.readMessages([msg.key]); } catch (e) {}
+        // Raccourci : un retour de tournée envoyé en privé est enregistré direct.
+        if (looksLikeTourReturn(text)) {
+          const parsed = parseTourReturn(text);
+          if (parsed) {
+            const rr = await submitTourReturn(phone, parsed);
+            if (rr.ok && rr.data && rr.data.ok) { await humanSend(jid, `✅ Merci, retour de tournée enregistré : tournée ${parsed.tourNo || '—'} · ${parsed.parcels} colis · ${parsed.points} points.`); continue; }
+          }
+        }
         const reply = await handlePrivate(phone, text);
         await humanSend(jid, reply);
       } catch (e) { console.error('Traitement message:', e && e.message); }
@@ -400,6 +461,7 @@ async function start() {
 
   setInterval(pollOutbox, 9000);
   setInterval(refreshFleet, 5 * 60 * 1000);
+  setInterval(loadGroups, 10 * 60 * 1000);
 }
 
 start().catch((e) => { console.error('Démarrage bot impossible:', e); process.exit(1); });
