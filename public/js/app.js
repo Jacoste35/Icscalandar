@@ -2942,6 +2942,12 @@ async function renderMyData(main) {
               <span class="help" style="margin:0">Cochez pour nous aider à équilibrer les congés (affiché « parent » à la direction).</span>
             </label>
           </td></tr>
+          <tr><th>Notifications par email</th><td>
+            <label style="display:inline-flex;align-items:center;gap:.5rem;font-weight:400;margin:0;cursor:pointer">
+              <input type="checkbox" id="md-emailnotif" ${user.emailNotifications === false ? '' : 'checked'} style="width:auto">
+              <span class="help" style="margin:0">Recevoir un email lors d'une mise à jour vous concernant (congés, heures, documents, véhicule…).</span>
+            </label>
+          </td></tr>
         </table></div>
       </div>
       <div class="card">
@@ -2974,6 +2980,11 @@ async function renderMyData(main) {
     if (parentBox) parentBox.onchange = async () => {
       try { const r = await api('PUT', '/me', { isParent: parentBox.checked }); State.user = r.user; toast('Information enregistrée.', 'ok'); }
       catch (e) { toast(e.message, 'err'); parentBox.checked = !parentBox.checked; }
+    };
+    const emailBox = document.getElementById('md-emailnotif');
+    if (emailBox) emailBox.onchange = async () => {
+      try { const r = await api('PUT', '/me', { emailNotifications: emailBox.checked }); State.user = r.user; toast(emailBox.checked ? 'Notifications email activées.' : 'Notifications email désactivées.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); emailBox.checked = !emailBox.checked; }
     };
     const phoneSave = document.getElementById('md-phone-save');
     if (phoneSave) phoneSave.onclick = async () => {

@@ -23,6 +23,7 @@ const ik = require('../lib/erp/ik');
 const docsign = require('../lib/erp/docsign');
 const discipline = require('../lib/erp/discipline');
 const push = require('../lib/push');
+const mail = require('../lib/mail');
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -598,6 +599,11 @@ function mount(app, deps) {
       title: '📄 Nouveau document à consulter',
       body: `${doc.label} — à lire et accuser réception dans l'application.`,
       url: '/', tag: 'doc-' + doc.id,
+    }));
+    push.fire(mail.notifyUserEmail(data, doc.userId, {
+      subject: 'Un nouveau document vous a été adressé',
+      heading: `Nouveau document : ${doc.label}`,
+      lines: ['Un document a été mis à votre disposition. Merci de le consulter et d’en accuser réception dans l’application.'],
     }));
   };
 
