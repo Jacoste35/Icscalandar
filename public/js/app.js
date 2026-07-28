@@ -569,6 +569,7 @@ function navSections() {
   if (admin || staff) rh.push({ id: 'hours', icon: '⏱️', label: 'Gestion des heures' });
   if (admin || staff) rh.push({ id: 'docmgmt', icon: '📄', label: 'Gestion des procédures' });
   if (admin) rh.push({ id: 'candidatures', icon: '📨', label: 'Candidatures' });
+  if (admin) rh.push({ id: 'wamsg', icon: '💬', label: 'Messages WhatsApp' });
   if (rh.length) groups.push({ id: 'rh', icon: '👥', title: 'Ressources Humaines', items: rh });
   // Exploitation & Transport
   const exp = [];
@@ -831,6 +832,7 @@ function renderView() {
   if (v === 'info') return renderInfo(main);
   if (v === 'admin') return renderAdmin(main);
   if (v === 'candidatures') return renderCandidatures(main);
+  if (v === 'wamsg') return renderWaMessages(main);
   if (v === 'stocks') return renderStocks(main);
   if (v === 'fleet') return renderFleet(main);
   if (v === 'finance') return renderFinance(main);
@@ -2905,6 +2907,51 @@ async function renderMyDocs(main) {
   });
 }
 
+// Bloc WhatsApp de la fiche profil (lié / à lier).
+function waProfileHTML(user) {
+  if (user.whatsapp && user.whatsapp.phone) {
+    const num = '+' + esc(user.whatsapp.phone);
+    return `<div style="display:flex;flex-direction:column;gap:.4rem">
+      <div>✅ Lié au <strong>${num}</strong> <button class="btn ghost sm" id="wa-unlink" style="margin-left:.4rem">Délier</button></div>
+      <label style="display:inline-flex;align-items:center;gap:.5rem;font-weight:400;margin:0;cursor:pointer">
+        <input type="checkbox" id="wa-notif" ${user.waNotifications === false ? '' : 'checked'} style="width:auto">
+        <span class="help" style="margin:0">Recevoir les mises à jour vous concernant sur WhatsApp, et écrire au bot (soldes, congés, véhicule, direction…).</span>
+      </label>
+    </div>`;
+  }
+  return `<div>
+    <button class="btn sm accent" id="wa-link">Lier mon WhatsApp</button>
+    <div id="wa-code" class="help" style="margin-top:.4rem">Recevez soldes, congés et notifications directement sur WhatsApp, et dialoguez avec le bot.</div>
+  </div>`;
+}
+function bindWaProfile(el, user) {
+  if (!el) return;
+  const unlink = el.querySelector('#wa-unlink');
+  if (unlink) unlink.onclick = async () => {
+    if (!confirm('Délier votre WhatsApp ? Vous ne recevrez plus les messages du bot.')) return;
+    try { const r = await api('POST', '/me/wa-unlink', {}); State.user = r.user; toast('WhatsApp délié.', 'ok'); renderMyData(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const notif = el.querySelector('#wa-notif');
+  if (notif) notif.onchange = async () => {
+    try { const r = await api('POST', '/me/wa-notifications', { enabled: notif.checked }); State.user = r.user; toast(notif.checked ? 'Messages WhatsApp activés.' : 'Messages WhatsApp désactivés.', 'ok'); }
+    catch (e) { toast(e.message, 'err'); notif.checked = !notif.checked; }
+  };
+  const link = el.querySelector('#wa-link');
+  if (link) link.onclick = async () => {
+    link.disabled = true;
+    try {
+      const r = await api('POST', '/me/wa-link-code', {});
+      const box = el.querySelector('#wa-code');
+      const numHint = r.botNumber ? `au numéro du bot <strong>${esc(r.botNumber)}</strong>` : 'au numéro WhatsApp du bot de la société';
+      box.innerHTML = `<div class="alert info" style="margin:.4rem 0">
+        <strong>Votre code : <span style="font-size:1.2rem;letter-spacing:.15rem">${esc(r.code)}</span></strong><br>
+        Envoyez ce code par WhatsApp ${numHint} (valable ${r.expiresInMin} min) pour lier votre compte.
+      </div>`;
+    } catch (e) { toast(e.message, 'err'); link.disabled = false; }
+  };
+}
+
 async function renderMyData(main) {
   main.innerHTML = `<div class="page-head"><div><h1>Mon Profil</h1><p>Vos soldes et informations personnelles.</p></div></div><div id="md" class="empty">Chargement…</div>`;
   try {
@@ -2948,6 +2995,7 @@ async function renderMyData(main) {
               <span class="help" style="margin:0">Recevoir un email lors d'une mise à jour vous concernant (congés, heures, documents, véhicule…).</span>
             </label>
           </td></tr>
+          <tr><th>WhatsApp</th><td id="md-wa">${waProfileHTML(user)}</td></tr>
         </table></div>
       </div>
       <div class="card">
@@ -2986,6 +3034,7 @@ async function renderMyData(main) {
       try { const r = await api('PUT', '/me', { emailNotifications: emailBox.checked }); State.user = r.user; toast(emailBox.checked ? 'Notifications email activées.' : 'Notifications email désactivées.', 'ok'); }
       catch (e) { toast(e.message, 'err'); emailBox.checked = !emailBox.checked; }
     };
+    bindWaProfile(document.getElementById('md-wa'), user);
     const phoneSave = document.getElementById('md-phone-save');
     if (phoneSave) phoneSave.onclick = async () => {
       try { const r = await api('PUT', '/me', { phone: document.getElementById('md-phone').value }); State.user = r.user; toast('Téléphone enregistré.', 'ok'); }
@@ -3892,6 +3941,48 @@ function renderCandList(body, list) {
   body.querySelectorAll('[data-dl]').forEach((b) => b.onclick = async () => { await downloadCandFile(b.dataset.dl, b.dataset.which); reload(); });
   body.querySelectorAll('[data-mark]').forEach((b) => b.onclick = async () => { try { await api('POST', `/admin/candidatures/${b.dataset.mark}/status`, { status: b.dataset.st }); reload(); } catch (e) { toast(e.message, 'err'); } });
   body.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer définitivement cette candidature ?')) return; try { await api('DELETE', `/admin/candidatures/${b.dataset.del}`); reload(); } catch (e) { toast(e.message, 'err'); } });
+}
+
+/* =========================================================================
+   MESSAGES WHATSAPP (échanges salariés ↔ direction via le bot)
+   ========================================================================= */
+async function renderWaMessages(main) {
+  if (State.user.role !== 'admin') { main.innerHTML = `<div class="alert warn">Accès réservé à l'administrateur.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>Messages WhatsApp</h1>
+    <p>Échanges avec les salariés via le bot WhatsApp. Répondez : la réponse leur est envoyée sur WhatsApp.</p></div></div>
+    <div id="wam-body" class="empty">Chargement…</div>`;
+  const body = document.getElementById('wam-body');
+  let data;
+  try { data = await api('GET', '/admin/wa-messages'); }
+  catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  renderWaThreads(body, data);
+}
+function renderWaThreads(body, data) {
+  body.className = '';
+  const threads = data.threads || [];
+  const banner = data.waEnabled ? '' : `<div class="alert warn">Le bot WhatsApp n'est pas encore activé sur le serveur (variable <code>BOT_TOKEN</code> absente). Les réponses seront mises en file et envoyées dès l'activation.</div>`;
+  if (!threads.length) { body.innerHTML = banner + `<div class="alert info">Aucun message pour le moment.</div>`; return; }
+  const bubble = (m) => `<div class="wam-msg ${m.from === 'direction' ? 'wam-out' : 'wam-in'}">
+    <div class="wam-txt">${esc(m.text)}</div>
+    <div class="wam-meta">${m.from === 'direction' ? 'Direction' : 'Salarié'} · ${fmtDateTime(m.at)}</div>
+  </div>`;
+  const card = (t) => `<div class="card wam-thread">
+    <div class="wam-head"><strong>${esc(t.userName)}</strong> ${t.unread ? `<span class="pill danger">${t.unread} non lu${t.unread > 1 ? 's' : ''}</span>` : ''} ${t.linked ? '<span class="pill ok">WhatsApp lié</span>' : '<span class="pill muted">non lié</span>'}</div>
+    <div class="wam-thread-body">${t.messages.map(bubble).join('')}</div>
+    ${t.linked ? `<div class="wam-reply"><input type="text" data-reply="${t.userId}" placeholder="Répondre sur WhatsApp…"><button class="btn accent sm" data-send="${t.userId}">Envoyer</button></div>`
+      : '<p class="help">Ce salarié n’a pas lié WhatsApp — impossible de répondre par ce canal.</p>'}
+  </div>`;
+  body.innerHTML = banner + threads.map(card).join('');
+  const reload = async () => { try { const d = await api('GET', '/admin/wa-messages'); renderWaThreads(body, d); } catch (e) {} };
+  body.querySelectorAll('[data-send]').forEach((b) => b.onclick = async () => {
+    const uid = b.dataset.send;
+    const inp = body.querySelector(`[data-reply="${uid}"]`);
+    const text = (inp.value || '').trim();
+    if (!text) { toast('Message vide.', 'err'); return; }
+    b.disabled = true;
+    try { await api('POST', '/admin/wa-messages/reply', { userId: uid, text }); if (window.celebrate) celebrate('validate', { text: 'Réponse envoyée !', sub: 'Sur WhatsApp' }); else toast('Réponse envoyée.', 'ok'); reload(); }
+    catch (e) { toast(e.message, 'err'); b.disabled = false; }
+  });
 }
 
 function resolutionBadge(r) {
