@@ -7905,9 +7905,9 @@ function hoursHsup(body) {
       const pv = await api('POST', '/staff/hsup/reconcile-recup', { preview: true });
       const list = pv.summary || [];
       if (!list.length) { toast('Compteurs déjà à jour : aucune récupération importée à régulariser.', 'ok'); return; }
-      const lines = list.map((x) => `• ${x.name} : ${hFmt(x.beforeHs)} → ${hFmt(x.afterHs)}${x.rccHours ? ` · RCC ${hFmt(x.beforeRcc)}→${hFmt(x.afterRcc)}` : ''}${x.negative ? '   ⚠️ deviendrait négatif' : ''}`).join('\n');
+      const lines = list.map((x) => `• ${x.name} : ${hFmt(x.beforeHs)} → ${hFmt(x.afterHs)}  (retranche ${hFmt(x.recupHours)} — ${x.count} récup. importée(s))${x.rccHours ? ` · RCC ${hFmt(x.beforeRcc)}→${hFmt(x.afterRcc)}` : ''}${x.negative ? '  ⚠️ négatif → ignoré' : ''}`).join('\n');
       let msg = `Mise à jour des compteurs — ${list.length} salarié(s) :\n(solde récup. avant → après)\n\n${lines}\n\n`;
-      if (pv.anyNegative) msg += '⚠️ Les compteurs qui deviendraient NÉGATIFS (récup déjà décomptée pour eux) seront IGNORÉS.\n\n';
+      if (pv.anyNegative) msg += '⚠️ Un solde deviendrait NÉGATIF quand la récup importée dépasse le compteur : c\'est que ces récups sont DÉJÀ prises en compte dans son solde (ex. solde issu des bulletins). Ces salariés sont IGNORÉS.\n\n';
       msg += 'Appliquer ?';
       if (!confirm(msg)) return;
       const okIds = list.filter((x) => !x.negative).map((x) => x.userId);
