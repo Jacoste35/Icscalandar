@@ -7837,7 +7837,7 @@ function hoursHsup(body) {
       <td><input class="hsup-transmitted" data-uid="${id}" data-month="${c.m}" data-old="${c.transmitted}" type="number" step="0.5" min="0" value="${c.transmitted}" style="width:70px" title="Modifie ce qui a déjà été transmis au compteur du salarié (ajuste son solde)"></td>
       <td>${c.recupTaken > 0 ? `<span class="warn" title="Heures de récupération déjà prises sur cette période (déduites du compteur)">${hFmt(c.recupTaken)}</span> <span class="help">(≈ ${(c.recupTaken / HPERDAY).toFixed(2)} j)</span>` : '—'}</td>
       <td><strong class="${c.remDue > 0 ? 'warn' : 'pos'}">${hFmt(c.remDue)}</strong>${c.remDue > 0 ? ` <span class="help">(≈ ${(c.remEquivInfo / HPERDAY).toFixed(2)} j récup.)</span>` : ''}</td>
-      <td>${c.remDue > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remDue}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
+      <td style="white-space:nowrap">${c.remDue > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remDue}">Transmettre</button> ` : '<span class="pill ok">réglé</span> '}<button class="btn ghost sm" data-delmonth="${id}" data-start="${c.start || ''}" data-end="${c.end || ''}" data-month="${c.m}" data-label="${esc(c.label || c.m)}" title="Retirer ce mois du décompte (heures, paiements et ajustements) — à ne pas comptabiliser">🗑</button></td>
     </tr>`).join('');
     return `<div class="card veh-card">
       <div class="veh-card-head" data-toggle="hsup_${id}">
@@ -7943,6 +7943,13 @@ function hoursHsup(body) {
     if (!btns.length) { toast('Rien à transmettre.', 'info'); return; }
     if (!confirm('Transmettre tout le reste dû de ce salarié à son compteur de récupération ?')) return;
     try { for (const bt of btns) await api('POST', '/staff/hsup/transmit', { userId: id, month: bt.dataset.month, equivHours: bt.dataset.eq }); toast('Récupération transmise.', 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  // Retirer un mois du décompte (mois à ne pas comptabiliser) : supprime ses
+  // heures / paiements / éléments importés et annule son effet sur le compteur.
+  body.querySelectorAll('[data-delmonth]').forEach((b) => b.onclick = async () => {
+    if (!confirm(`Retirer « ${b.dataset.label} » du décompte ?\n\nLes heures, paiements et ajustements de cette période seront supprimés et son effet sur le compteur du salarié sera annulé. (N'affecte pas le planning des congés.)`)) return;
+    try { const r = await api('POST', '/staff/hsup/remove-month', { userId: b.dataset.delmonth, month: b.dataset.month, startDate: b.dataset.start, endDate: b.dataset.end }); toast(`Mois retiré.${r.newBalance != null ? ' Solde récup. : ' + hFmt(r.newBalance) + '.' : ''}`, 'ok'); await loadHours(); hoursHsup(body); }
     catch (e) { toast(e.message, 'err'); }
   });
   body.querySelectorAll('[data-exportcsv]').forEach((b) => b.onclick = () => exportHoursCSV(byUser[b.dataset.exportcsv], _hours.hsupBase || 35));

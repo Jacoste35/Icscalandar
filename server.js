@@ -3342,6 +3342,38 @@ app.post('/api/staff/hsup/reconcile-recup', authRequired, adminRequired, async (
   res.json({ applied: true, usersUpdated, requestsMarked, summary });
 });
 
+// Retire une PÉRIODE du décompte des heures sup. (« mois à ne pas comptabiliser ») :
+// supprime les heures travaillées de la période, l'élément de paie et le
+// règlement du mois, en ANNULANT au passage l'effet net du règlement sur le
+// compteur du salarié (heures transmises / trop-payé / ajustement de réalisé).
+app.post('/api/staff/hsup/remove-month', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const { userId, month, startDate, endDate } = req.body || {};
+  const u = db.users.find((x) => x.id === userId);
+  if (!u) return res.status(404).json({ error: 'Salarié introuvable' });
+  const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  let removedHours = 0, revert = 0;
+  // 1) Heures travaillées de la période (par plage de dates).
+  if (validDate(startDate) && validDate(endDate)) {
+    const before = db.workHours.length;
+    db.workHours = db.workHours.filter((h) => !(h.userId === userId && h.date >= startDate && h.date <= endDate));
+    removedHours = before - db.workHours.length;
+  }
+  // 2) Règlement HSUP du mois : on annule son effet net sur le compteur.
+  //    transmittedEquiv & realizedAdj ont CRÉDITÉ le compteur ; overpayApplied l'a DÉBITÉ.
+  const s = (db.hsupSettlements || []).find((x) => x.userId === userId && x.month === month);
+  if (s) {
+    revert = r2((s.overpayApplied || 0) - (s.transmittedEquiv || 0) - (s.realizedAdj || 0));
+    u.balances = u.balances || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
+    u.balances.heuresSupp = r2((u.balances.heuresSupp || 0) + revert);
+    db.hsupSettlements = db.hsupSettlements.filter((x) => !(x.userId === userId && x.month === month));
+  }
+  // 3) Élément de paie importé du mois.
+  db.payImports = (db.payImports || []).filter((p) => !(p.userId === userId && p.month === month));
+  await save();
+  res.json({ ok: true, removedHours, revert, newBalance: u.balances ? u.balances.heuresSupp : null });
+});
+
 app.post('/api/staff/work-hours', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const { userId, date, start, end, breakMin } = req.body || {};
