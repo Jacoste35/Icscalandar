@@ -1534,6 +1534,12 @@ function bindDashboardActions(scope) {
     try { await api('POST', `/admin/km-anomalies/${b.dataset.kmanoReject}/resolve`, { apply: false }); toast('Anomalie écartée.', 'ok'); renderDashboard(document.getElementById('main')); }
     catch (e) { toast(e.message, 'err'); }
   });
+  const kmRejectAll = scope.querySelector('[data-kmano-reject-all]');
+  if (kmRejectAll) kmRejectAll.onclick = async () => {
+    if (!confirm('Écarter TOUTES les anomalies de kilométrage à vérifier ? Les odomètres ne seront pas modifiés.')) return;
+    try { const r = await api('POST', '/admin/km-anomalies/dismiss-all', {}); toast(`${r.dismissed || 0} anomalie(s) écartée(s).`, 'ok'); renderDashboard(document.getElementById('main')); }
+    catch (e) { toast(e.message, 'err'); }
+  };
   // Composer un message (encadrement).
   const comp = scope.querySelector('#msg-send');
   if (comp) comp.onclick = async () => {
@@ -1986,7 +1992,10 @@ function docValidationHTML(list) {
 function kmAnomalyHTML(anomalies) {
   if (!anomalies || !anomalies.length) return '';
   return `<div class="card" style="border-left:5px solid var(--danger)">
-    <h3 style="margin:0 0 .3rem">🚗 Anomalies de kilométrage à vérifier (${anomalies.length})</h3>
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.3rem">
+      <h3 style="margin:0">🚗 Anomalies de kilométrage à vérifier (${anomalies.length})</h3>
+      <button class="btn ghost sm" data-kmano-reject-all style="margin-left:auto">Écarter le tout</button>
+    </div>
     <p class="help" style="margin-top:0">Relevés suspects (erreur de saisie possible). <strong>Validez</strong> pour mettre à jour l'odomètre du véhicule, ou <strong>écartez</strong>.</p>
     <div class="table-wrap"><table><thead><tr><th>Véhicule</th><th>Date</th><th>Km relevé</th><th>Chauffeur</th><th>Anomalie</th><th></th></tr></thead>
       <tbody>${anomalies.map((a) => `<tr><td><strong>${esc(a.vehicleName)}</strong>${a.plate ? ` (${esc(a.plate)})` : ''}</td><td>${fmtDate(a.date)}</td><td>${kmFmt(a.km)}</td><td>${esc(a.userName)}</td><td class="help">${esc(a.reason)}</td><td style="white-space:nowrap"><button class="btn ok sm" data-kmano-apply="${a.id}">Valider</button> <button class="btn ghost sm" data-kmano-reject="${a.id}">Écarter</button></td></tr>`).join('')}</tbody></table></div>

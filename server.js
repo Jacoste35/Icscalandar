@@ -3648,6 +3648,15 @@ app.post('/api/admin/km-anomalies/:id/resolve', authRequired, adminRequired, asy
   res.json({ ok: true });
 });
 
+// Écarter toutes les anomalies de kilométrage en attente (sans toucher aux odomètres).
+app.post('/api/admin/km-anomalies/dismiss-all', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const dismissed = (db.kmAnomalies || []).length;
+  db.kmAnomalies = [];
+  await save();
+  res.json({ ok: true, dismissed });
+});
+
 // Historique des km par véhicule (graphique + tableau de la flotte).
 app.get('/api/staff/vehicle-km', authRequired, staffRequired, (req, res) => {
   const db = getData();
