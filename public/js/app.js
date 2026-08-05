@@ -7875,8 +7875,11 @@ function hoursHsup(body) {
     <div class="card" style="border-left:4px solid var(--accent)">
       <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
         <div style="flex:1 1 240px"><strong>🔄 Mettre à jour les compteurs</strong>
-          <div class="help" style="margin:0">Croise les données du site et des bulletins : retranche des compteurs les <strong>récupérations importées</strong> qui n'ont pas encore été décomptées (corrige les compteurs trop élevés).</div></div>
-        <button class="btn accent" id="hsup-reconcile">Mettre à jour la base</button>
+          <div class="help" style="margin:0">Croise les données du site et des bulletins : retranche des compteurs les <strong>récupérations importées</strong> non encore décomptées. Un aperçu montre le solde avant/après ; les salariés dont le compteur deviendrait négatif (récup déjà comptée) sont <strong>ignorés</strong>.</div></div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="btn accent" id="hsup-reconcile">Mettre à jour la base</button>
+          <button class="btn ghost" id="hsup-reconcile-undo" title="Rétablit les compteurs si une mise à jour a rendu un solde négatif">↩ Annuler la mise à jour</button>
+        </div>
       </div>
     </div>
     <div class="card"><h3>Heures supplémentaires</h3>
@@ -7901,13 +7904,24 @@ function hoursHsup(body) {
       const pv = await api('POST', '/staff/hsup/reconcile-recup', { preview: true });
       const list = pv.summary || [];
       if (!list.length) { toast('Compteurs déjà à jour : aucune récupération importée à régulariser.', 'ok'); return; }
-      const lines = list.map((x) => `• ${x.name} : −${hFmt(x.recupHours)} récup.${x.rccHours ? ` · −${hFmt(x.rccHours)} RCC` : ''} (${x.count} jour(s))`).join('\n');
-      if (!confirm(`Mise à jour des compteurs — ${list.length} salarié(s) concerné(s) :\n\n${lines}\n\nAppliquer ? Les récupérations importées ci-dessus seront retranchées des compteurs.`)) return;
-      const r = await api('POST', '/staff/hsup/reconcile-recup', {});
+      const lines = list.map((x) => `• ${x.name} : ${hFmt(x.beforeHs)} → ${hFmt(x.afterHs)}${x.rccHours ? ` · RCC ${hFmt(x.beforeRcc)}→${hFmt(x.afterRcc)}` : ''}${x.negative ? '   ⚠️ deviendrait négatif' : ''}`).join('\n');
+      let msg = `Mise à jour des compteurs — ${list.length} salarié(s) :\n(solde récup. avant → après)\n\n${lines}\n\n`;
+      if (pv.anyNegative) msg += '⚠️ Les compteurs qui deviendraient NÉGATIFS (récup déjà décomptée pour eux) seront IGNORÉS.\n\n';
+      msg += 'Appliquer ?';
+      if (!confirm(msg)) return;
+      const okIds = list.filter((x) => !x.negative).map((x) => x.userId);
+      if (!okIds.length) { toast('Aucun compteur à régulariser sans passer en négatif.', 'info'); return; }
+      const r = await api('POST', '/staff/hsup/reconcile-recup', { onlyUserIds: okIds });
       if (window.celebrate) celebrate('validate', { text: 'Compteurs mis à jour !', sub: `${r.usersUpdated} salarié(s) régularisé(s)` });
       else toast(`Compteurs mis à jour : ${r.usersUpdated} salarié(s).`, 'ok');
       await loadHours(); hoursHsup(body);
     } catch (e) { toast(e.message, 'err'); }
+  };
+  const rcUndo = document.getElementById('hsup-reconcile-undo');
+  if (rcUndo) rcUndo.onclick = async () => {
+    if (!confirm('Annuler la dernière mise à jour des compteurs ?\n\nLes récupérations qui avaient été régularisées seront re-créditées aux compteurs (retour à l’état d’avant la mise à jour).')) return;
+    try { const r = await api('POST', '/staff/hsup/reconcile-recup', { undo: true }); toast(r.usersUpdated ? `Mise à jour annulée : ${r.usersUpdated} salarié(s) restauré(s).` : 'Rien à annuler.', 'ok'); await loadHours(); hoursHsup(body); }
+    catch (e) { toast(e.message, 'err'); }
   };
   body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; hoursHsup(body); });
   body.querySelectorAll('.hsup-paid').forEach((inp) => inp.onchange = async () => {
