@@ -3297,6 +3297,43 @@ app.put('/api/staff/hsup/transmitted', authRequired, adminRequired, async (req, 
   res.json({ settlement: s, newBalance: u.balances.heuresSupp });
 });
 
+// Régularisation des compteurs : décompte les RÉCUPÉRATIONS importées (rapport
+// d'activité / bulletins) qui n'ont jamais été retranchées du compteur. Idempotent
+// (marque chaque demande régularisée). `preview` = simulation sans écriture.
+app.post('/api/staff/hsup/reconcile-recup', authRequired, adminRequired, async (req, res) => {
+  const db = getData();
+  const preview = !!(req.body && req.body.preview);
+  const perUser = {};
+  for (const r of (db.requests || [])) {
+    if (r.status !== 'approved') continue;
+    if (r.category !== 'RCP' && r.category !== 'RCC') continue;
+    if (r.recupReconciled || r.recupDeducted) continue; // déjà régularisée / déjà décomptée à l'import
+    // Cible uniquement les récupérations IMPORTÉES jamais décomptées : rapport
+    // d'activité (noDeduct) ou bulletins (note « Importé du bulletin de paie »).
+    // Les récup posées dans l'app (décomptées à la validation) sont ignorées.
+    const isImportRecup = (r.noDeduct === true) || (typeof r.adminNote === 'string' && r.adminNote.indexOf('Importé du bulletin de paie') === 0);
+    if (!isImportRecup) continue;
+    const balance = r.category === 'RCP' ? 'heuresSupp' : 'rcc';
+    const g = perUser[r.userId] = perUser[r.userId] || { userId: r.userId, hs: 0, rcc: 0, ids: [] };
+    if (balance === 'heuresSupp') g.hs += Number(r.hours) || 0; else g.rcc += Number(r.hours) || 0;
+    g.ids.push(r.id);
+  }
+  const groups = Object.values(perUser);
+  const summary = groups.map((g) => { const u = db.users.find((y) => y.id === g.userId); return { userId: g.userId, name: u ? `${u.firstName} ${u.lastName}` : g.userId, recupHours: Math.round(g.hs * 100) / 100, rccHours: Math.round(g.rcc * 100) / 100, count: g.ids.length }; }).filter((x) => x.recupHours || x.rccHours);
+  if (preview) return res.json({ preview: true, summary });
+  let usersUpdated = 0, requestsMarked = 0;
+  for (const g of groups) {
+    const u = db.users.find((y) => y.id === g.userId); if (!u) continue;
+    u.balances = u.balances || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
+    if (g.hs) u.balances.heuresSupp = Math.round(((u.balances.heuresSupp || 0) - g.hs) * 100) / 100;
+    if (g.rcc) u.balances.rcc = Math.round(((u.balances.rcc || 0) - g.rcc) * 100) / 100;
+    g.ids.forEach((id) => { const rr = (db.requests || []).find((r) => r.id === id); if (rr) { rr.recupReconciled = true; requestsMarked++; } });
+    if (g.hs || g.rcc) usersUpdated++;
+  }
+  await save();
+  res.json({ applied: true, usersUpdated, requestsMarked, summary });
+});
+
 app.post('/api/staff/work-hours', authRequired, adminRequired, async (req, res) => {
   const db = getData();
   const { userId, date, start, end, breakMin } = req.body || {};
@@ -3379,15 +3416,21 @@ app.post('/api/staff/work-hours/import', authRequired, adminRequired, async (req
         const code = (r.absCat && categoryByCode(r.absCat) && r.absCat !== 'DCP') ? r.absCat : 'CP';
         const cat = categoryByCode(code);
         const wd = holidays.countWorkingDays(ds, ds);
-        db.requests.push({
+        // Récupération (RCP) / RCC : on DÉCOMPTE du compteur les heures réellement
+        // prises (colonne « Heures congés » du rapport). Les autres motifs restent
+        // au planning sans décompte (leurs soldes sont gérés à part).
+        const isRecup = (code === 'RCP' || code === 'RCC');
+        const rq = {
           id: nextId('request'), userId, category: code, pool: code === 'CP' ? 'N' : null,
           startDate: ds, endDate: ds, reason: (cat ? cat.label : 'Absence') + ' (import)',
-          retardMinutes: null, days: wd, hours: r2(wd * HOURS_PER_DAY),
+          retardMinutes: null, days: wd, hours: isRecup ? r2(r.absence) : r2(wd * HOURS_PER_DAY),
           status: 'approved', createdAt: new Date().toISOString(), decidedAt: new Date().toISOString(),
           decidedBy: req.user.id, createdBy: req.user.id, replacedById: null, replacedByName: null,
-          adminNote: 'Absence importée depuis le rapport d’activité (rétroactif, sans décompte de solde)',
-          source: 'import', noDeduct: true,
-        });
+          adminNote: isRecup ? 'Récupération importée du rapport d’activité (décomptée du compteur)' : 'Absence importée depuis le rapport d’activité (rétroactif, sans décompte de solde)',
+          source: 'import', noDeduct: !isRecup,
+        };
+        db.requests.push(rq);
+        if (isRecup) { const d = deductionFor(rq); if (d) { u.balances = u.balances || {}; u.balances[d.balance] = Math.round(((u.balances[d.balance] || 0) - d.amount) * 100) / 100; rq.recupDeducted = true; } }
         planned++;
       }
     }
@@ -3511,19 +3554,27 @@ app.post('/api/staff/payslips/apply-elements', authRequired, adminRequired, asyn
       if (!cat || cat.code === 'DCP') continue;
       if (!validDate(a.startDate)) continue;
       const end = validDate(a.endDate) && a.endDate >= a.startDate ? a.endDate : a.startDate;
-      // Anti-doublon : même salarié / motif / période déjà au planning.
-      if (db.requests.some((r) => r.userId === u.id && r.category === a.category && r.startDate === a.startDate && r.endDate === end)) { absSkipped++; continue; }
+      const isRecup = (a.category === 'RCP' || a.category === 'RCC');
+      // Anti-doublon : congés → période exacte ; récupération → CHEVAUCHEMENT
+      // (évite un double décompte si la même récup est déjà venue du rapport d'activité).
+      const dup = isRecup
+        ? db.requests.some((r) => r.userId === u.id && r.category === a.category && r.status !== 'rejected' && r.startDate <= end && r.endDate >= a.startDate)
+        : db.requests.some((r) => r.userId === u.id && r.category === a.category && r.startDate === a.startDate && r.endDate === end);
+      if (dup) { absSkipped++; continue; }
       const days = cat.code === 'RET' ? 0 : holidays.countWorkingDays(a.startDate, end);
       const hours = days * HOURS_PER_DAY;
-      db.requests.push({
+      const rq = {
         id: nextId('request'), userId: u.id, category: a.category, pool: null,
         startDate: a.startDate, endDate: end, reason: cat.label,
         fractionnement: null, retardMinutes: null, days, hours,
         status: 'approved', createdAt: new Date().toISOString(),
         decidedAt: new Date().toISOString(), decidedBy: req.user.id, createdBy: req.user.id,
         replacedById: null, replacedByName: null,
-        adminNote: 'Importé du bulletin de paie' + (it.month ? ' (' + it.month + ')' : ''),
-      });
+        adminNote: 'Importé du bulletin de paie' + (it.month ? ' (' + it.month + ')' : '') + (isRecup ? ' — récupération décomptée du compteur' : ''),
+        noDeduct: !isRecup,
+      };
+      db.requests.push(rq);
+      if (isRecup) { const d = deductionFor(rq); if (d) { u.balances = u.balances || {}; u.balances[d.balance] = Math.round(((u.balances[d.balance] || 0) - d.amount) * 100) / 100; rq.recupDeducted = true; } }
       absAdded++;
       // Apprentissage : mémorise le motif lu -> catégorie confirmée.
       if (a.motif) { const k = normMotif(a.motif); if (k && db.settings.motifLearning[k] !== a.category) { db.settings.motifLearning[k] = a.category; learned++; } }
