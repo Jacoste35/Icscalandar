@@ -3313,6 +3313,18 @@ app.post('/api/staff/hsup/reconcile-recup', authRequired, adminRequired, async (
   const body = req.body || {};
   const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 
+  // --- POINT DE RÉFÉRENCE : déclare les soldes ACTUELS comme justes. Marque
+  // toutes les récupérations existantes comme « déjà comptées » afin que les
+  // futures mises à jour n'agissent QUE sur les récup importées ensuite. ---
+  if (body.baseline) {
+    let marked = 0;
+    for (const r of (db.requests || [])) {
+      if (r.status === 'approved' && (r.category === 'RCP' || r.category === 'RCC') && !r.recupCountedInBalance) { r.recupCountedInBalance = true; marked++; }
+    }
+    await save();
+    return res.json({ baseline: true, marked });
+  }
+
   // --- ANNULER : ré-crédite les récup déjà régularisées et enlève le marquage. ---
   // Sert à revenir en arrière si la régularisation a rendu un compteur négatif.
   if (body.undo) {
@@ -3343,7 +3355,11 @@ app.post('/api/staff/hsup/reconcile-recup', authRequired, adminRequired, async (
   for (const r of (db.requests || [])) {
     if (r.status !== 'approved') continue;
     if (r.category !== 'RCP' && r.category !== 'RCC') continue;
-    if (r.recupReconciled || r.recupDeducted) continue; // déjà régularisée / déjà décomptée à l'import
+    // Déjà pris en compte quelque part → on n'y touche pas :
+    //  • recupDeducted      : décomptée au moment de l'import (correctif) ;
+    //  • recupReconciled    : déjà régularisée par un passage précédent ;
+    //  • recupCountedInBalance : déjà incluse dans un solde importé du bulletin.
+    if (r.recupReconciled || r.recupDeducted || r.recupCountedInBalance) continue;
     // Cible uniquement les récupérations IMPORTÉES jamais décomptées : rapport
     // d'activité (noDeduct) ou bulletins (note « Importé du bulletin de paie »).
     const isImportRecup = (r.noDeduct === true) || (typeof r.adminNote === 'string' && r.adminNote.indexOf('Importé du bulletin de paie') === 0);
@@ -3594,9 +3610,17 @@ app.post('/api/staff/payslips/apply', authRequired, adminRequired, async (req, r
     const u = db.users.find((x) => x.id === (it && it.userId));
     if (!u) continue;
     u.balances = u.balances || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
-    let changed = false;
+    let changed = false, hsSet = false;
     for (const k of ['congesN', 'congesN1', 'rcc', 'heuresSupp']) {
-      if (it[k] !== undefined && it[k] !== '' && Number.isFinite(Number(it[k]))) { u.balances[k] = Number(it[k]); changed = true; }
+      if (it[k] !== undefined && it[k] !== '' && Number.isFinite(Number(it[k]))) { u.balances[k] = Number(it[k]); changed = true; if (k === 'heuresSupp' || k === 'rcc') hsSet = true; }
+    }
+    // Le solde récup./RCC du bulletin tient DÉJÀ compte des récupérations prises :
+    // on marque toutes les récup existantes comme « déjà comptées » pour que la
+    // « mise à jour de la base » ne les redéduise pas (évite les compteurs négatifs).
+    if (hsSet) {
+      (db.requests || []).forEach((r) => {
+        if (r.status === 'approved' && (r.category === 'RCP' || r.category === 'RCC') && r.userId === u.id) r.recupCountedInBalance = true;
+      });
     }
     // Adresse postale lue sur le bulletin → fiche individuelle (donnée perso RGPD).
     if (typeof it.address === 'string' && it.address.trim()) { u.address = it.address.trim(); changed = true; }

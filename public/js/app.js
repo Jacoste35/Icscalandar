@@ -7878,6 +7878,7 @@ function hoursHsup(body) {
           <div class="help" style="margin:0">Croise les données du site et des bulletins : retranche des compteurs les <strong>récupérations importées</strong> non encore décomptées. Un aperçu montre le solde avant/après ; les salariés dont le compteur deviendrait négatif (récup déjà comptée) sont <strong>ignorés</strong>.</div></div>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap">
           <button class="btn accent" id="hsup-reconcile">Mettre à jour la base</button>
+          <button class="btn ghost" id="hsup-reconcile-baseline" title="Déclare les compteurs actuels comme justes : les récup déjà prises ne seront plus redéduites, la mise à jour n'agira que sur les nouvelles récup importées">✓ Soldes actuels justes</button>
           <button class="btn ghost" id="hsup-reconcile-undo" title="Rétablit les compteurs si une mise à jour a rendu un solde négatif">↩ Annuler la mise à jour</button>
         </div>
       </div>
@@ -7917,6 +7918,12 @@ function hoursHsup(body) {
       else toast(`Compteurs mis à jour : ${r.usersUpdated} salarié(s).`, 'ok');
       await loadHours(); hoursHsup(body);
     } catch (e) { toast(e.message, 'err'); }
+  };
+  const rcBase = document.getElementById('hsup-reconcile-baseline');
+  if (rcBase) rcBase.onclick = async () => {
+    if (!confirm('Déclarer les compteurs de récupération ACTUELS comme justes ?\n\nToutes les récupérations déjà prises seront considérées comme « déjà comptées » : « Mettre à jour la base » n’agira plus que sur les récupérations importées PAR LA SUITE. (À utiliser si vos soldes viennent des bulletins.)')) return;
+    try { const r = await api('POST', '/staff/hsup/reconcile-recup', { baseline: true }); toast(`Point de référence enregistré (${r.marked || 0} récup. marquée(s) comme déjà comptée(s)).`, 'ok'); }
+    catch (e) { toast(e.message, 'err'); }
   };
   const rcUndo = document.getElementById('hsup-reconcile-undo');
   if (rcUndo) rcUndo.onclick = async () => {
