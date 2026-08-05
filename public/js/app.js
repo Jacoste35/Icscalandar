@@ -8177,22 +8177,45 @@ let _hImport = null; // { employees: { name: rows[] }, period }
 function hoursImport(body) {
   body.innerHTML = `
     <div class="card"><h3>Importer un rapport d'activité (.xlsx)</h3>
-      <p class="help">Chargez le fichier exporté (colonnes Employé, Jour, Début, Fin, Total travail, Amplitude…). Les salariés détectés seront à associer à vos comptes, puis les données alimentent les amplitudes et les heures supplémentaires.</p>
-      <input id="hi-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <p class="help">Chargez un ou <strong>plusieurs fichiers</strong> exportés (colonnes Employé, Jour, Début, Fin, Total travail, Amplitude…). Les données de tous les fichiers sont fusionnées ; les salariés détectés seront à associer à vos comptes, puis alimentent les amplitudes et les heures supplémentaires.</p>
+      <input id="hi-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple>
       <div id="hi-status" class="help" style="margin-top:.4rem"></div>
     </div>
     <div id="hi-map"></div>`;
   document.getElementById('hi-file').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
-    document.getElementById('hi-status').textContent = 'Analyse en cours…';
+    const files = Array.from(e.target.files || []); if (!files.length) return;
+    const statusEl = document.getElementById('hi-status');
+    statusEl.textContent = files.length > 1 ? `Analyse de ${files.length} fichiers…` : 'Analyse en cours…';
     try {
-      const rows = await parseXlsx(await f.arrayBuffer());
-      _hImport = extractActivityReport(rows);
-      const names = Object.keys(_hImport.employees);
-      if (!names.length) throw new Error('Aucune ligne exploitable détectée.');
-      document.getElementById('hi-status').textContent = `${names.length} salarié(s) détecté(s) · période ${_hImport.period}.`;
+      const merged = { employees: {}, period: '' };
+      const errors = [];
+      for (const f of files) {
+        try {
+          const rep = extractActivityReport(await parseXlsx(await f.arrayBuffer()));
+          // Fusion : on regroupe les enregistrements par salarié, dédoublonnés par
+          // date (un même jour importé deux fois → la dernière version l'emporte).
+          for (const name of Object.keys(rep.employees)) {
+            const dest = merged.employees[name] = merged.employees[name] || [];
+            for (const rec of rep.employees[name]) {
+              const idx = dest.findIndex((x) => x.date === rec.date);
+              if (idx >= 0) dest[idx] = rec; else dest.push(rec);
+            }
+          }
+        } catch (err) { errors.push(`${f.name} : ${err.message}`); }
+      }
+      let minD = null, maxD = null;
+      for (const recs of Object.values(merged.employees)) {
+        recs.sort((a, b) => a.date.localeCompare(b.date));
+        for (const r of recs) { if (!minD || r.date < minD) minD = r.date; if (!maxD || r.date > maxD) maxD = r.date; }
+      }
+      merged.period = minD ? `${fmtDate(minD)} → ${fmtDate(maxD)}` : '';
+      const names = Object.keys(merged.employees);
+      if (!names.length) throw new Error('Aucune ligne exploitable détectée.' + (errors.length ? ' (' + errors.join(' ; ') + ')' : ''));
+      _hImport = merged;
+      statusEl.innerHTML = `${files.length} fichier(s) · ${names.length} salarié(s) détecté(s) · période ${merged.period}.`
+        + (errors.length ? `<br><span style="color:var(--danger)">Fichier(s) ignoré(s) : ${esc(errors.join(' ; '))}</span>` : '');
       renderImportMapping();
-    } catch (err) { document.getElementById('hi-status').innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
+    } catch (err) { statusEl.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; }
   };
 }
 // Extrait les lignes d'activité (employé porté ligne par ligne).
