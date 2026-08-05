@@ -3310,7 +3310,35 @@ app.put('/api/staff/hsup/transmitted', authRequired, adminRequired, async (req, 
 // (marque chaque demande régularisée). `preview` = simulation sans écriture.
 app.post('/api/staff/hsup/reconcile-recup', authRequired, adminRequired, async (req, res) => {
   const db = getData();
-  const preview = !!(req.body && req.body.preview);
+  const body = req.body || {};
+  const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
+  // --- ANNULER : ré-crédite les récup déjà régularisées et enlève le marquage. ---
+  // Sert à revenir en arrière si la régularisation a rendu un compteur négatif.
+  if (body.undo) {
+    const per = {};
+    for (const r of (db.requests || [])) {
+      if (!r.recupReconciled) continue;
+      if (r.category !== 'RCP' && r.category !== 'RCC') continue;
+      const g = per[r.userId] = per[r.userId] || { hs: 0, rcc: 0, ids: [] };
+      if (r.category === 'RCP') g.hs += Number(r.hours) || 0; else g.rcc += Number(r.hours) || 0;
+      g.ids.push(r.id);
+    }
+    let usersUpdated = 0, requestsMarked = 0;
+    for (const uid of Object.keys(per)) {
+      const u = db.users.find((y) => y.id === uid); if (!u) continue;
+      const g = per[uid];
+      u.balances = u.balances || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
+      if (g.hs) u.balances.heuresSupp = r2((u.balances.heuresSupp || 0) + g.hs);
+      if (g.rcc) u.balances.rcc = r2((u.balances.rcc || 0) + g.rcc);
+      g.ids.forEach((id) => { const rr = (db.requests || []).find((r) => r.id === id); if (rr) { delete rr.recupReconciled; requestsMarked++; } });
+      usersUpdated++;
+    }
+    await save();
+    return res.json({ undone: true, usersUpdated, requestsMarked });
+  }
+
+  const preview = !!body.preview;
   const perUser = {};
   for (const r of (db.requests || [])) {
     if (r.status !== 'approved') continue;
@@ -3318,28 +3346,35 @@ app.post('/api/staff/hsup/reconcile-recup', authRequired, adminRequired, async (
     if (r.recupReconciled || r.recupDeducted) continue; // déjà régularisée / déjà décomptée à l'import
     // Cible uniquement les récupérations IMPORTÉES jamais décomptées : rapport
     // d'activité (noDeduct) ou bulletins (note « Importé du bulletin de paie »).
-    // Les récup posées dans l'app (décomptées à la validation) sont ignorées.
     const isImportRecup = (r.noDeduct === true) || (typeof r.adminNote === 'string' && r.adminNote.indexOf('Importé du bulletin de paie') === 0);
     if (!isImportRecup) continue;
-    const balance = r.category === 'RCP' ? 'heuresSupp' : 'rcc';
     const g = perUser[r.userId] = perUser[r.userId] || { userId: r.userId, hs: 0, rcc: 0, ids: [] };
-    if (balance === 'heuresSupp') g.hs += Number(r.hours) || 0; else g.rcc += Number(r.hours) || 0;
+    if (r.category === 'RCP') g.hs += Number(r.hours) || 0; else g.rcc += Number(r.hours) || 0;
     g.ids.push(r.id);
   }
   const groups = Object.values(perUser);
-  const summary = groups.map((g) => { const u = db.users.find((y) => y.id === g.userId); return { userId: g.userId, name: u ? `${u.firstName} ${u.lastName}` : g.userId, recupHours: Math.round(g.hs * 100) / 100, rccHours: Math.round(g.rcc * 100) / 100, count: g.ids.length }; }).filter((x) => x.recupHours || x.rccHours);
-  if (preview) return res.json({ preview: true, summary });
+  // Aperçu enrichi : solde AVANT / APRÈS pour repérer un compteur qui passerait négatif.
+  const summary = groups.map((g) => {
+    const u = db.users.find((y) => y.id === g.userId); const bal = (u && u.balances) || {};
+    const beforeHs = r2(bal.heuresSupp), afterHs = r2(beforeHs - g.hs);
+    const beforeRcc = r2(bal.rcc), afterRcc = r2(beforeRcc - g.rcc);
+    return { userId: g.userId, name: u ? `${u.firstName} ${u.lastName}` : g.userId, recupHours: r2(g.hs), rccHours: r2(g.rcc), count: g.ids.length, beforeHs, afterHs, beforeRcc, afterRcc, negative: afterHs < 0 || afterRcc < 0 };
+  }).filter((x) => x.recupHours || x.rccHours);
+  if (preview) return res.json({ preview: true, summary, anyNegative: summary.some((x) => x.negative) });
+  // Application : possibilité de n'appliquer qu'à une liste d'ids salariés (onlyUserIds).
+  const only = Array.isArray(body.onlyUserIds) ? new Set(body.onlyUserIds) : null;
   let usersUpdated = 0, requestsMarked = 0;
   for (const g of groups) {
+    if (only && !only.has(g.userId)) continue;
     const u = db.users.find((y) => y.id === g.userId); if (!u) continue;
     u.balances = u.balances || { congesN: 0, congesN1: 0, rcc: 0, heuresSupp: 0 };
-    if (g.hs) u.balances.heuresSupp = Math.round(((u.balances.heuresSupp || 0) - g.hs) * 100) / 100;
-    if (g.rcc) u.balances.rcc = Math.round(((u.balances.rcc || 0) - g.rcc) * 100) / 100;
+    if (g.hs) u.balances.heuresSupp = r2((u.balances.heuresSupp || 0) - g.hs);
+    if (g.rcc) u.balances.rcc = r2((u.balances.rcc || 0) - g.rcc);
     g.ids.forEach((id) => { const rr = (db.requests || []).find((r) => r.id === id); if (rr) { rr.recupReconciled = true; requestsMarked++; } });
     if (g.hs || g.rcc) usersUpdated++;
   }
   await save();
-  res.json({ applied: true, usersUpdated, requestsMarked, summary });
+  res.json({ applied: true, usersUpdated, requestsMarked });
 });
 
 // Retire une PÉRIODE du décompte des heures sup. (« mois à ne pas comptabiliser ») :
