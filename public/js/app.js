@@ -7853,6 +7853,13 @@ function hoursHsup(body) {
   }).join('');
 
   body.innerHTML = `
+    <div class="card" style="border-left:4px solid var(--accent)">
+      <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+        <div style="flex:1 1 240px"><strong>🔄 Mettre à jour les compteurs</strong>
+          <div class="help" style="margin:0">Croise les données du site et des bulletins : retranche des compteurs les <strong>récupérations importées</strong> qui n'ont pas encore été décomptées (corrige les compteurs trop élevés).</div></div>
+        <button class="btn accent" id="hsup-reconcile">Mettre à jour la base</button>
+      </div>
+    </div>
     <div class="card"><h3>Heures supplémentaires</h3>
       <div style="display:flex;gap:.8rem;align-items:end;flex-wrap:wrap">
         <div><label>Base hebdomadaire (h au-delà = HSUP)</label><input id="hsup-base" type="number" step="0.5" min="0" value="${base}" style="width:120px"></div>
@@ -7867,6 +7874,20 @@ function hoursHsup(body) {
       await api('PUT', '/staff/hsup-base', { base: document.getElementById('hsup-base').value });
       await api('PUT', '/staff/hsup-cutoff', { cutoff: document.getElementById('hsup-cutoff').value });
       await loadHours(); hrTab('hsup');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  const rcBtn = document.getElementById('hsup-reconcile');
+  if (rcBtn) rcBtn.onclick = async () => {
+    try {
+      const pv = await api('POST', '/staff/hsup/reconcile-recup', { preview: true });
+      const list = pv.summary || [];
+      if (!list.length) { toast('Compteurs déjà à jour : aucune récupération importée à régulariser.', 'ok'); return; }
+      const lines = list.map((x) => `• ${x.name} : −${hFmt(x.recupHours)} récup.${x.rccHours ? ` · −${hFmt(x.rccHours)} RCC` : ''} (${x.count} jour(s))`).join('\n');
+      if (!confirm(`Mise à jour des compteurs — ${list.length} salarié(s) concerné(s) :\n\n${lines}\n\nAppliquer ? Les récupérations importées ci-dessus seront retranchées des compteurs.`)) return;
+      const r = await api('POST', '/staff/hsup/reconcile-recup', {});
+      if (window.celebrate) celebrate('validate', { text: 'Compteurs mis à jour !', sub: `${r.usersUpdated} salarié(s) régularisé(s)` });
+      else toast(`Compteurs mis à jour : ${r.usersUpdated} salarié(s).`, 'ok');
+      await loadHours(); hoursHsup(body);
     } catch (e) { toast(e.message, 'err'); }
   };
   body.querySelectorAll('[data-toggle]').forEach((b) => b.onclick = () => { const id = b.dataset.toggle; _vehOpen[id] = !_vehOpen[id]; hoursHsup(body); });
