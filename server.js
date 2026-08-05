@@ -3179,7 +3179,15 @@ app.get('/api/staff/work-hours', authRequired, staffRequired, (req, res) => {
   const drivers = db.users.filter((u) => u.status === 'active' && !u.suspended)
     .map((u) => ({ id: u.id, firstName: u.firstName, lastName: u.lastName, role: u.role, groupId: u.groupId, balances: u.balances, hireDate: u.hireDate || null }))
     .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
-  res.json({ entries: list, drivers, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, hsupCutoff: db.settings.hsupCutoffDay || 0, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice(), driverLearn: db.settings.driverImportLearning || {} });
+  // Récupérations (RCP) déjà prises, par salarié : { userId: [{date, hours}] }.
+  // Sert à afficher, mois par mois, les heures de récupération déjà consommées.
+  const recup = {};
+  (db.requests || []).forEach((r) => {
+    if (r.status !== 'approved' || r.category !== 'RCP' || !r.startDate) return;
+    if (since && r.startDate < since) return;
+    (recup[r.userId] = recup[r.userId] || []).push({ date: r.startDate, hours: Number(r.hours) || 0 });
+  });
+  res.json({ entries: list, drivers, recup, amplitudeMax: AMPLITUDE_MAX, settlements: db.hsupSettlements.slice(), hsupBase: db.settings.hsupWeeklyBase || 35, hsupCutoff: db.settings.hsupCutoffDay || 0, salaryParams: db.settings.salaryParams || {}, payImports: (db.payImports || []).slice(), driverLearn: db.settings.driverImportLearning || {} });
 });
 
 // Paramètres de paie par salarié (taux horaire, base mensualisée, cotisations,

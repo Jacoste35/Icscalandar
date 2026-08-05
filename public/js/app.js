@@ -7773,8 +7773,16 @@ function hoursHsup(body) {
     weekRows.forEach((w) => {
       const info = payPeriodInfo(payPeriodKey(w.k, cutoff, hire), cutoff, hire);
       const m = info.key;
-      (months[m] = months[m] || { worked: 0, h25: 0, h50: 0, label: info.label, start: info.start, end: info.end });
+      (months[m] = months[m] || { worked: 0, h25: 0, h50: 0, recupTaken: 0, label: info.label, start: info.start, end: info.end });
       months[m].worked += w.worked; months[m].h25 += w.h25; months[m].h50 += w.h50;
+    });
+    // Récupérations (RCP) déjà prises, rattachées à la même période de paie.
+    ((_hours.recup && _hours.recup[id]) || []).forEach((rr) => {
+      if (!rr.date) return;
+      const info = payPeriodInfo(payPeriodKey(isoWeekKey(parseISO(rr.date)), cutoff, hire), cutoff, hire);
+      const m = info.key;
+      (months[m] = months[m] || { worked: 0, h25: 0, h50: 0, recupTaken: 0, label: info.label, start: info.start, end: info.end });
+      months[m].recupTaken += Number(rr.hours) || 0;
     });
     const monthKeys = Object.keys(months).sort();
     // Calcul des restants par mois (après paiement) + transmission déjà faite.
@@ -7808,6 +7816,7 @@ function hoursHsup(body) {
     const detOpen = !!_vehOpen['det_' + id];
     const totWorked = u.days.reduce((s, e) => s + (e.worked || 0), 0);
     const totPaid = monthCalc.reduce((s, c) => s + (c.paid || 0), 0);
+    const totRecup = Math.round(monthCalc.reduce((s, c) => s + (c.recupTaken || 0), 0) * 100) / 100;
     const bal = balById[id] || {};
     const balLine = `CP ${(bal.congesN || 0)} j · CP N-1 ${(bal.congesN1 || 0)} j · RCC ${hFmt(bal.rcc || 0)} · Récup ${hFmt(bal.heuresSupp || 0)}`;
     const rows = monthCalc.map((c) => `<tr>
@@ -7817,6 +7826,7 @@ function hoursHsup(body) {
       <td><span class="help">${hFmt(c.equipTot)} (${(c.equipTot / HPERDAY).toFixed(2)} j)</span></td>
       <td><input class="hsup-paid" data-uid="${id}" data-month="${c.m}" data-computed="${c.hsup}" type="number" step="0.5" min="0" value="${c.paid}" style="width:70px">${c.overpay > 0 ? `<div class="help" style="color:var(--danger)">trop-payé ${hFmt(c.overpay)} → −${hFmt(c.overpay)} au stock</div>` : ''}</td>
       <td><input class="hsup-transmitted" data-uid="${id}" data-month="${c.m}" data-old="${c.transmitted}" type="number" step="0.5" min="0" value="${c.transmitted}" style="width:70px" title="Modifie ce qui a déjà été transmis au compteur du salarié (ajuste son solde)"></td>
+      <td>${c.recupTaken > 0 ? `<span class="warn" title="Heures de récupération déjà prises sur cette période (déduites du compteur)">${hFmt(c.recupTaken)}</span> <span class="help">(≈ ${(c.recupTaken / HPERDAY).toFixed(2)} j)</span>` : '—'}</td>
       <td><strong class="${c.remDue > 0 ? 'warn' : 'pos'}">${hFmt(c.remDue)}</strong>${c.remDue > 0 ? ` <span class="help">(≈ ${(c.remEquivInfo / HPERDAY).toFixed(2)} j récup.)</span>` : ''}</td>
       <td>${c.remDue > 0 ? `<button class="btn ok sm" data-transmit="${id}" data-month="${c.m}" data-eq="${c.remDue}">Transmettre</button>` : '<span class="pill ok">réglé</span>'}</td>
     </tr>`).join('');
@@ -7825,13 +7835,13 @@ function hoursHsup(body) {
         <span class="veh-caret">${open ? '▾' : '▸'}</span>
         <strong>${esc(u.name)}</strong>
         <span class="help" style="margin-left:.5rem">${balLine}</span>
-        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span><span class="pill ${totRemDue > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemDue)}<span class="help" style="opacity:.85"> (≈ ${(totRemEquivInfo / HPERDAY).toFixed(1)} j récup.)</span></span></span>
+        <span style="margin-left:auto;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center"><span class="pill">${u.days.length} j · ${hFmt(totWorked)}</span><span class="pill ${totHsup > 0 ? 'warn' : 'ok'}">HSUP : ${hFmt(totHsup)}</span>${totRecup > 0 ? `<span class="pill">Récup. prise : ${hFmt(totRecup)}</span>` : ''}<span class="pill ${totRemDue > 0 ? 'danger' : 'ok'}">Reste dû : ${hFmt(totRemDue)}<span class="help" style="opacity:.85"> (≈ ${(totRemEquivInfo / HPERDAY).toFixed(1)} j récup.)</span></span></span>
       </div>
       ${open ? `<div class="veh-card-body">
         <h4 style="margin:.4rem 0 .3rem">Synthèse du salarié</h4>
         ${synthSalarie(u.days, base, id)}
         <h4 style="margin:.7rem 0 .3rem">Récapitulatif mois par mois</h4>
-        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Période de paie</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Réalisé HSUP (h)</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="table-wrap"><table class="veh-table"><thead><tr><th>Période de paie</th><th>Travaillé</th><th>HSUP 25%</th><th>HSUP 50%</th><th>Réalisé HSUP (h)</th><th>Équiv. récup. <span class="help">(info)</span></th><th>Déjà payé (h)</th><th>Transmis (h)</th><th>Récup. prise</th><th>Reste dû (HSUP)</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <p class="help" style="margin:.3rem 0">« Réalisé HSUP », « Déjà payé » et « Transmis » sont modifiables directement (mettez 0 pour annuler). Corriger le <strong>Réalisé</strong> transmet l'écart au compteur du salarié ; <strong>trop-payer</strong> un mois (payé &gt; réalisé) décrémente son stock d'HSUP d'autant ; modifier « Transmis » ajuste aussi son compteur.</p>
         <div class="alert ${(bal.heuresSupp || 0) > 0 ? 'info' : ''}" style="margin:.3rem 0">Compteur salarié (Récup / heures sup., chiffre réel après tous les calculs) : <strong>${hFmt(bal.heuresSupp || 0)}</strong> ≈ <strong>${((bal.heuresSupp || 0) / HPERDAY).toFixed(2)} jour(s)</strong> de récupération.</div>
         <div class="alert info" style="margin-top:.5rem">
