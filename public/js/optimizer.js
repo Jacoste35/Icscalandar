@@ -146,11 +146,55 @@ function optRenderBody() {
 }
 
 function optStopRow(s, i) {
-  return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}</span><button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
+  const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
+  const hrs = s.horaires ? ` <span class="help">⏰ ${esc(s.horaires)}</span>` : '';
+  const proBtn = s.clientName ? '' : `<button class="btn ghost sm" data-pro="${s.id}" title="Enregistrer comme client pro">🏢</button>`;
+  return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
 }
 function optRunRow(s, i, activeId) {
+  const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
   return `<div class="opt-row ${s.id === activeId ? 'active' : ''} ${s.skipped ? 'skipped' : ''}" data-activate="${s.id}">
-    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
+    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
+}
+// Ajoute un arrêt puis tente de reconnaître un client pro (proximité + nom).
+function optAddStop(label, lat, lon) {
+  const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, delivered: false, skipped: false };
+  _opt.stops.push(stop); optSave(_opt);
+  api('GET', `/clients/match?lat=${lat}&lon=${lon}&name=${encodeURIComponent(label)}`).then((r) => {
+    if (r && r.client) { stop.clientId = r.client.id; stop.clientName = r.client.name; stop.horaires = r.client.horaires || ''; stop.window = r.client.horaires || ''; optSave(_opt); if (_opt.optimized) optRenderBody(); else optRefreshList(); }
+  }).catch(() => {});
+  return stop;
+}
+// Rafraîchit uniquement la liste d'arrêts (préserve le panneau de scan et l'input).
+function optRefreshList() {
+  const listEl = document.getElementById('opt-list'); if (!listEl) return;
+  listEl.innerHTML = _opt.stops.length ? _opt.stops.map((s, i) => optStopRow(s, i)).join('') : '<p class="help">Aucun arrêt pour le moment.</p>';
+  optBindList();
+  const run = document.getElementById('opt-run'); if (run) { run.disabled = _opt.stops.length < 1; run.textContent = `🚀 Optimiser la tournée (${_opt.stops.length})`; }
+}
+// Enregistre l'arrêt courant comme client pro (avec suggestion de nom via OSM).
+function optRegisterPro(id) {
+  const s = _opt.stops.find((x) => x.id === id); if (!s || typeof modal !== 'function') return;
+  modal({
+    title: '🏢 Enregistrer un client pro',
+    bodyHTML: `<p class="help">${esc(s.label)}</p>
+      <label>Nom de l'établissement *</label><input id="pro-name" placeholder="ex. Établissement Passard" value="${esc(s.clientName || '')}">
+      <div class="help" id="pro-sugg" style="margin:.25rem 0"></div>
+      <label style="margin-top:.5rem">Horaires d'ouverture (facultatif)</label><input id="pro-hours" placeholder="ex. 9h-12h30, 14h-18h" value="${esc(s.horaires || '')}">
+      <p class="help">Enregistré une fois, ce client sera reconnu automatiquement aux prochaines tournées.</p>`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="pro-save">Enregistrer</button>`,
+    onMount: (ov) => {
+      api('GET', `/geo/poi?lat=${s.lat}&lon=${s.lon}`).then((r) => {
+        if (r && r.name) { const nm = ov.querySelector('#pro-name'), sg = ov.querySelector('#pro-sugg'); if (sg) { sg.innerHTML = `Suggestion : <a href="#" id="pro-us">${esc(r.name)}</a>`; ov.querySelector('#pro-us').onclick = (e) => { e.preventDefault(); nm.value = r.name; }; } if (nm && !nm.value) nm.value = r.name; }
+      }).catch(() => {});
+      ov.querySelector('#pro-save').onclick = async () => {
+        const name = ov.querySelector('#pro-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; }
+        const horaires = ov.querySelector('#pro-hours').value.trim();
+        try { const r = await api('POST', '/clients', { name, address: s.label, lat: s.lat, lon: s.lon, horaires }); s.clientId = r.client.id; s.clientName = r.client.name; s.horaires = r.client.horaires || ''; s.window = r.client.horaires || ''; optSave(_opt); closeModal(); if (_opt.optimized) optRenderBody(); else optRefreshList(); toast('Client pro enregistré ✓', 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
 }
 
 function optBindSearch() {
@@ -167,15 +211,16 @@ function optBindSearch() {
           ? res.map((r) => `<button class="opt-sug-it" data-lat="${r.lat}" data-lon="${r.lon}" data-lbl="${esc(r.label)}">${esc(r.label)}</button>`).join('')
           : '<div class="help" style="padding:.5rem">Aucune adresse dans le Calvados (14) ou l’Orne (61).</div>';
         sug.querySelectorAll('.opt-sug-it').forEach((b) => b.onclick = () => {
-          _opt.stops.push({ id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label: b.dataset.lbl, lat: +b.dataset.lat, lon: +b.dataset.lon, delivered: false, skipped: false });
-          optSave(_opt); inp.value = ''; sug.innerHTML = ''; optRenderBody();
+          optAddStop(b.dataset.lbl, +b.dataset.lat, +b.dataset.lon);
+          inp.value = ''; sug.innerHTML = ''; optRefreshList();
         });
       } catch (e) { sug.innerHTML = `<div class="help" style="padding:.4rem">${esc(e.message)}</div>`; }
     }, 280);
   };
 }
 function optBindList() {
-  document.querySelectorAll('#opt-list [data-del]').forEach((b) => b.onclick = () => { _opt.stops = _opt.stops.filter((s) => s.id !== b.dataset.del); optSave(_opt); optRenderBody(); });
+  document.querySelectorAll('#opt-list [data-del]').forEach((b) => b.onclick = () => { _opt.stops = _opt.stops.filter((s) => s.id !== b.dataset.del); optSave(_opt); optRefreshList(); });
+  document.querySelectorAll('#opt-list [data-pro]').forEach((b) => b.onclick = () => optRegisterPro(b.dataset.pro));
 }
 // Encart d'info sous « Partir de ma position » : coordonnées + adresse trouvée.
 function optStartInfoHTML(start) {
@@ -268,10 +313,8 @@ async function optScan(file) {
       try {
         const r = await optBanSearch(q); const hit = r[0];
         if (!hit) { toast('Adresse introuvable en zone 14/61.', 'err'); b.disabled = false; b.textContent = 'Ajouter'; return; }
-        _opt.stops.push({ id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label: hit.label, lat: hit.lat, lon: hit.lon, delivered: false, skipped: false });
-        optSave(_opt); b.textContent = '✓ Ajouté';
-        const listEl = document.getElementById('opt-list'); // rafraîchit la liste sans fermer le scan
-        if (listEl) { listEl.innerHTML = _opt.stops.map((s, i) => optStopRow(s, i)).join(''); optBindList(); const run = document.getElementById('opt-run'); if (run) { run.disabled = false; run.textContent = `🚀 Optimiser la tournée (${_opt.stops.length})`; } }
+        optAddStop(hit.label, hit.lat, hit.lon);
+        b.textContent = '✓ Ajouté'; optRefreshList();
       } catch (e) { toast(e.message, 'err'); b.disabled = false; b.textContent = 'Ajouter'; }
     });
   } catch (e) { outEl.innerHTML = `<div class="alert warn" style="margin-top:.6rem">${esc(e.message)}</div>`; }
