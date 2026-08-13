@@ -4532,6 +4532,98 @@ app.get('/api/geo/search', authRequired, async (req, res) => {
     res.json({ results, zone: 'Calvados (14) et Orne (61)' });
   } catch (e) { res.status(502).json({ error: 'Recherche indisponible' }); }
 });
+// ---- Clients professionnels (optimisateur de tournée) --------------------
+function geoDistM(aLat, aLon, bLat, bLon) {
+  const R = 6371000, toR = (d) => d * Math.PI / 180;
+  const dLat = toR(bLat - aLat), dLon = toR(bLon - aLon);
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(toR(aLat)) * Math.cos(toR(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function normName(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+function publicClient(c) { return c ? { id: c.id, name: c.name, address: c.address, lat: c.lat, lon: c.lon, horaires: c.horaires || '', horairesSource: c.horairesSource || null, horairesMajLe: c.horairesMajLe || null, note: c.note || '' } : null; }
+
+// Détection : le client pro le plus proche d'un point (rayon ~90 m), avec un
+// petit bonus si le nom scanné correspond.
+app.get('/api/clients/match', authRequired, (req, res) => {
+  const lat = Number(req.query.lat), lon = Number(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: 'Coordonnées invalides' });
+  const nameN = normName(req.query.name);
+  const RADIUS = 90;
+  let best = null, bestScore = Infinity;
+  for (const c of (getData().proClients || [])) {
+    if (!Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
+    const d = geoDistM(lat, lon, c.lat, c.lon);
+    if (d > RADIUS) continue;
+    // Score = distance, réduite si le nom correspond (bonus jusqu'à -40 m).
+    let score = d;
+    if (nameN && normName(c.name) && (nameN.includes(normName(c.name)) || normName(c.name).includes(nameN))) score -= 40;
+    if (score < bestScore) { bestScore = score; best = c; }
+  }
+  res.json({ client: publicClient(best) });
+});
+
+// Liste des clients pro (encadrement).
+app.get('/api/clients', authRequired, staffRequired, (req, res) => {
+  res.json({ clients: (getData().proClients || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(publicClient) });
+});
+
+// Création d'un client pro (accessible aux chauffeurs, découverts sur le terrain).
+app.post('/api/clients', authRequired, async (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim().slice(0, 120);
+  const lat = Number(b.lat), lon = Number(b.lon);
+  if (!name) return res.status(400).json({ error: 'Nom obligatoire' });
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: 'Coordonnées invalides' });
+  const db = getData();
+  db.proClients = db.proClients || [];
+  // Anti-doublon : même nom à moins de 60 m → on met à jour plutôt que dupliquer.
+  let c = db.proClients.find((x) => normName(x.name) === normName(name) && geoDistM(lat, lon, x.lat, x.lon) < 60);
+  const horaires = String(b.horaires || '').trim().slice(0, 300);
+  if (!c) {
+    c = { id: nextId('client'), name, address: String(b.address || '').trim().slice(0, 200), lat, lon, horaires: '', horairesSource: null, horairesMajLe: null, note: '', createdAt: new Date().toISOString() };
+    db.proClients.push(c);
+  } else { c.name = name; if (b.address) c.address = String(b.address).trim().slice(0, 200); }
+  if (horaires) { c.horaires = horaires; c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
+  await save();
+  res.json({ client: publicClient(c) });
+});
+
+// Mise à jour d'un client pro (nom, adresse, horaires).
+app.put('/api/clients/:id', authRequired, async (req, res) => {
+  const db = getData();
+  const c = (db.proClients || []).find((x) => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Client introuvable' });
+  const b = req.body || {};
+  if (b.name !== undefined && String(b.name).trim()) c.name = String(b.name).trim().slice(0, 120);
+  if (b.address !== undefined) c.address = String(b.address).trim().slice(0, 200);
+  if (b.horaires !== undefined) { c.horaires = String(b.horaires).trim().slice(0, 300); c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
+  await save();
+  res.json({ client: publicClient(c) });
+});
+
+// Suppression d'un client pro (encadrement).
+app.delete('/api/clients/:id', authRequired, staffRequired, async (req, res) => {
+  const db = getData();
+  db.proClients = (db.proClients || []).filter((x) => x.id !== req.params.id);
+  await save();
+  res.json({ ok: true });
+});
+
+// Suggestion de nom d'établissement à un point (POI OpenStreetMap / Nominatim,
+// gratuit) — pour préremplir l'enregistrement d'un client pro.
+app.get('/api/geo/poi', authRequired, async (req, res) => {
+  const lat = Number(req.query.lat), lon = Number(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: 'Coordonnées invalides' });
+  try {
+    if (typeof fetch !== 'function') return res.json({ name: null });
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&namedetails=1&zoom=18&lat=${lat}&lon=${lon}`, { headers: { 'User-Agent': 'InterColisServices/1.0 (contact@inter-colis-services.fr)' } });
+    if (!r.ok) return res.json({ name: null });
+    const j = await r.json();
+    const nm = (j.namedetails && (j.namedetails.name || j.namedetails['name:fr'])) || j.name || null;
+    res.json({ name: nm });
+  } catch (e) { res.json({ name: null }); }
+});
+
 // Reverse-géocodage (position GPS → adresse) via l'API BAN.
 app.get('/api/geo/reverse', authRequired, async (req, res) => {
   const lat = Number(req.query.lat), lon = Number(req.query.lon);
