@@ -550,6 +550,7 @@ function navSections() {
   const groups = [];
   groups.push({ id: 'home', solo: true, items: [{ id: 'dashboard', icon: '🏠', label: 'Accueil' }] });
   groups.push({ id: 'planning', icon: '📅', title: 'Planning & Organisation', items: [
+    { id: 'optimizer', icon: '🧭', label: 'Optimisateur de tournée' },
     { id: 'calendar', icon: '📅', label: 'Mon planning' },
     { id: 'organigramme', icon: '🏢', label: 'Organigramme' },
     { id: 'requests', icon: '📝', label: 'Événements' },
@@ -770,7 +771,8 @@ function renderApp() {
     ${(isMecano() && !isStaff())
       ? `<button data-view="myvehicle" class="${State.view === 'myvehicle' ? 'active' : ''}"><span class="bn-ico">🔧</span>Atelier</button>
          <button data-view="stocks" class="${State.view === 'stocks' ? 'active' : ''}"><span class="bn-ico">🛠️</span>Suivi</button>`
-      : `<button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
+      : `<button data-view="optimizer" class="${State.view === 'optimizer' ? 'active' : ''}"><span class="bn-ico">🧭</span>Tournée</button>
+         <button data-view="calendar" class="${State.view === 'calendar' ? 'active' : ''}"><span class="bn-ico">📅</span>Planning</button>
          <button data-view="mydata" class="${State.view === 'mydata' ? 'active' : ''}"><span class="bn-ico">👤</span>Profil</button>`}
   </nav>`;
   $app.querySelectorAll('[data-view]').forEach((b) => b.onclick = () => { State.view = b.dataset.view; renderApp(); });
@@ -820,6 +822,7 @@ function renderView() {
   const v = State.view;
   if (window.ICSAnim && ICSAnim.on) ICSAnim.view(main);
   if (v === 'dashboard') return renderDashboard(main);
+  if (v === 'optimizer') return renderOptimizer(main);
   if (v === 'calendar') return renderCalendar(main);
   if (v === 'mydata') return renderMyData(main);
   if (v === 'mydocs') return renderMyDocs(main);

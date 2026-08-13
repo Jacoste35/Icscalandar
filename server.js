@@ -4511,6 +4511,21 @@ app.delete('/api/staff/fuel/:id', authRequired, adminRequired, async (req, res) 
 });
 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
+// Optimisateur de tournée : proxy de géocodage/autocomplétion via l'API BAN
+// (gratuite, adresses françaises). Passe par le serveur pour respecter la CSP.
+app.get('/api/geo/search', authRequired, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 3) return res.json({ results: [] });
+  try {
+    if (typeof fetch !== 'function') return res.status(502).json({ error: 'Recherche indisponible sur ce serveur.' });
+    const r = await fetch('https://api-adresse.data.gouv.fr/search/?limit=6&autocomplete=1&q=' + encodeURIComponent(q));
+    if (!r.ok) return res.status(502).json({ error: 'Recherche indisponible' });
+    const j = await r.json();
+    const results = (j.features || []).map((f) => ({ label: f.properties.label, lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], city: f.properties.city || '' }));
+    res.json({ results });
+  } catch (e) { res.status(502).json({ error: 'Recherche indisponible' }); }
+});
+
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, staffRequired, getData, save });
 require('./routes/bot').mount(app, { express, getData, save, signToken, nextId, push });
 
