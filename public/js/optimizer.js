@@ -362,52 +362,88 @@ function optDayState(str) {
   if (r.length === 1) return { open: true, pause: false, o1: optHhmm(r[0][0]), c1: optHhmm(r[0][1]) };
   return { open: true, pause: true, o1: optHhmm(r[0][0]), ps: optHhmm(r[0][1]), pe: optHhmm(r[1][0]), c1: optHhmm(r[r.length - 1][1]) };
 }
-// Éditeur d'horaires par jour : tableau à menus déroulants (ouverture,
-// fermeture, pause déjeuner optionnelle). Sortie identique au format libre
-// « 9h00-12h00, 14h00-18h00 » → optimisation/badges inchangés.
-function optHoursEditorHTML(hoursObj) {
-  const o = optHoursObj(hoursObj);
-  return `<div class="opt-hours-edit">
-    <div class="opt-hhead"><span>Jour</span><span>Ouverture / fermeture</span></div>
-    ${OPT_DAYS.map(([k, s]) => {
-      const st = optDayState(o[k]);
-      const o1 = st.open ? st.o1 : '9h00', c1 = st.open ? st.c1 : '18h00';
-      const pause = !!(st.open && st.pause), ps = pause ? st.ps : '12h00', pe = pause ? st.pe : '14h00';
-      return `<div class="opt-hrow2" data-day="${k}">
-        <label class="opt-dname"><input type="checkbox" data-role="open" ${st.open ? 'checked' : ''}> ${s}</label>
-        <div class="opt-times" ${st.open ? '' : 'hidden'}>
-          <span class="opt-tg">Ouv. <select data-role="o1">${optTimeOptions(o1)}</select></span>
-          <label class="opt-pchk"><input type="checkbox" data-role="pause" ${pause ? 'checked' : ''}> Pause midi</label>
-          <span class="opt-pause opt-tg" ${pause ? '' : 'hidden'}>ferme <select data-role="ps">${optTimeOptions(ps)}</select> rouvre <select data-role="pe">${optTimeOptions(pe)}</select></span>
-          <span class="opt-tg">Ferm. <select data-role="c1">${optTimeOptions(c1)}</select></span>
-        </div>
-        <span class="opt-closed help" ${st.open ? 'hidden' : ''}>Fermé</span>
-      </div>`;
-    }).join('')}
+// Éditeur d'horaires RAPIDE : par défaut 3 lignes groupées (Lun–Ven, Samedi,
+// Dimanche) + raccourcis en un clic. Case « différents selon les jours » pour
+// détailler jour par jour au besoin. Sortie identique au format « 9h00-18h00 ».
+const OPT_WEEKDAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi'];
+const OPT_DAYNAME = { lundi: 'Lundi', mardi: 'Mardi', mercredi: 'Mercredi', jeudi: 'Jeudi', vendredi: 'Vendredi', samedi: 'Samedi', dimanche: 'Dimanche' };
+// Faut-il ouvrir le mode « jour par jour » ? (semaine non homogène)
+function optHoursNeedPerDay(hoursObj) {
+  const o = optHoursObj(hoursObj); const vals = OPT_WEEKDAYS.map((d) => o[d] || '');
+  return !vals.every((v) => v === vals[0]);
+}
+// Groupes affichés selon le mode.
+function optHoursGroups(perDay) {
+  if (perDay) return OPT_DAYS.map(([k]) => ({ label: OPT_DAYNAME[k], days: [k] }));
+  return [{ label: 'Lundi – Vendredi', days: OPT_WEEKDAYS }, { label: 'Samedi', days: ['samedi'] }, { label: 'Dimanche', days: ['dimanche'] }];
+}
+// Une ligne groupée (l'état est repris du 1er jour du groupe).
+function optGrpRowHTML(g, o) {
+  const st = optDayState(o[g.days[0]]);
+  const o1 = st.open ? st.o1 : '9h00', c1 = st.open ? st.c1 : '18h00';
+  const pause = !!(st.open && st.pause), ps = pause ? st.ps : '12h00', pe = pause ? st.pe : '14h00';
+  return `<div class="opt-grp" data-days="${g.days.join(',')}">
+    <label class="opt-dname"><input type="checkbox" data-role="open" ${st.open ? 'checked' : ''}> ${g.label}</label>
+    <div class="opt-times" ${st.open ? '' : 'hidden'}>
+      <span class="opt-tg">Ouv. <select data-role="o1">${optTimeOptions(o1)}</select></span>
+      <label class="opt-pchk"><input type="checkbox" data-role="pause" ${pause ? 'checked' : ''}> Pause midi</label>
+      <span class="opt-pause opt-tg" ${pause ? '' : 'hidden'}>ferme <select data-role="ps">${optTimeOptions(ps)}</select> rouvre <select data-role="pe">${optTimeOptions(pe)}</select></span>
+      <span class="opt-tg">Ferm. <select data-role="c1">${optTimeOptions(c1)}</select></span>
+    </div>
+    <span class="opt-closed help" ${st.open ? 'hidden' : ''}>Fermé</span>
   </div>`;
 }
-// Branche les bascules ouvert/fermé et pause (affiche/masque les menus).
+function optHoursEditorHTML(hoursObj, perDay) {
+  const o = optHoursObj(hoursObj);
+  if (perDay == null) perDay = optHoursNeedPerDay(o);
+  return `<div class="opt-hours-edit" data-perday="${perDay ? 1 : 0}">
+    <div class="opt-presets">
+      <button type="button" class="opt-chip" data-preset="8-18">Lun–Ven 8h–18h</button>
+      <button type="button" class="opt-chip" data-preset="9-18lunch">Lun–Ven 9h–12h30 · 14h–18h</button>
+      <button type="button" class="opt-chip" data-preset="8-19sat">Lun–Sam 8h–19h</button>
+      <button type="button" class="opt-chip" data-preset="clear">Tout fermer</button>
+    </div>
+    ${optHoursGroups(perDay).map((g) => optGrpRowHTML(g, o)).join('')}
+    <label class="opt-perday-toggle"><input type="checkbox" data-role="perday" ${perDay ? 'checked' : ''}> Horaires différents selon les jours</label>
+  </div>`;
+}
+// Raccourcis : construit un objet horaires prêt à l'emploi.
+function optPresetHours(id) {
+  const o = {};
+  if (id === '8-18') OPT_WEEKDAYS.forEach((d) => { o[d] = '8h00-18h00'; });
+  else if (id === '9-18lunch') OPT_WEEKDAYS.forEach((d) => { o[d] = '9h00-12h30, 14h00-18h00'; });
+  else if (id === '8-19sat') OPT_WEEKDAYS.concat('samedi').forEach((d) => { o[d] = '8h00-19h00'; });
+  return o; // 'clear' → objet vide (tout fermé)
+}
+// Re-rend l'éditeur (changement de mode / raccourci) en conservant scope.
+function optRerenderHours(scope, hoursObj, perDay) {
+  const wrap = scope.querySelector('.opt-hours-edit'); if (!wrap) return;
+  const holder = document.createElement('div'); holder.innerHTML = optHoursEditorHTML(hoursObj, perDay);
+  wrap.replaceWith(holder.firstElementChild);
+  optBindHoursEditor(scope);
+}
+// Branche bascules ouvert/pause, raccourcis, et le mode jour par jour.
 function optBindHoursEditor(scope) {
-  scope.querySelectorAll('.opt-hrow2').forEach((row) => {
+  scope.querySelectorAll('.opt-grp').forEach((row) => {
     const openChk = row.querySelector('[data-role="open"]'), times = row.querySelector('.opt-times'), closed = row.querySelector('.opt-closed');
     const pauseChk = row.querySelector('[data-role="pause"]'), pauseBox = row.querySelector('.opt-pause');
     if (openChk) openChk.onchange = () => { const on = openChk.checked; if (times) times.hidden = !on; if (closed) closed.hidden = on; };
     if (pauseChk) pauseChk.onchange = () => { if (pauseBox) pauseBox.hidden = !pauseChk.checked; };
   });
+  scope.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => optRerenderHours(scope, b.dataset.preset === 'clear' ? {} : optPresetHours(b.dataset.preset), false));
+  const pd = scope.querySelector('[data-role="perday"]');
+  if (pd) pd.onchange = () => optRerenderHours(scope, optCollectHours(scope), pd.checked);
 }
-// Reconstruit l'objet horaires { lundi:"9h00-12h00, 14h00-18h00", … } depuis
-// les menus. Jour non coché = fermé (clé absente). Bornes cohérentes.
+// Reconstruit l'objet horaires depuis les groupes (chaque jour du groupe reçoit
+// la même plage). Groupe non coché = fermé (jours absents).
 function optCollectHours(scope) {
   const o = {};
-  scope.querySelectorAll('.opt-hrow2').forEach((row) => {
-    const day = row.dataset.day;
+  scope.querySelectorAll('.opt-grp').forEach((row) => {
     if (!row.querySelector('[data-role="open"]').checked) return;
     const g = (r) => { const el = row.querySelector(`[data-role="${r}"]`); return el ? el.value : ''; };
     const o1 = g('o1'), c1 = g('c1');
-    if (row.querySelector('[data-role="pause"]').checked) {
-      const ps = g('ps'), pe = g('pe');
-      o[day] = `${o1}-${ps}, ${pe}-${c1}`;
-    } else { o[day] = `${o1}-${c1}`; }
+    const str = row.querySelector('[data-role="pause"]').checked ? `${o1}-${g('ps')}, ${g('pe')}-${c1}` : `${o1}-${c1}`;
+    String(row.dataset.days || '').split(',').filter(Boolean).forEach((d) => { o[d] = str; });
   });
   return o;
 }
@@ -419,7 +455,7 @@ function optRegisterPro(id) {
     bodyHTML: `<p class="help">${esc(s.label)}</p>
       <label>Nom de l'établissement *</label><input id="pro-name" placeholder="ex. Établissement Passard" value="${esc(s.clientName || '')}">
       <div class="help" id="pro-sugg" style="margin:.25rem 0"></div>
-      <label style="margin-top:.5rem">Horaires d'ouverture (par jour, facultatif)</label>
+      <label style="margin-top:.5rem">Horaires d'ouverture <span class="help">— un raccourci puis ajustez</span></label>
       ${optHoursEditorHTML(s.hours)}
       <p class="help">Enregistré une fois, ce client sera reconnu automatiquement aux prochaines tournées.</p>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="pro-save">Enregistrer</button>`,
@@ -750,7 +786,7 @@ function cpCreate(reload) {
     title: '➕ Nouveau client pro',
     bodyHTML: `<label>Nom de l'établissement *</label><input id="cp-name" placeholder="ex. Établissement Passard">
       <label style="margin-top:.5rem">Adresse * <span class="help">(Calvados 14 / Orne 61)</span></label>${cpAddrPickerHTML('')}
-      <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML({})}`,
+      <label style="margin-top:.5rem">Horaires d'ouverture <span class="help">— un raccourci puis ajustez</span></label>${optHoursEditorHTML({})}`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-create">Créer</button>`,
     onMount: (ov) => {
       cpBindAddrPicker(ov, picked); optBindHoursEditor(ov);
@@ -791,7 +827,7 @@ function cpEdit(c, reload) {
     title: '✏️ Client professionnel',
     bodyHTML: `<label>Nom *</label><input id="cp-name" value="${esc(c.name)}">
       <label style="margin-top:.5rem">Adresse <span class="help">(choisir une suggestion pour repositionner si le pro a déménagé)</span></label>${cpAddrPickerHTML(c.address || '')}
-      <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML(c.horaires)}`,
+      <label style="margin-top:.5rem">Horaires d'ouverture <span class="help">— un raccourci puis ajustez</span></label>${optHoursEditorHTML(c.horaires)}`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-save">Enregistrer</button>`,
     onMount: (ov) => {
       cpBindAddrPicker(ov, picked); optBindHoursEditor(ov);
