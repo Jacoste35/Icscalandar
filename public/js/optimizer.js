@@ -93,7 +93,7 @@ function optRenderBody() {
         </div>
         <label style="margin-top:.6rem">Ajouter un arrêt (adresse)</label>
         <div class="opt-search"><input id="opt-addr" placeholder="ex. 12 rue de Bayeux, Caen" autocomplete="off"><div id="opt-sug" class="opt-sug"></div></div>
-        <p class="help">Saisie manuelle avec autocomplétion. L'OCR d'étiquette arrivera en version mobile.</p>
+        <p class="help">Recherche limitée au <strong>Calvados (14)</strong> et à l'<strong>Orne (61)</strong>. L'OCR d'étiquette arrivera en version mobile.</p>
       </div>
       <div class="card">
         <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap"><h3 style="margin:0">Arrêts (${total})</h3>
@@ -157,7 +157,9 @@ function optBindSearch() {
       if (q === last) return; last = q;
       try {
         const res = await optBanSearch(q);
-        sug.innerHTML = res.map((r) => `<button class="opt-sug-it" data-lat="${r.lat}" data-lon="${r.lon}" data-lbl="${esc(r.label)}">${esc(r.label)}</button>`).join('');
+        sug.innerHTML = res.length
+          ? res.map((r) => `<button class="opt-sug-it" data-lat="${r.lat}" data-lon="${r.lon}" data-lbl="${esc(r.label)}">${esc(r.label)}</button>`).join('')
+          : '<div class="help" style="padding:.5rem">Aucune adresse dans le Calvados (14) ou l’Orne (61).</div>';
         sug.querySelectorAll('.opt-sug-it').forEach((b) => b.onclick = () => {
           _opt.stops.push({ id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label: b.dataset.lbl, lat: +b.dataset.lat, lon: +b.dataset.lon, delivered: false, skipped: false });
           optSave(_opt); inp.value = ''; sug.innerHTML = ''; optRenderBody();
