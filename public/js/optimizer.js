@@ -89,6 +89,103 @@ function optSolve(start, stops) {
   return route;
 }
 
+// =========================================================================
+//  OPTIMISATION AVEC FENÊTRES HORAIRES (livrer le max de clients / jour)
+//  100 % local : temps de trajet estimés (haversine × détour), respect des
+//  heures d'ouverture du client, priorité aux clients qui ferment bientôt.
+// =========================================================================
+// Temps de trajet estimé en minutes (facteur détour routier 1,3).
+function optTravelMin(a, b, speedKmh) { return (optHaversine(a, b) * 1.3) / ((speedKmh || 32) * 1000 / 60); }
+// Fenêtres d'ouverture du jour pour un arrêt.
+//  { wins:[[o,c]…] } = ouvert sur ces plages ; wins:null = inconnu (aucune
+//  contrainte) ; closedToday:true = horaires renseignés mais fermé aujourd'hui.
+function optDayInfo(s) {
+  const o = optHoursObj(s && s.hours);
+  const hasObj = o && Object.keys(o).length > 0;
+  const today = optTodayHours(s && s.hours);
+  const wins = optParseRanges(today);
+  if (wins.length) return { wins, closedToday: false };
+  if (hasObj && !today) return { wins: [], closedToday: true }; // objet rempli, rien aujourd'hui
+  return { wins: null, closedToday: false };                    // inconnu / texte libre
+}
+// Planifie un ordre donné : renvoie l'horaire de chaque arrêt + métriques.
+function optScheduleRoute(start, route, o) {
+  let cur = start, t = o.departMin, delivered = 0, missed = 0;
+  const sched = [];
+  for (const s of route) {
+    const travel = optTravelMin(cur, s, o.speedKmh);
+    const arrival = t + travel;
+    const info = optDayInfo(s);
+    let serviceStart = arrival, wait = 0, ok = true, closeUsed = null;
+    if (info.closedToday) { ok = false; }
+    else if (info.wins) {
+      let placed = null;
+      for (const [op, cl] of info.wins) { if (arrival <= cl) { const ss = Math.max(arrival, op); if (ss <= cl) { placed = [ss, cl]; break; } } }
+      if (placed) { serviceStart = placed[0]; wait = serviceStart - arrival; closeUsed = placed[1]; }
+      else { ok = false; } // arrivée après la dernière fermeture
+    }
+    if (ok) delivered++; else missed++;
+    sched.push({ id: s.id, arrival, serviceStart, wait, ok, closeUsed, closedToday: info.closedToday });
+    cur = s; t = (ok ? serviceStart : arrival) + o.serviceMin;
+  }
+  return { sched, delivered, missed, makespan: t - o.departMin };
+}
+// Construction gloutonne « plus proche voisin » sensible aux fenêtres :
+//  à chaque pas, privilégie un client dont la fermeture est imminente, sinon
+//  le plus proche joignable pendant ses heures. Les clients injoignables
+//  aujourd'hui (fermés / trop tard) sont ajoutés en fin de tournée, signalés.
+function optSolveTW(start, stops, o) {
+  const rest = stops.slice(), route = [];
+  let cur = start, t = o.departMin;
+  while (rest.length) {
+    const evals = [];
+    for (let i = 0; i < rest.length; i++) {
+      const s = rest[i], travel = optTravelMin(cur, s, o.speedKmh), arrival = t + travel;
+      const info = optDayInfo(s);
+      if (info.closedToday) continue;
+      if (!info.wins) { evals.push({ i, cost: travel, slack: Infinity, serviceStart: arrival, travel }); continue; }
+      let placed = null;
+      for (const [op, cl] of info.wins) { if (arrival <= cl) { const ss = Math.max(arrival, op); if (ss <= cl) { placed = [ss, cl]; break; } } }
+      if (!placed) continue; // pas joignable dans une fenêtre → traité en fin
+      evals.push({ i, cost: travel + (placed[0] - arrival), slack: placed[1] - arrival, serviceStart: placed[0], travel });
+    }
+    if (!evals.length) break;
+    const atRisk = evals.filter((e) => e.slack <= 40 + e.travel);
+    const pick = atRisk.length ? atRisk.sort((a, b) => a.slack - b.slack)[0] : evals.sort((a, b) => a.cost - b.cost)[0];
+    const s = rest[pick.i]; route.push(s); rest.splice(pick.i, 1);
+    cur = s; t = pick.serviceStart + o.serviceMin;
+  }
+  // Reliquat (fermé aujourd'hui / arrivée trop tardive) : au plus proche voisin.
+  while (rest.length) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < rest.length; i++) { const d = optHaversine(cur, rest[i]); if (d < bd) { bd = d; bi = i; } }
+    route.push(rest[bi]); cur = rest[bi]; rest.splice(bi, 1);
+  }
+  return route;
+}
+// Amélioration 2-opt guidée par le score (max livrés, puis durée mini).
+function optImproveTW(start, route, o) {
+  const score = (r) => { const m = optScheduleRoute(start, r, o); return m.delivered * 1e6 - m.makespan; };
+  let cur = route.slice(), best = score(cur), improved = true, guard = 0;
+  while (improved && guard++ < 40) {
+    improved = false;
+    for (let i = 0; i < cur.length - 1; i++) {
+      for (let k = i + 1; k < cur.length; k++) {
+        const cand = cur.slice(0, i).concat(cur.slice(i, k + 1).reverse(), cur.slice(k + 1));
+        const sc = score(cand);
+        if (sc > best + 1e-6) { cur = cand; best = sc; improved = true; }
+      }
+    }
+  }
+  return cur;
+}
+// Paramètres d'optimisation courants (heure de départ, vitesse, temps par arrêt).
+function optRunOpts(forceNow) {
+  const st = _opt, d = new Date(), now = d.getHours() * 60 + d.getMinutes();
+  const departMin = (!forceNow && st.departMin != null) ? st.departMin : now;
+  return { departMin, speedKmh: st.speedKmh || 32, serviceMin: st.serviceMin || 4 };
+}
+
 // --- Autocomplétion d'adresse (proxy serveur → API BAN) -------------------
 async function optBanSearch(q) {
   const j = await api('GET', '/geo/search?q=' + encodeURIComponent(q));
@@ -142,15 +239,19 @@ function optRenderBody() {
         <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap"><h3 style="margin:0">Arrêts (${total})</h3>
           ${total ? '<button class="btn ghost sm" id="opt-clear" style="margin-left:auto">Tout effacer</button>' : ''}</div>
         <div id="opt-list" class="opt-list">${st.stops.length ? st.stops.map((s, i) => optStopRow(s, i)).join('') : '<p class="help">Aucun arrêt pour le moment.</p>'}</div>
+        ${optSettingsHTML()}
         <div style="margin-top:1rem"><button class="btn accent full" id="opt-run" ${total < 1 ? 'disabled' : ''}>🚀 Optimiser la tournée (${total})</button></div>
       </div>`;
     optBindSearch(); optBindList();
     const gps = document.getElementById('opt-gps'); if (gps) gps.onclick = optUseGps;
     const clr = document.getElementById('opt-clear'); if (clr) clr.onclick = () => { if (confirm('Effacer tous les arrêts ?')) { st.stops = []; optSave(st); optRenderBody(); } };
-    const run = document.getElementById('opt-run'); if (run) run.onclick = optRun;
+    const run = document.getElementById('opt-run'); if (run) run.onclick = () => optRun();
     const scanBtn = document.getElementById('opt-scan'), scanFile = document.getElementById('opt-scan-file');
     if (scanBtn && scanFile) { scanBtn.onclick = () => scanFile.click(); scanFile.onchange = () => { const f = scanFile.files && scanFile.files[0]; if (f) optScan(f); scanFile.value = ''; }; }
     body.querySelectorAll('[data-carrier]').forEach((b) => b.onclick = () => { st.carrier = (st.carrier === b.dataset.carrier) ? null : b.dataset.carrier; optSave(st); optRenderBody(); });
+    const dep = document.getElementById('opt-depart'); if (dep) dep.onchange = () => { const p = dep.value.split(':').map(Number); if (Number.isFinite(p[0])) { st.departMin = p[0] * 60 + (p[1] || 0); optSave(st); } };
+    const sp = document.getElementById('opt-speed'); if (sp) sp.onchange = () => { st.speedKmh = Math.min(90, Math.max(10, +sp.value || 32)); optSave(st); };
+    const sv = document.getElementById('opt-service'); if (sv) sv.onchange = () => { st.serviceMin = Math.min(30, Math.max(0, +sv.value || 4)); optSave(st); };
   } else {
     // ---- Écran TOURNÉE / ARRÊT EN COURS ----
     const order = optOrdered(st);
@@ -166,6 +267,7 @@ function optRenderBody() {
         <div class="opt-active-badge">Arrêt en cours ${active.skipped ? '<span class="pill warn">passé — à revenir</span>' : ''}</div>
         <div class="opt-active-addr">${esc(active.label)}</div>
         ${active.clientName ? `<div class="help">🏢 <strong>${esc(active.clientName)}</strong>${optHoursBadge(active)}</div>` : ''}
+        ${optActiveEtaHTML(active)}
         <div class="opt-active-actions">
           <button class="btn ok" data-deliver="${active.id}">✅ Livrer</button>
           <button class="btn danger" data-absent="${active.id}">🚫 Absent</button>
@@ -181,7 +283,7 @@ function optRenderBody() {
         <div class="opt-list">${order.length ? order.map((s, i) => optRunRow(s, i, st.activeId)).join('') : '<p class="help">Aucun arrêt restant.</p>'}
         ${closed ? `<details style="margin-top:.6rem"><summary class="help">Clôturés (${closed})</summary>${st.stops.filter(optClosed).map((s) => `<div class="opt-row done">${s.absent ? '🚫' : '✅'} ${esc(s.label)}${s.absent ? ' <span class="pill danger">absent</span>' : ''}</div>`).join('')}</details>` : ''}
         </div></div>`;
-    document.getElementById('opt-recalc').onclick = optRun;
+    document.getElementById('opt-recalc').onclick = () => optRun(true);
     document.getElementById('opt-edit').onclick = () => { st.optimized = false; optSave(st); optRenderBody(); };
     body.querySelectorAll('[data-deliver]').forEach((b) => b.onclick = () => optMark(b.dataset.deliver, 'delivered'));
     body.querySelectorAll('[data-absent]').forEach((b) => b.onclick = () => optMark(b.dataset.absent, 'absent'));
@@ -193,15 +295,16 @@ function optRenderBody() {
 
 function optStopRow(s, i) {
   const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
+  const di = optDayInfo(s);
   const today = optTodayHours(s.hours);
-  const hrs = today ? ` <span class="help">⏰ ${esc(today)}</span>` : '';
+  const hrs = di.closedToday ? ` <span class="pill danger">🔒 fermé auj.</span>` : (today ? ` <span class="help">⏰ ${esc(today)}</span>` : '');
   const proBtn = s.clientName ? '' : `<button class="btn ghost sm" data-pro="${s.id}" title="Enregistrer comme client pro">🏢</button>`;
   return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
 }
 function optRunRow(s, i, activeId) {
   const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
   return `<div class="opt-row ${s.id === activeId ? 'active' : ''} ${s.skipped ? 'skipped' : ''}" data-activate="${s.id}">
-    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
+    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${optEtaPill(s)}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
 }
 // Ajoute un arrêt puis tente de reconnaître un client pro (proximité + nom).
 function optAddStop(label, lat, lon) {
@@ -384,17 +487,31 @@ async function optScan(file) {
     });
   } catch (e) { outEl.innerHTML = `<div class="alert warn" style="margin-top:.6rem">${esc(e.message)}</div>`; }
 }
-function optRun() {
-  const st = _opt; const pending = st.stops.filter((s) => !s.delivered);
+function optRun(fromNow) {
+  const st = _opt; const pending = st.stops.filter((s) => !s.delivered && !s.absent);
   if (!pending.length) { toast('Aucun arrêt à optimiser.', 'err'); return; }
-  const solved = optSolve(st.start, pending);
-  // Réordonne st.stops : livrés d'abord (conservés), puis l'ordre optimisé.
-  const delivered = st.stops.filter((s) => s.delivered);
-  solved.forEach((s) => { s.skipped = false; });
-  st.stops = delivered.concat(solved);
-  st.optimized = true; st.activeId = solved[0] ? solved[0].id : null;
+  const o = optRunOpts(fromNow);
+  let route = optSolveTW(st.start, pending, o);
+  if (route.length <= 60) route = optImproveTW(st.start, route, o); // borne anti-lenteur
+  // Calcule l'horaire prévisionnel de chaque arrêt (arrivée + ouvert/fermé).
+  const { sched, missed } = optScheduleRoute(st.start, route, o);
+  const byId = {}; sched.forEach((x) => { byId[x.id] = x; });
+  route.forEach((s) => {
+    s.skipped = false; const e = byId[s.id] || null;
+    s._eta = e ? Math.round(e.serviceStart) : null;
+    s._etaOk = e ? e.ok : null;
+    s._etaWait = e ? Math.round(e.wait) : 0;
+    s._closedToday = e ? !!e.closedToday : false;
+    s._etaClose = e && e.closeUsed != null ? Math.round(e.closeUsed) : null;
+  });
+  const closedList = st.stops.filter((s) => s.delivered || s.absent);
+  st.stops = closedList.concat(route);
+  st.optimized = true; st.activeId = route[0] ? route[0].id : null;
+  st.lastDepartMin = o.departMin;
   optSave(st); optRenderBody();
-  toast(`Tournée optimisée : ${solved.length} arrêt(s).`, 'ok');
+  toast(missed
+    ? `Tournée optimisée : ${route.length} arrêt(s) · ⚠️ ${missed} hors horaires aujourd'hui.`
+    : `Tournée optimisée : ${route.length} arrêt(s), tous dans les horaires ✓`, missed ? 'warn' : 'ok');
 }
 function optMark(id, kind) {
   const st = _opt; const s = st.stops.find((x) => x.id === id); if (!s) return;
@@ -414,6 +531,36 @@ function optHoursBadge(s) {
   const state = optOpenState(today);
   const cls = state.open === true ? 'ok' : state.open === false ? 'danger' : '';
   return ` · ⏰ ${esc(today)} ${cls ? `<span class="pill ${cls}">${esc(state.txt)}</span>` : ''}`;
+}
+// "HH:MM" pour un <input type="time">.
+function optHhmmInput(min) { const h = Math.floor(min / 60), m = min % 60; return `${h < 10 ? '0' : ''}${h}:${m < 10 ? '0' : ''}${m}`; }
+// Pastille d'heure d'arrivée prévue (liste d'arrêts optimisée).
+function optEtaPill(s) {
+  if (s._closedToday) return ` <span class="pill danger">🔒 fermé auj.</span>`;
+  if (s._eta == null) return '';
+  if (s._etaOk === false) return ` <span class="pill danger">⛔ ~${optHhmm(s._eta)}</span>`;
+  const wait = s._etaWait > 1 ? ` +${s._etaWait}′` : '';
+  return ` <span class="pill muted">🕒 ~${optHhmm(s._eta)}${wait}</span>`;
+}
+// Ligne « arrivée estimée » sur la carte de l'arrêt en cours.
+function optActiveEtaHTML(s) {
+  if (s._closedToday) return `<div class="help">🔒 <span class="pill danger">Fermé aujourd'hui</span> — à reprogrammer.</div>`;
+  if (s._eta == null) return '';
+  if (s._etaOk === false) return `<div class="help">🕒 Arrivée estimée ~${optHhmm(s._eta)} — <span class="pill danger">hors horaires</span></div>`;
+  const close = s._etaClose != null ? ` <span class="help">(ferme à ${optHhmm(s._etaClose)})</span>` : '';
+  const wait = s._etaWait > 1 ? ` <span class="pill warn">attente ${s._etaWait} min</span>` : '';
+  return `<div class="help">🕒 Arrivée estimée ~${optHhmm(s._eta)}${close}${wait}</div>`;
+}
+// Panneau de réglages de la tournée (heure de départ, vitesse, temps/arrêt).
+function optSettingsHTML() {
+  const st = _opt, d = new Date();
+  const dep = optHhmmInput(st.departMin != null ? st.departMin : (d.getHours() * 60 + d.getMinutes()));
+  return `<details class="opt-settings"><summary>⚙️ Réglages de tournée — heure de départ &amp; horaires</summary>
+    <div class="opt-hrow"><span>Départ</span><input type="time" id="opt-depart" value="${dep}"></div>
+    <div class="opt-hrow"><span>Vitesse</span><input type="number" id="opt-speed" min="10" max="90" step="1" value="${st.speedKmh || 32}"><span class="help">km/h moy.</span></div>
+    <div class="opt-hrow"><span>Par arrêt</span><input type="number" id="opt-service" min="0" max="30" step="1" value="${st.serviceMin || 4}"><span class="help">min de service</span></div>
+    <p class="help">L'optimisation respecte les heures d'ouverture de chaque client pro pour en livrer le plus possible dans la journée, et signale ceux fermés ou hors horaires.</p>
+  </details>`;
 }
 
 async function optDrawMap() {
@@ -445,16 +592,57 @@ async function optDrawMap() {
 async function renderClientsProAdmin(main) {
   if (typeof isStaff === 'function' && !isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
   main.innerHTML = `<div class="page-head"><div><h1>🏢 Clients professionnels</h1>
-    <p>Base des destinataires récurrents et de leurs horaires — utilisée par l'optimisateur de tournée.</p></div></div>
+    <p>Créez, modifiez ou supprimez les professionnels et leurs horaires — la base sert à l'optimisateur de tournée.</p></div>
+    <div style="margin-left:auto"><button class="btn accent" id="cp-new">➕ Nouveau client</button></div></div>
     <div id="cp-body" class="empty">Chargement…</div>`;
   const body = document.getElementById('cp-body');
-  let list = [];
-  try { list = (await api('GET', '/clients')).clients; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
-  cpRender(body, list);
+  const reload = async () => { try { const l = (await api('GET', '/clients')).clients; cpRender(body, l); } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; } };
+  const nb = document.getElementById('cp-new'); if (nb) nb.onclick = () => cpCreate(reload);
+  await reload();
+}
+// Sélecteur d'adresse réutilisable (autocomplétion BAN 14/61 → coordonnées).
+function cpAddrPickerHTML(current) {
+  return `<div class="opt-search"><input id="cp-addr" placeholder="Rechercher l'adresse…" autocomplete="off" value="${esc(current || '')}"><div id="cp-sug" class="opt-sug"></div></div><div class="help" id="cp-geo"></div>`;
+}
+function cpBindAddrPicker(scope, picked) {
+  const inp = scope.querySelector('#cp-addr'), sug = scope.querySelector('#cp-sug'), geo = scope.querySelector('#cp-geo');
+  if (!inp) return; let t = null, last = '';
+  inp.oninput = () => {
+    const q = inp.value.trim(); if (t) clearTimeout(t);
+    picked.lat = null; picked.lon = null; if (geo) geo.textContent = '';
+    if (q.length < 3) { sug.innerHTML = ''; return; }
+    t = setTimeout(async () => {
+      if (q === last) return; last = q;
+      try {
+        const res = await optBanSearch(q);
+        sug.innerHTML = res.length ? res.map((r) => `<button class="opt-sug-it" data-lat="${r.lat}" data-lon="${r.lon}" data-lbl="${esc(r.label)}">${esc(r.label)}</button>`).join('') : '<div class="help" style="padding:.4rem">Aucune adresse en 14/61.</div>';
+        sug.querySelectorAll('.opt-sug-it').forEach((b) => b.onclick = () => { picked.lat = +b.dataset.lat; picked.lon = +b.dataset.lon; picked.label = b.dataset.lbl; inp.value = b.dataset.lbl; sug.innerHTML = ''; if (geo) geo.innerHTML = `📍 ${picked.lat.toFixed(5)}, ${picked.lon.toFixed(5)} — position enregistrée`; });
+      } catch (e) { sug.innerHTML = `<div class="help" style="padding:.4rem">${esc(e.message)}</div>`; }
+    }, 280);
+  };
+}
+function cpCreate(reload) {
+  const picked = { lat: null, lon: null, label: '' };
+  modal({
+    title: '➕ Nouveau client pro',
+    bodyHTML: `<label>Nom de l'établissement *</label><input id="cp-name" placeholder="ex. Établissement Passard">
+      <label style="margin-top:.5rem">Adresse * <span class="help">(Calvados 14 / Orne 61)</span></label>${cpAddrPickerHTML('')}
+      <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML({})}`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-create">Créer</button>`,
+    onMount: (ov) => {
+      cpBindAddrPicker(ov, picked);
+      ov.querySelector('#cp-create').onclick = async () => {
+        const name = ov.querySelector('#cp-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; }
+        if (picked.lat == null) { toast('Choisissez une adresse dans la liste des suggestions.', 'err'); return; }
+        try { await api('POST', '/clients', { name, address: picked.label, lat: picked.lat, lon: picked.lon, horaires: optCollectHours(ov) }); closeModal(); reload(); toast('Client créé ✓', 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    },
+  });
 }
 function cpRender(body, list) {
   body.className = '';
-  if (!list.length) { body.innerHTML = `<div class="alert info">Aucun client pro enregistré. Ils s'ajoutent depuis l'optimisateur de tournée (bouton 🏢 sur un arrêt).</div>`; return; }
+  if (!list.length) { body.innerHTML = `<div class="alert info">Aucun client pro enregistré. Cliquez sur <strong>➕ Nouveau client</strong> ci-dessus, ou ajoutez-les depuis l'optimisateur de tournée (bouton 🏢 sur un arrêt).</div>`; return; }
   body.innerHTML = `<div class="card"><input id="cp-search" placeholder="Rechercher un client…" style="width:100%"><span class="help">${list.length} client(s)</span></div><div id="cp-list">${list.map(cpRow).join('')}</div>`;
   const doList = (q) => { const f = q ? list.filter((c) => normNm(c.name + ' ' + (c.address || '')).includes(normNm(q))) : list; document.getElementById('cp-list').innerHTML = f.length ? f.map(cpRow).join('') : '<p class="help">Aucun résultat.</p>'; cpBind(body, list); };
   const se = document.getElementById('cp-search'); if (se) se.oninput = (e) => doList(e.target.value.trim());
@@ -475,12 +663,22 @@ function cpBind(body, list) {
   body.querySelectorAll('[data-cpedit]').forEach((b) => b.onclick = () => { const c = list.find((x) => x.id === b.dataset.cpedit); if (c) cpEdit(c, reload); });
 }
 function cpEdit(c, reload) {
+  const picked = { lat: null, lon: null, label: '' };
   modal({
     title: '✏️ Client professionnel',
     bodyHTML: `<label>Nom *</label><input id="cp-name" value="${esc(c.name)}">
-      <label style="margin-top:.5rem">Adresse</label><input id="cp-addr" value="${esc(c.address || '')}">
+      <label style="margin-top:.5rem">Adresse <span class="help">(choisir une suggestion pour repositionner si le pro a déménagé)</span></label>${cpAddrPickerHTML(c.address || '')}
       <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML(c.horaires)}`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-save">Enregistrer</button>`,
-    onMount: (ov) => { ov.querySelector('#cp-save').onclick = async () => { const name = ov.querySelector('#cp-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; } try { await api('PUT', '/clients/' + c.id, { name, address: ov.querySelector('#cp-addr').value.trim(), horaires: optCollectHours(ov) }); closeModal(); reload(); toast('Enregistré.', 'ok'); } catch (e) { toast(e.message, 'err'); } }; },
+    onMount: (ov) => {
+      cpBindAddrPicker(ov, picked);
+      ov.querySelector('#cp-save').onclick = async () => {
+        const name = ov.querySelector('#cp-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; }
+        const payload = { name, address: (picked.label || ov.querySelector('#cp-addr').value.trim()), horaires: optCollectHours(ov) };
+        if (picked.lat != null) { payload.lat = picked.lat; payload.lon = picked.lon; } // déménagement → nouvelles coordonnées
+        try { await api('PUT', '/clients/' + c.id, payload); closeModal(); reload(); toast('Enregistré.', 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+      };
+    },
   });
 }

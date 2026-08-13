@@ -4608,6 +4608,8 @@ app.put('/api/clients/:id', authRequired, async (req, res) => {
   const b = req.body || {};
   if (b.name !== undefined && String(b.name).trim()) c.name = String(b.name).trim().slice(0, 120);
   if (b.address !== undefined) c.address = String(b.address).trim().slice(0, 200);
+  // Déménagement : on peut repositionner le client (nouvelles coordonnées).
+  if (b.lat !== undefined && b.lon !== undefined) { const la = Number(b.lat), lo = Number(b.lon); if (Number.isFinite(la) && Number.isFinite(lo)) { c.lat = la; c.lon = lo; } }
   if (b.horaires !== undefined) { c.horaires = cleanHours(b.horaires); c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
   await save();
   res.json({ client: publicClient(c) });
