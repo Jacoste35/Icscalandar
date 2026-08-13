@@ -4652,6 +4652,48 @@ app.get('/api/geo/reverse', authRequired, async (req, res) => {
   } catch (e) { res.json({ label: null }); }
 });
 
+// --- OSRM (temps/distances routiers réels) --------------------------------
+// Proxy serveur → instance OSRM (self-hébergée sur le VPS, recommandé, via
+// la variable d'env OSRM_URL, ex. https://osrm.mon-domaine.fr). Tant que
+// OSRM_URL n'est pas défini, l'app reste sur l'estimation haversine (aucun
+// changement). Passer par le serveur évite d'ouvrir le CSP côté navigateur.
+const OSRM_URL = (process.env.OSRM_URL || '').replace(/\/+$/, '');
+function osrmCoordsOk(coords) {
+  return Array.isArray(coords) && coords.length >= 2 && coords.length <= 100
+    && coords.every((c) => Array.isArray(c) && c.length === 2 && Number.isFinite(+c[0]) && Number.isFinite(+c[1]));
+}
+// Matrice des durées (s) et distances (m) entre tous les points → séquençage.
+app.post('/api/geo/route-matrix', authRequired, async (req, res) => {
+  if (!OSRM_URL) return res.json({ enabled: false });
+  const coords = (req.body || {}).coords;
+  if (!osrmCoordsOk(coords)) return res.status(400).json({ error: 'Coordonnées invalides' });
+  try {
+    if (typeof fetch !== 'function') return res.json({ enabled: false });
+    const path = coords.map((c) => `${(+c[0]).toFixed(6)},${(+c[1]).toFixed(6)}`).join(';');
+    const r = await fetch(`${OSRM_URL}/table/v1/driving/${path}?annotations=duration,distance`);
+    if (!r.ok) return res.json({ enabled: true, ok: false });
+    const j = await r.json();
+    if (j.code !== 'Ok') return res.json({ enabled: true, ok: false });
+    res.json({ enabled: true, ok: true, durations: j.durations || null, distances: j.distances || null });
+  } catch (e) { res.json({ enabled: true, ok: false }); }
+});
+// Tracé routier réel d'un ordre donné (GeoJSON) → affichage carte.
+app.post('/api/geo/route', authRequired, async (req, res) => {
+  if (!OSRM_URL) return res.json({ enabled: false });
+  const coords = (req.body || {}).coords;
+  if (!osrmCoordsOk(coords)) return res.status(400).json({ error: 'Coordonnées invalides' });
+  try {
+    if (typeof fetch !== 'function') return res.json({ enabled: false });
+    const path = coords.map((c) => `${(+c[0]).toFixed(6)},${(+c[1]).toFixed(6)}`).join(';');
+    const r = await fetch(`${OSRM_URL}/route/v1/driving/${path}?overview=full&geometries=geojson`);
+    if (!r.ok) return res.json({ enabled: true, ok: false });
+    const j = await r.json();
+    const route = (j.routes || [])[0];
+    if (!route) return res.json({ enabled: true, ok: false });
+    res.json({ enabled: true, ok: true, geometry: route.geometry, duration: route.duration, distance: route.distance });
+  } catch (e) { res.json({ enabled: true, ok: false }); }
+});
+
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, staffRequired, getData, save });
 require('./routes/bot').mount(app, { express, getData, save, signToken, nextId, push });
 

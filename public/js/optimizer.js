@@ -108,12 +108,21 @@ function optDayInfo(s) {
   if (hasObj && !today) return { wins: [], closedToday: true }; // objet rempli, rien aujourd'hui
   return { wins: null, closedToday: false };                    // inconnu / texte libre
 }
+// Fonction temps de trajet : matrice OSRM si dispo, sinon estimation.
+function optTravelOf(o) {
+  return (a, b) => {
+    const M = o && o.matrix;
+    if (M && a && b && a._mi != null && b._mi != null && M[a._mi] && M[a._mi][b._mi] != null && isFinite(M[a._mi][b._mi])) return M[a._mi][b._mi];
+    return optTravelMin(a, b, o ? o.speedKmh : 32);
+  };
+}
 // Planifie un ordre donné : renvoie l'horaire de chaque arrêt + métriques.
 function optScheduleRoute(start, route, o) {
+  const tt = o.travel || optTravelOf(o);
   let cur = start, t = o.departMin, delivered = 0, missed = 0;
   const sched = [];
   for (const s of route) {
-    const travel = optTravelMin(cur, s, o.speedKmh);
+    const travel = tt(cur, s);
     const arrival = t + travel;
     const info = optDayInfo(s);
     let serviceStart = arrival, wait = 0, ok = true, closeUsed = null;
@@ -135,12 +144,13 @@ function optScheduleRoute(start, route, o) {
 //  le plus proche joignable pendant ses heures. Les clients injoignables
 //  aujourd'hui (fermés / trop tard) sont ajoutés en fin de tournée, signalés.
 function optSolveTW(start, stops, o) {
+  const tt = o.travel || optTravelOf(o);
   const rest = stops.slice(), route = [];
   let cur = start, t = o.departMin;
   while (rest.length) {
     const evals = [];
     for (let i = 0; i < rest.length; i++) {
-      const s = rest[i], travel = optTravelMin(cur, s, o.speedKmh), arrival = t + travel;
+      const s = rest[i], travel = tt(cur, s), arrival = t + travel;
       const info = optDayInfo(s);
       if (info.closedToday) continue;
       if (!info.wins) { evals.push({ i, cost: travel, slack: Infinity, serviceStart: arrival, travel }); continue; }
@@ -299,22 +309,36 @@ function optStopRow(s, i) {
   const today = optTodayHours(s.hours);
   const hrs = di.closedToday ? ` <span class="pill danger">🔒 fermé auj.</span>` : (today ? ` <span class="help">⏰ ${esc(today)}</span>` : '');
   const proBtn = s.clientName ? '' : `<button class="btn ghost sm" data-pro="${s.id}" title="Enregistrer comme client pro">🏢</button>`;
-  return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
+  return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${optPkgBadge(s)}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
 }
 function optRunRow(s, i, activeId) {
   const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
   return `<div class="opt-row ${s.id === activeId ? 'active' : ''} ${s.skipped ? 'skipped' : ''}" data-activate="${s.id}">
-    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${optEtaPill(s)}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
+    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${optPkgBadge(s)}${optEtaPill(s)}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
 }
+// Normalise un libellé d'adresse (minuscules, sans accents ni ponctuation).
+function optNormLbl(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
 // Ajoute un arrêt puis tente de reconnaître un client pro (proximité + nom).
-function optAddStop(label, lat, lon) {
-  const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, delivered: false, skipped: false };
+// Dédoublonnage : même point (≤30 m) ou même adresse → un seul arrêt, on
+// cumule les colis (« plusieurs colis possible »).
+function optAddStop(label, lat, lon, count) {
+  const add = Math.max(1, count || 1);
+  const dup = _opt.stops.find((s) => (Number.isFinite(s.lat) && optHaversine(s, { lat, lon }) < 30) || optNormLbl(s.label) === optNormLbl(label));
+  if (dup) {
+    dup.packages = (dup.packages || 1) + add; optSave(_opt);
+    if (_opt.optimized) optRenderBody(); else optRefreshList();
+    if (typeof toast === 'function') toast(`Adresse déjà planifiée → ${dup.packages} colis possibles.`, 'ok');
+    return dup;
+  }
+  const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, packages: add, delivered: false, skipped: false };
   _opt.stops.push(stop); optSave(_opt);
   api('GET', `/clients/match?lat=${lat}&lon=${lon}&name=${encodeURIComponent(label)}`).then((r) => {
     if (r && r.client) { stop.clientId = r.client.id; stop.clientName = r.client.name; stop.hours = r.client.horaires || ''; optSave(_opt); if (_opt.optimized) optRenderBody(); else optRefreshList(); }
   }).catch(() => {});
   return stop;
 }
+// Pastille « plusieurs colis possible » (adresse détectée plusieurs fois).
+function optPkgBadge(s) { return (s.packages && s.packages > 1) ? ` <span class="pill warn">📦 plusieurs colis possible (${s.packages})</span>` : ''; }
 // Rafraîchit uniquement la liste d'arrêts (préserve le panneau de scan et l'input).
 function optRefreshList() {
   const listEl = document.getElementById('opt-list'); if (!listEl) return;
@@ -512,9 +536,16 @@ function optParseAddresses(text, carrierId) {
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
     if (cand.length > 6) found.push({ cand, pri: (anchor >= 0 && i > anchor) ? 0 : 1 });
   }
-  const seen = new Set(), res = [];
-  found.sort((a, b) => a.pri - b.pri).forEach((x) => { if (!seen.has(x.cand)) { seen.add(x.cand); res.push(x.cand); } });
-  return res;
+  // Dédoublonnage : même adresse détectée plusieurs fois sur la feuille →
+  // une seule entrée, avec le nombre d'occurrences (colis potentiels).
+  const map = new Map();
+  found.forEach((x) => {
+    const key = optNormLbl(x.cand).replace(/\s+/g, ''); // insensible aux espaces (variance OCR)
+    const e = map.get(key);
+    if (e) { e.count++; if (x.pri < e.pri) e.pri = x.pri; }
+    else map.set(key, { cand: x.cand, count: 1, pri: x.pri });
+  });
+  return Array.from(map.values()).sort((a, b) => a.pri - b.pri);
 }
 async function optScan(file) {
   const outEl = document.getElementById('opt-scan-out'); if (!outEl) return;
@@ -528,26 +559,52 @@ async function optScan(file) {
     outEl.innerHTML = `
       <div class="card" style="margin-top:.6rem;background:#f8fafc">
         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)</strong><button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
-        ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${esc(c)}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
+        ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${esc(c.cand)}${c.count > 1 ? ` <span class="pill warn">📦 plusieurs colis possible (${c.count})</span>` : ''}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
           : '<p class="help">Aucune adresse (CP 14/61) reconnue. Utilisez la saisie manuelle ci-dessus ou reprenez la photo bien cadrée.</p>'}
         <details style="margin-top:.4rem"><summary class="help">Texte lu par l’OCR</summary><pre class="opt-ocrtext">${esc(text || '(vide)')}</pre></details>
       </div>`;
     outEl.querySelector('#opt-scan-close').onclick = () => { outEl.innerHTML = ''; };
     outEl.querySelectorAll('[data-cand]').forEach((b) => b.onclick = async () => {
-      const q = cands[+b.dataset.cand]; b.disabled = true; b.textContent = '…';
+      const c = cands[+b.dataset.cand]; b.disabled = true; b.textContent = '…';
       try {
-        const r = await optBanSearch(q); const hit = r[0];
+        const r = await optBanSearch(c.cand); const hit = r[0];
         if (!hit) { toast('Adresse introuvable en zone 14/61.', 'err'); b.disabled = false; b.textContent = 'Ajouter'; return; }
-        optAddStop(hit.label, hit.lat, hit.lon);
+        optAddStop(hit.label, hit.lat, hit.lon, c.count);
         b.textContent = '✓ Ajouté'; optRefreshList();
       } catch (e) { toast(e.message, 'err'); b.disabled = false; b.textContent = 'Ajouter'; }
     });
   } catch (e) { outEl.innerHTML = `<div class="alert warn" style="margin-top:.6rem">${esc(e.message)}</div>`; }
 }
-function optRun(fromNow) {
+// Récupère la matrice de durées OSRM (min) si le serveur est configuré.
+// Renvoie null si OSRM indisponible → on garde l'estimation haversine.
+async function optFetchMatrix(pts) {
+  if (pts.length < 2 || pts.length > 100) return null;
+  try {
+    const coords = pts.map((p) => [p.lon, p.lat]);
+    const r = await api('POST', '/geo/route-matrix', { coords });
+    if (r && r.enabled && r.ok && Array.isArray(r.durations)) return r.durations.map((row) => row.map((v) => (v == null ? null : v / 60)));
+  } catch (e) {}
+  return null;
+}
+// Récupère le tracé routier réel (OSRM) pour l'ordre donné → carte.
+async function optFetchGeom(pts) {
+  if (pts.length < 2 || pts.length > 100) return null;
+  try {
+    const coords = pts.map((p) => [p.lon, p.lat]);
+    const r = await api('POST', '/geo/route', { coords });
+    if (r && r.enabled && r.ok && r.geometry && Array.isArray(r.geometry.coordinates)) return r.geometry.coordinates.map((c) => [c[1], c[0]]);
+  } catch (e) {}
+  return null;
+}
+async function optRun(fromNow) {
   const st = _opt; const pending = st.stops.filter((s) => !s.delivered && !s.absent);
   if (!pending.length) { toast('Aucun arrêt à optimiser.', 'err'); return; }
   const o = optRunOpts(fromNow);
+  // Matrice OSRM (temps routiers réels) : indices 0 = départ, 1..n = arrêts.
+  const pts = [st.start].concat(pending); pts.forEach((p, i) => { p._mi = i; });
+  o.matrix = await optFetchMatrix(pts);
+  o.travel = optTravelOf(o);
+  st._osrm = !!o.matrix;
   let route = optSolveTW(st.start, pending, o);
   if (route.length <= 60) route = optImproveTW(st.start, route, o); // borne anti-lenteur
   // Calcule l'horaire prévisionnel de chaque arrêt (arrivée + ouvert/fermé).
@@ -565,10 +622,13 @@ function optRun(fromNow) {
   st.stops = closedList.concat(route);
   st.optimized = true; st.activeId = route[0] ? route[0].id : null;
   st.lastDepartMin = o.departMin;
+  // Tracé routier réel (si OSRM) pour la carte ; sinon lignes droites.
+  st.routeGeom = o.matrix ? await optFetchGeom([st.start].concat(route)) : null;
   optSave(st); optRenderBody();
+  const via = o.matrix ? ' (temps routiers réels)' : '';
   toast(missed
-    ? `Tournée optimisée : ${route.length} arrêt(s) · ⚠️ ${missed} hors horaires aujourd'hui.`
-    : `Tournée optimisée : ${route.length} arrêt(s), tous dans les horaires ✓`, missed ? 'warn' : 'ok');
+    ? `Tournée optimisée${via} : ${route.length} arrêt(s) · ⚠️ ${missed} hors horaires aujourd'hui.`
+    : `Tournée optimisée${via} : ${route.length} arrêt(s), tous dans les horaires ✓`, missed ? 'warn' : 'ok');
 }
 function optMark(id, kind) {
   const st = _opt; const s = st.stops.find((x) => x.id === id); if (!s) return;
@@ -638,7 +698,13 @@ async function optDrawMap() {
     bounds.push([s.lat, s.lon]);
   });
   if (_optLine) { _optLine.remove(); _optLine = null; }
-  _optLine = L.polyline(pts.map((p) => [p.lat, p.lon]), { color: '#2563eb', weight: 3, opacity: .7, dashArray: '6 6' }).addTo(_optMap);
+  // Tracé routier réel (OSRM) si disponible, sinon lignes droites en pointillé.
+  if (st.routeGeom && st.routeGeom.length > 1) {
+    _optLine = L.polyline(st.routeGeom, { color: '#2563eb', weight: 4, opacity: .8 }).addTo(_optMap);
+    st.routeGeom.forEach((c) => bounds.push(c));
+  } else {
+    _optLine = L.polyline(pts.map((p) => [p.lat, p.lon]), { color: '#2563eb', weight: 3, opacity: .7, dashArray: '6 6' }).addTo(_optMap);
+  }
   if (bounds.length > 1) _optMap.fitBounds(bounds, { padding: [30, 30] }); else _optMap.setView(bounds[0] || [49.14, -0.42], 12);
   setTimeout(() => { if (_optMap) _optMap.invalidateSize(); }, 200);
 }
