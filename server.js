@@ -4532,6 +4532,19 @@ app.get('/api/geo/search', authRequired, async (req, res) => {
     res.json({ results, zone: 'Calvados (14) et Orne (61)' });
   } catch (e) { res.status(502).json({ error: 'Recherche indisponible' }); }
 });
+// Reverse-géocodage (position GPS → adresse) via l'API BAN.
+app.get('/api/geo/reverse', authRequired, async (req, res) => {
+  const lat = Number(req.query.lat), lon = Number(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: 'Coordonnées invalides' });
+  try {
+    if (typeof fetch !== 'function') return res.json({ label: null });
+    const r = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lat=${lat}&lon=${lon}`);
+    if (!r.ok) return res.json({ label: null });
+    const j = await r.json();
+    const f = (j.features || [])[0];
+    res.json({ label: f ? f.properties.label : null });
+  } catch (e) { res.json({ label: null }); }
+});
 
 require('./routes/erp').mount(app, { express, authRequired, adminRequired, staffRequired, getData, save });
 require('./routes/bot').mount(app, { express, getData, save, signToken, nextId, push });

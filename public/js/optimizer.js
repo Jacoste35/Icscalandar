@@ -91,9 +91,13 @@ function optRenderBody() {
           <button class="btn ghost sm" id="opt-gps">📍 Partir de ma position</button>
           <span class="help">ou dépôt Éterville par défaut</span>
         </div>
+        <div id="opt-startinfo" class="opt-startinfo">${optStartInfoHTML(st.start)}</div>
         <label style="margin-top:.6rem">Ajouter un arrêt (adresse)</label>
         <div class="opt-search"><input id="opt-addr" placeholder="ex. 12 rue de Bayeux, Caen" autocomplete="off"><div id="opt-sug" class="opt-sug"></div></div>
-        <p class="help">Recherche limitée au <strong>Calvados (14)</strong> et à l'<strong>Orne (61)</strong>. L'OCR d'étiquette arrivera en version mobile.</p>
+        <div style="margin-top:.6rem"><button class="btn accent sm" id="opt-scan">📷 Scanner une étiquette / feuille de tournée</button>
+          <input type="file" id="opt-scan-file" accept="image/*" capture="environment" style="display:none"></div>
+        <div id="opt-scan-out"></div>
+        <p class="help">Recherche limitée au <strong>Calvados (14)</strong> et à l'<strong>Orne (61)</strong>.</p>
       </div>
       <div class="card">
         <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap"><h3 style="margin:0">Arrêts (${total})</h3>
@@ -105,6 +109,8 @@ function optRenderBody() {
     const gps = document.getElementById('opt-gps'); if (gps) gps.onclick = optUseGps;
     const clr = document.getElementById('opt-clear'); if (clr) clr.onclick = () => { if (confirm('Effacer tous les arrêts ?')) { st.stops = []; optSave(st); optRenderBody(); } };
     const run = document.getElementById('opt-run'); if (run) run.onclick = optRun;
+    const scanBtn = document.getElementById('opt-scan'), scanFile = document.getElementById('opt-scan-file');
+    if (scanBtn && scanFile) { scanBtn.onclick = () => scanFile.click(); scanFile.onchange = () => { const f = scanFile.files && scanFile.files[0]; if (f) optScan(f); scanFile.value = ''; }; }
   } else {
     // ---- Écran TOURNÉE / ARRÊT EN COURS ----
     const order = optOrdered(st);
@@ -171,13 +177,104 @@ function optBindSearch() {
 function optBindList() {
   document.querySelectorAll('#opt-list [data-del]').forEach((b) => b.onclick = () => { _opt.stops = _opt.stops.filter((s) => s.id !== b.dataset.del); optSave(_opt); optRenderBody(); });
 }
+// Encart d'info sous « Partir de ma position » : coordonnées + adresse trouvée.
+function optStartInfoHTML(start) {
+  if (!start || !start.gps) return '';
+  const acc = start.acc != null ? ` · précision ±${Math.round(start.acc)} m` : '';
+  return `<div class="opt-gpsbox">📍 <strong>Position trouvée</strong> : ${start.lat.toFixed(5)}, ${start.lon.toFixed(5)}${acc}
+    <div class="help" id="opt-gpsaddr">${start.addr ? esc(start.addr) : 'Adresse en cours…'}</div></div>`;
+}
 function optUseGps() {
   if (!navigator.geolocation) { toast('Géolocalisation indisponible.', 'err'); return; }
-  toast('Localisation…', 'info');
-  navigator.geolocation.getCurrentPosition((p) => {
-    _opt.start = { label: 'Ma position', lat: p.coords.latitude, lon: p.coords.longitude, gps: true };
-    optSave(_opt); const l = document.getElementById('opt-startlbl'); if (l) l.textContent = _opt.start.label; toast('Départ = ma position.', 'ok');
-  }, () => toast('Position refusée. Départ = dépôt Éterville.', 'err'), { enableHighAccuracy: true, timeout: 8000 });
+  const info = document.getElementById('opt-startinfo'); if (info) info.innerHTML = '<div class="help">📍 Localisation en cours…</div>';
+  navigator.geolocation.getCurrentPosition(async (p) => {
+    _opt.start = { label: 'Ma position', lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, gps: true, addr: '' };
+    optSave(_opt);
+    const l = document.getElementById('opt-startlbl'); if (l) l.textContent = _opt.start.label;
+    if (info) info.innerHTML = optStartInfoHTML(_opt.start);
+    toast('Départ = ma position.', 'ok');
+    // Reverse-géocodage pour vérification visuelle (adresse la plus proche).
+    try { const r = await api('GET', `/geo/reverse?lat=${_opt.start.lat}&lon=${_opt.start.lon}`); _opt.start.addr = r.label || 'Adresse non trouvée'; optSave(_opt); const a = document.getElementById('opt-gpsaddr'); if (a) a.textContent = _opt.start.addr; }
+    catch (e) { const a = document.getElementById('opt-gpsaddr'); if (a) a.textContent = 'Adresse indisponible'; }
+  }, (err) => { if (info) info.innerHTML = `<div class="help" style="color:var(--danger)">Position refusée (${esc(err.message || '')}). Départ = dépôt Éterville.</div>`; toast('Position refusée.', 'err'); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+}
+
+// --- OCR (Tesseract.js) : photo d'étiquette / feuille de tournée -----------
+let _tessPromise = null;
+function ensureTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (_tessPromise) return _tessPromise;
+  _tessPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.onload = () => resolve(window.Tesseract);
+    s.onerror = () => reject(new Error('OCR indisponible (connexion requise au 1er scan).'));
+    document.head.appendChild(s);
+  });
+  return _tessPromise;
+}
+// Réduit la photo (max 1600 px) et la passe en niveaux de gris → OCR plus rapide/net.
+function optPrepImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1600, sc = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
+      try { const d = ctx.getImageData(0, 0, w, h); const px = d.data; for (let i = 0; i < px.length; i += 4) { const g = (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11); px[i] = px[i + 1] = px[i + 2] = g; } ctx.putImageData(d, 0, 0); } catch (e) {}
+      URL.revokeObjectURL(url); resolve(c);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible.')); };
+    img.src = url;
+  });
+}
+// Extrait des adresses candidates du texte OCR (lignes avec un CP 14xxx/61xxx).
+function optParseAddresses(text) {
+  const lines = String(text || '').split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter((l) => l.length > 3);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/\b(14|61)\s?\d{3}\b/);
+    if (!m) continue;
+    const cp = m[0].replace(/\s/g, '');
+    const idx = lines[i].indexOf(m[0]);
+    const cityPart = (cp + ' ' + lines[i].slice(idx + m[0].length)).replace(/\s+/g, ' ').trim();
+    let street = lines[i].slice(0, idx).trim();
+    if (!street && i > 0) street = lines[i - 1];
+    const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
+    if (cand.length > 6) out.push(cand);
+  }
+  return [...new Set(out)];
+}
+async function optScan(file) {
+  const outEl = document.getElementById('opt-scan-out'); if (!outEl) return;
+  outEl.innerHTML = '<div class="opt-scanning"><div class="spin"></div> Analyse de l’image… <span id="opt-scan-pct">0%</span></div>';
+  try {
+    const canvas = await optPrepImage(file);
+    const T = await ensureTesseract();
+    const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
+    const text = (data && data.text) || '';
+    const cands = optParseAddresses(text);
+    outEl.innerHTML = `
+      <div class="card" style="margin-top:.6rem;background:#f8fafc">
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)</strong><button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
+        ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${esc(c)}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
+          : '<p class="help">Aucune adresse (CP 14/61) reconnue. Utilisez la saisie manuelle ci-dessus ou reprenez la photo bien cadrée.</p>'}
+        <details style="margin-top:.4rem"><summary class="help">Texte lu par l’OCR</summary><pre class="opt-ocrtext">${esc(text || '(vide)')}</pre></details>
+      </div>`;
+    outEl.querySelector('#opt-scan-close').onclick = () => { outEl.innerHTML = ''; };
+    outEl.querySelectorAll('[data-cand]').forEach((b) => b.onclick = async () => {
+      const q = cands[+b.dataset.cand]; b.disabled = true; b.textContent = '…';
+      try {
+        const r = await optBanSearch(q); const hit = r[0];
+        if (!hit) { toast('Adresse introuvable en zone 14/61.', 'err'); b.disabled = false; b.textContent = 'Ajouter'; return; }
+        _opt.stops.push({ id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label: hit.label, lat: hit.lat, lon: hit.lon, delivered: false, skipped: false });
+        optSave(_opt); b.textContent = '✓ Ajouté';
+        const listEl = document.getElementById('opt-list'); // rafraîchit la liste sans fermer le scan
+        if (listEl) { listEl.innerHTML = _opt.stops.map((s, i) => optStopRow(s, i)).join(''); optBindList(); const run = document.getElementById('opt-run'); if (run) { run.disabled = false; run.textContent = `🚀 Optimiser la tournée (${_opt.stops.length})`; } }
+      } catch (e) { toast(e.message, 'err'); b.disabled = false; b.textContent = 'Ajouter'; }
+    });
+  } catch (e) { outEl.innerHTML = `<div class="alert warn" style="margin-top:.6rem">${esc(e.message)}</div>`; }
 }
 function optRun() {
   const st = _opt; const pending = st.stops.filter((s) => !s.delivered);
