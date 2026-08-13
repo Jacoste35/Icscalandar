@@ -4513,16 +4513,23 @@ app.delete('/api/staff/fuel/:id', authRequired, adminRequired, async (req, res) 
 // Extension ERP (facturation, conformité, documents, audit) — déterministe.
 // Optimisateur de tournée : proxy de géocodage/autocomplétion via l'API BAN
 // (gratuite, adresses françaises). Passe par le serveur pour respecter la CSP.
+// Zone d'exploitation : Calvados (14) et Orne (61) uniquement (pas la Manche).
+const GEO_DEPTS = new Set(['14', '61']);
 app.get('/api/geo/search', authRequired, async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (q.length < 3) return res.json({ results: [] });
   try {
     if (typeof fetch !== 'function') return res.status(502).json({ error: 'Recherche indisponible sur ce serveur.' });
-    const r = await fetch('https://api-adresse.data.gouv.fr/search/?limit=6&autocomplete=1&q=' + encodeURIComponent(q));
+    // On demande plus de résultats puis on filtre sur les départements autorisés.
+    const r = await fetch('https://api-adresse.data.gouv.fr/search/?limit=15&autocomplete=1&q=' + encodeURIComponent(q));
     if (!r.ok) return res.status(502).json({ error: 'Recherche indisponible' });
     const j = await r.json();
-    const results = (j.features || []).map((f) => ({ label: f.properties.label, lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], city: f.properties.city || '' }));
-    res.json({ results });
+    const dept = (p) => String(p.citycode || p.postcode || (String(p.context || '').split(',')[0]) || '').trim().slice(0, 2);
+    const results = (j.features || [])
+      .filter((f) => GEO_DEPTS.has(dept(f.properties || {})))
+      .slice(0, 6)
+      .map((f) => ({ label: f.properties.label, lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], city: f.properties.city || '' }));
+    res.json({ results, zone: 'Calvados (14) et Orne (61)' });
   } catch (e) { res.status(502).json({ error: 'Recherche indisponible' }); }
 });
 
