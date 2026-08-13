@@ -322,13 +322,69 @@ function optRefreshList() {
   optBindList();
   const run = document.getElementById('opt-run'); if (run) { run.disabled = _opt.stops.length < 1; run.textContent = `🚀 Optimiser la tournée (${_opt.stops.length})`; }
 }
-// Éditeur d'horaires par jour → objet { lundi:"9h-12h30, 14h-18h", ... }.
+// Options d'un menu déroulant d'heure (pas de 15 min, 6h→21h).
+function optTimeOptions(sel) {
+  let html = '';
+  let has = false;
+  for (let m = 5 * 60; m <= 22 * 60; m += 15) { const v = optHhmm(m); if (v === sel) has = true; html += `<option value="${v}"${v === sel ? ' selected' : ''}>${v}</option>`; }
+  if (sel && !has) html = `<option value="${sel}" selected>${sel}</option>` + html; // valeur hors grille (legacy) préservée
+  return html;
+}
+// Reconstitue l'état d'une journée depuis la chaîne stockée (pour pré-remplir).
+//  0 plage = fermé ; 1 plage = journée continue ; 2 plages = pause déjeuner.
+function optDayState(str) {
+  const r = optParseRanges(str);
+  if (!r.length) return { open: false };
+  if (r.length === 1) return { open: true, pause: false, o1: optHhmm(r[0][0]), c1: optHhmm(r[0][1]) };
+  return { open: true, pause: true, o1: optHhmm(r[0][0]), ps: optHhmm(r[0][1]), pe: optHhmm(r[1][0]), c1: optHhmm(r[r.length - 1][1]) };
+}
+// Éditeur d'horaires par jour : tableau à menus déroulants (ouverture,
+// fermeture, pause déjeuner optionnelle). Sortie identique au format libre
+// « 9h00-12h00, 14h00-18h00 » → optimisation/badges inchangés.
 function optHoursEditorHTML(hoursObj) {
   const o = optHoursObj(hoursObj);
-  return `<div class="opt-hours-edit">${OPT_DAYS.map(([k, s]) => `<div class="opt-hrow"><span>${s}</span><input data-day="${k}" placeholder="fermé" value="${esc(o[k] || '')}"></div>`).join('')}</div>`;
+  return `<div class="opt-hours-edit">
+    <div class="opt-hhead"><span>Jour</span><span>Ouverture / fermeture</span></div>
+    ${OPT_DAYS.map(([k, s]) => {
+      const st = optDayState(o[k]);
+      const o1 = st.open ? st.o1 : '9h00', c1 = st.open ? st.c1 : '18h00';
+      const pause = !!(st.open && st.pause), ps = pause ? st.ps : '12h00', pe = pause ? st.pe : '14h00';
+      return `<div class="opt-hrow2" data-day="${k}">
+        <label class="opt-dname"><input type="checkbox" data-role="open" ${st.open ? 'checked' : ''}> ${s}</label>
+        <div class="opt-times" ${st.open ? '' : 'hidden'}>
+          <span class="opt-tg">Ouv. <select data-role="o1">${optTimeOptions(o1)}</select></span>
+          <label class="opt-pchk"><input type="checkbox" data-role="pause" ${pause ? 'checked' : ''}> Pause midi</label>
+          <span class="opt-pause opt-tg" ${pause ? '' : 'hidden'}>ferme <select data-role="ps">${optTimeOptions(ps)}</select> rouvre <select data-role="pe">${optTimeOptions(pe)}</select></span>
+          <span class="opt-tg">Ferm. <select data-role="c1">${optTimeOptions(c1)}</select></span>
+        </div>
+        <span class="opt-closed help" ${st.open ? 'hidden' : ''}>Fermé</span>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
+// Branche les bascules ouvert/fermé et pause (affiche/masque les menus).
+function optBindHoursEditor(scope) {
+  scope.querySelectorAll('.opt-hrow2').forEach((row) => {
+    const openChk = row.querySelector('[data-role="open"]'), times = row.querySelector('.opt-times'), closed = row.querySelector('.opt-closed');
+    const pauseChk = row.querySelector('[data-role="pause"]'), pauseBox = row.querySelector('.opt-pause');
+    if (openChk) openChk.onchange = () => { const on = openChk.checked; if (times) times.hidden = !on; if (closed) closed.hidden = on; };
+    if (pauseChk) pauseChk.onchange = () => { if (pauseBox) pauseBox.hidden = !pauseChk.checked; };
+  });
+}
+// Reconstruit l'objet horaires { lundi:"9h00-12h00, 14h00-18h00", … } depuis
+// les menus. Jour non coché = fermé (clé absente). Bornes cohérentes.
 function optCollectHours(scope) {
-  const o = {}; scope.querySelectorAll('[data-day]').forEach((i) => { const v = i.value.trim(); if (v) o[i.dataset.day] = v.slice(0, 60); });
+  const o = {};
+  scope.querySelectorAll('.opt-hrow2').forEach((row) => {
+    const day = row.dataset.day;
+    if (!row.querySelector('[data-role="open"]').checked) return;
+    const g = (r) => { const el = row.querySelector(`[data-role="${r}"]`); return el ? el.value : ''; };
+    const o1 = g('o1'), c1 = g('c1');
+    if (row.querySelector('[data-role="pause"]').checked) {
+      const ps = g('ps'), pe = g('pe');
+      o[day] = `${o1}-${ps}, ${pe}-${c1}`;
+    } else { o[day] = `${o1}-${c1}`; }
+  });
   return o;
 }
 // Enregistre l'arrêt courant comme client pro (avec suggestion de nom via OSM).
@@ -344,6 +400,7 @@ function optRegisterPro(id) {
       <p class="help">Enregistré une fois, ce client sera reconnu automatiquement aux prochaines tournées.</p>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="pro-save">Enregistrer</button>`,
     onMount: (ov) => {
+      optBindHoursEditor(ov);
       api('GET', `/geo/poi?lat=${s.lat}&lon=${s.lon}`).then((r) => {
         if (r && r.name) { const nm = ov.querySelector('#pro-name'), sg = ov.querySelector('#pro-sugg'); if (sg) { sg.innerHTML = `Suggestion : <a href="#" id="pro-us">${esc(r.name)}</a>`; ov.querySelector('#pro-us').onclick = (e) => { e.preventDefault(); nm.value = r.name; }; } if (nm && !nm.value) nm.value = r.name; }
       }).catch(() => {});
@@ -630,7 +687,7 @@ function cpCreate(reload) {
       <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML({})}`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-create">Créer</button>`,
     onMount: (ov) => {
-      cpBindAddrPicker(ov, picked);
+      cpBindAddrPicker(ov, picked); optBindHoursEditor(ov);
       ov.querySelector('#cp-create').onclick = async () => {
         const name = ov.querySelector('#cp-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; }
         if (picked.lat == null) { toast('Choisissez une adresse dans la liste des suggestions.', 'err'); return; }
@@ -671,7 +728,7 @@ function cpEdit(c, reload) {
       <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML(c.horaires)}`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-save">Enregistrer</button>`,
     onMount: (ov) => {
-      cpBindAddrPicker(ov, picked);
+      cpBindAddrPicker(ov, picked); optBindHoursEditor(ov);
       ov.querySelector('#cp-save').onclick = async () => {
         const name = ov.querySelector('#cp-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; }
         const payload = { name, address: (picked.label || ov.querySelector('#cp-addr').value.trim()), horaires: optCollectHours(ov) };
