@@ -4540,6 +4540,18 @@ function geoDistM(aLat, aLon, bLat, bLon) {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 function normName(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
+// Horaires : accepte un objet par jour { lundi:"9h-12h30, 14h-18h", ... } ou une
+// chaîne libre (rétro-compat). Nettoie et borne.
+const HOURS_DAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+function cleanHours(h) {
+  if (h && typeof h === 'object') {
+    const o = {};
+    for (const d of HOURS_DAYS) { if (h[d] != null && String(h[d]).trim()) o[d] = String(h[d]).trim().slice(0, 60); }
+    return o;
+  }
+  return String(h || '').trim().slice(0, 300);
+}
+function hoursEmpty(h) { return !h || (typeof h === 'object' ? Object.keys(h).length === 0 : !String(h).trim()); }
 function publicClient(c) { return c ? { id: c.id, name: c.name, address: c.address, lat: c.lat, lon: c.lon, horaires: c.horaires || '', horairesSource: c.horairesSource || null, horairesMajLe: c.horairesMajLe || null, note: c.note || '' } : null; }
 
 // Détection : le client pro le plus proche d'un point (rayon ~90 m), avec un
@@ -4578,12 +4590,12 @@ app.post('/api/clients', authRequired, async (req, res) => {
   db.proClients = db.proClients || [];
   // Anti-doublon : même nom à moins de 60 m → on met à jour plutôt que dupliquer.
   let c = db.proClients.find((x) => normName(x.name) === normName(name) && geoDistM(lat, lon, x.lat, x.lon) < 60);
-  const horaires = String(b.horaires || '').trim().slice(0, 300);
+  const horaires = cleanHours(b.horaires);
   if (!c) {
     c = { id: nextId('client'), name, address: String(b.address || '').trim().slice(0, 200), lat, lon, horaires: '', horairesSource: null, horairesMajLe: null, note: '', createdAt: new Date().toISOString() };
     db.proClients.push(c);
   } else { c.name = name; if (b.address) c.address = String(b.address).trim().slice(0, 200); }
-  if (horaires) { c.horaires = horaires; c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
+  if (!hoursEmpty(horaires)) { c.horaires = horaires; c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
   await save();
   res.json({ client: publicClient(c) });
 });
@@ -4596,7 +4608,7 @@ app.put('/api/clients/:id', authRequired, async (req, res) => {
   const b = req.body || {};
   if (b.name !== undefined && String(b.name).trim()) c.name = String(b.name).trim().slice(0, 120);
   if (b.address !== undefined) c.address = String(b.address).trim().slice(0, 200);
-  if (b.horaires !== undefined) { c.horaires = String(b.horaires).trim().slice(0, 300); c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
+  if (b.horaires !== undefined) { c.horaires = cleanHours(b.horaires); c.horairesSource = 'saisie_manuelle'; c.horairesMajLe = new Date().toISOString().slice(0, 10); }
   await save();
   res.json({ client: publicClient(c) });
 });

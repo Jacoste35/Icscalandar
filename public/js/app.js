@@ -579,6 +579,7 @@ function navSections() {
   if (admin || staff) exp.push({ id: 'geoloc', icon: '🛰️', label: 'Géolocalisation' });
   if (admin || staff) exp.push({ id: 'carburant', icon: '⛽', label: 'Gestion du carburant' });
   if (admin || staff) exp.push({ id: 'tourreturns', icon: '🚚', label: 'Retours de tournée' });
+  if (admin || staff) exp.push({ id: 'clients', icon: '🏢', label: 'Clients pro' });
   if (admin || staff) exp.push({ id: 'vehmgmt', icon: '🔧', label: 'Gestion des Véhicules' });
   if (admin) exp.push({ id: 'fleet', icon: '🚚', label: 'Gestion de la Flotte' });
   if (admin) exp.push({ id: 'stocks', icon: '🛠️', label: 'Suivi entretiens & stock' });
@@ -823,6 +824,7 @@ function renderView() {
   if (window.ICSAnim && ICSAnim.on) ICSAnim.view(main);
   if (v === 'dashboard') return renderDashboard(main);
   if (v === 'optimizer') return renderOptimizer(main);
+  if (v === 'clients') return renderClientsProAdmin(main);
   if (v === 'calendar') return renderCalendar(main);
   if (v === 'mydata') return renderMyData(main);
   if (v === 'mydocs') return renderMyDocs(main);
