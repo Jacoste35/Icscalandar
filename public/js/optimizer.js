@@ -193,7 +193,7 @@ function optImproveTW(start, route, o) {
 function optRunOpts(forceNow) {
   const st = _opt, d = new Date(), now = d.getHours() * 60 + d.getMinutes();
   const departMin = (!forceNow && st.departMin != null) ? st.departMin : now;
-  return { departMin, speedKmh: st.speedKmh || 32, serviceMin: st.serviceMin || 4 };
+  return { departMin, speedKmh: st.speedKmh || 32, serviceMin: (st.serviceMin != null ? st.serviceMin : 2.5) };
 }
 
 // --- Autocomplétion d'adresse (proxy serveur → API BAN) -------------------
@@ -260,8 +260,7 @@ function optRenderBody() {
     if (scanBtn && scanFile) { scanBtn.onclick = () => scanFile.click(); scanFile.onchange = () => { const f = scanFile.files && scanFile.files[0]; if (f) optScan(f); scanFile.value = ''; }; }
     body.querySelectorAll('[data-carrier]').forEach((b) => b.onclick = () => { st.carrier = (st.carrier === b.dataset.carrier) ? null : b.dataset.carrier; optSave(st); optRenderBody(); });
     const dep = document.getElementById('opt-depart'); if (dep) dep.onchange = () => { const p = dep.value.split(':').map(Number); if (Number.isFinite(p[0])) { st.departMin = p[0] * 60 + (p[1] || 0); optSave(st); } };
-    const sp = document.getElementById('opt-speed'); if (sp) sp.onchange = () => { st.speedKmh = Math.min(90, Math.max(10, +sp.value || 32)); optSave(st); };
-    const sv = document.getElementById('opt-service'); if (sv) sv.onchange = () => { st.serviceMin = Math.min(30, Math.max(0, +sv.value || 4)); optSave(st); };
+    const sv = document.getElementById('opt-service'); if (sv) sv.onchange = () => { const v = parseFloat(sv.value); st.serviceMin = Math.min(30, Math.max(0, Number.isFinite(v) ? v : 2.5)); optSave(st); };
   } else {
     // ---- Écran TOURNÉE / ARRÊT EN COURS ----
     const order = optOrdered(st);
@@ -708,10 +707,10 @@ function optActiveEtaHTML(s) {
 function optSettingsHTML() {
   const st = _opt, d = new Date();
   const dep = optHhmmInput(st.departMin != null ? st.departMin : (d.getHours() * 60 + d.getMinutes()));
+  const svc = st.serviceMin != null ? st.serviceMin : 2.5;
   return `<details class="opt-settings"><summary>⚙️ Réglages de tournée — heure de départ &amp; horaires</summary>
     <div class="opt-hrow"><span>Départ</span><input type="time" id="opt-depart" value="${dep}"></div>
-    <div class="opt-hrow"><span>Vitesse</span><input type="number" id="opt-speed" min="10" max="90" step="1" value="${st.speedKmh || 32}"><span class="help">km/h moy.</span></div>
-    <div class="opt-hrow"><span>Par arrêt</span><input type="number" id="opt-service" min="0" max="30" step="1" value="${st.serviceMin || 4}"><span class="help">min de service</span></div>
+    <div class="opt-hrow"><span>Par arrêt</span><input type="number" id="opt-service" min="0" max="30" step="0.5" value="${svc}"><span class="help">min sur place (≈ 2,5)</span></div>
     <p class="help">L'optimisation respecte les heures d'ouverture de chaque client pro pour en livrer le plus possible dans la journée, et signale ceux fermés ou hors horaires.</p>
   </details>`;
 }
