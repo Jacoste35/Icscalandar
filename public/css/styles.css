@@ -2032,3 +2032,14 @@ details.ro-section[open] > summary.ro-section-head::before { transform: rotate(9
 .opt-pin-active { background: #2563eb; transform: scale(1.15); }
 .opt-pin-skip { background: #ea580c; }
 .opt-pin-depot { background: #0f172a; font-size: 1rem; }
+
+/* ---- Optimisateur : position GPS + OCR ----------------------------------- */
+.opt-startinfo:empty { display: none; }
+.opt-gpsbox { margin-top: .5rem; padding: .5rem .7rem; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; font-size: .9rem; color: #1e3a8a; }
+.opt-scanning { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; color: #475569; font-size: .9rem; }
+.opt-scanning .spin { width: 18px; height: 18px; border: 3px solid #cbd5e1; border-top-color: var(--brand); border-radius: 50%; animation: optspin .8s linear infinite; }
+@keyframes optspin { to { transform: rotate(360deg); } }
+.opt-cand { display: flex; align-items: center; gap: .5rem; padding: .4rem 0; border-bottom: 1px solid #eef2f7; }
+.opt-cand:last-child { border-bottom: 0; }
+.opt-cand .opt-lbl { flex: 1 1 auto; min-width: 0; font-size: .92rem; }
+.opt-ocrtext { white-space: pre-wrap; font-size: .74rem; color: #475569; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: .5rem; max-height: 200px; overflow: auto; }
