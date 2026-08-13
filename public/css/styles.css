@@ -2043,3 +2043,18 @@ details.ro-section[open] > summary.ro-section-head::before { transform: rotate(9
 .opt-cand:last-child { border-bottom: 0; }
 .opt-cand .opt-lbl { flex: 1 1 auto; min-width: 0; font-size: .92rem; }
 .opt-ocrtext { white-space: pre-wrap; font-size: .74rem; color: #475569; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: .5rem; max-height: 200px; overflow: auto; }
+
+/* --- Optimisateur v2 : sélecteur transporteur, horaires, admin clients pro --- */
+.opt-carriers { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 .2rem; }
+.opt-carrier { --cc: #64748b; border: 2px solid #e2e8f0; background: #fff; color: #334155; border-radius: 999px; padding: .35rem .8rem; font-weight: 700; font-size: .85rem; cursor: pointer; transition: all .15s; }
+.opt-carrier:hover { border-color: var(--cc); }
+.opt-carrier.sel { border-color: var(--cc); background: var(--cc); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.opt-hours-edit { display: flex; flex-direction: column; gap: .3rem; margin: .4rem 0; }
+.opt-hrow { display: flex; align-items: center; gap: .5rem; }
+.opt-hrow > span { flex: 0 0 4.5rem; font-size: .82rem; color: #475569; font-weight: 600; }
+.opt-hrow > input { flex: 1 1 auto; min-width: 0; padding: .3rem .5rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: .85rem; }
+.opt-hbadge { display: inline-block; margin-left: .4rem; padding: .1rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 700; vertical-align: middle; }
+.opt-hbadge.open { background: #dcfce7; color: #166534; }
+.opt-hbadge.closed { background: #fee2e2; color: #991b1b; }
+.opt-hbadge.unknown { background: #f1f5f9; color: #64748b; }
+.cp-card { margin-bottom: .6rem; }

@@ -13,6 +13,40 @@
 const OPT_DEPOT = { label: 'Dépôt — Éterville (14930)', lat: 49.1436, lon: -0.4256, gps: false };
 const OPT_KEY = 'ics_optim_v1';
 
+// Transporteurs + template OCR : « anchors » = mots-clés qui marquent le bloc
+// DESTINATAIRE (on isole l'adresse de livraison, pas l'expéditeur).
+const OPT_CARRIERS = [
+  { id: 'fedex', name: 'FedEx', color: '#4d148c', anchors: ['to', 'ship to', 'deliver to', 'destinataire', 'consignee'] },
+  { id: 'gls', name: 'GLS', color: '#ffcc00', anchors: ['destinataire', 'consignee', 'empfänger', 'livraison'] },
+  { id: 'ciblex', name: 'Ciblex', color: '#e30613', anchors: ['destinataire', 'livraison', 'a livrer', 'à livrer'] },
+  { id: 'laposte', name: 'La Poste', color: '#ffd100', anchors: ['destinataire', 'livraison', 'colissimo'] },
+];
+function optCarrier(id) { return OPT_CARRIERS.find((c) => c.id === id) || null; }
+
+// Jours de la semaine (clé stockée = français, comme demandé dans la fiche).
+const OPT_DAYS = [['lundi', 'Lun'], ['mardi', 'Mar'], ['mercredi', 'Mer'], ['jeudi', 'Jeu'], ['vendredi', 'Ven'], ['samedi', 'Sam'], ['dimanche', 'Dim']];
+function optHoursObj(h) { return (h && typeof h === 'object') ? h : {}; }
+function optHoursText(h) { const o = optHoursObj(h); return OPT_DAYS.filter(([k]) => o[k]).map(([k, s]) => `${s} ${o[k]}`).join(' · '); }
+function optTodayKey() { return OPT_DAYS[(new Date().getDay() + 6) % 7][0]; }
+function optTodayHours(h) { const o = optHoursObj(h); return o[optTodayKey()] || (typeof h === 'string' ? h : ''); }
+// Parse « 9h-12h30, 14h-18h » → [[540,750],[840,1080]] (minutes). Tolérant.
+function optParseRanges(s) {
+  const out = []; String(s || '').split(/[,;]+/).forEach((part) => {
+    const m = part.match(/(\d{1,2})\s*[h:]\s*(\d{0,2}).*?[-–à]\s*(\d{1,2})\s*[h:]\s*(\d{0,2})/i);
+    if (m) out.push([(+m[1]) * 60 + (+(m[2] || 0)), (+m[3]) * 60 + (+(m[4] || 0))]);
+  });
+  return out;
+}
+function optHhmm(min) { const h = Math.floor(min / 60), m = min % 60; return `${h}h${m < 10 ? '0' : ''}${m}`; }
+// État d'ouverture aujourd'hui à une heure donnée (min). Renvoie {open, txt}.
+function optOpenState(hoursToday, atMin) {
+  const r = optParseRanges(hoursToday); if (!r.length) return { open: null, txt: hoursToday || '' };
+  const now = atMin == null ? (new Date().getHours() * 60 + new Date().getMinutes()) : atMin;
+  for (const [a, b] of r) { if (now >= a && now <= b) return { open: true, txt: `ouvert (jusqu'à ${optHhmm(b)})` }; }
+  const next = r.map((x) => x[0]).filter((a) => a > now).sort((a, b) => a - b)[0];
+  return { open: false, txt: next != null ? `fermé — ouvre à ${optHhmm(next)}` : 'fermé' };
+}
+
 function optLoad() {
   try { const s = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); if (s && s.stops) return s; } catch (e) {}
   return { start: Object.assign({}, OPT_DEPOT), stops: [], optimized: false, activeId: null };
@@ -65,9 +99,10 @@ async function optBanSearch(q) {
 function optMapsUrl(s) { return `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}&travelmode=driving`; }
 function optWazeUrl(s) { return `https://waze.com/ul?ll=${s.lat},${s.lon}&navigate=yes`; }
 
-// --- Ordre d'affichage : arrêts non livrés ; « passés » épinglés en tête ---
+// --- Ordre d'affichage : arrêts ouverts (ni livrés ni absents) ; « passés » en tête ---
+function optClosed(s) { return s.delivered || s.absent; }
 function optOrdered(st) {
-  const live = st.stops.filter((s) => !s.delivered);
+  const live = st.stops.filter((s) => !optClosed(s));
   const skipped = live.filter((s) => s.skipped), rest = live.filter((s) => !s.skipped);
   return skipped.concat(rest);
 }
@@ -87,6 +122,10 @@ function optRenderBody() {
     // ---- Écran PLANIFICATION ----
     body.innerHTML = `
       <div class="card">
+        <label>Transporteur <span class="help">— adapte la lecture de l'étiquette</span></label>
+        <div class="opt-carriers">${OPT_CARRIERS.map((c) => `<button class="opt-carrier ${st.carrier === c.id ? 'sel' : ''}" data-carrier="${c.id}" style="--cc:${c.color}">${esc(c.name)}</button>`).join('')}</div>
+      </div>
+      <div class="card">
         <div class="opt-startrow">
           <button class="btn ghost sm" id="opt-gps">📍 Partir de ma position</button>
           <span class="help">ou dépôt Éterville par défaut</span>
@@ -97,7 +136,7 @@ function optRenderBody() {
         <div style="margin-top:.6rem"><button class="btn accent sm" id="opt-scan">📷 Scanner une étiquette / feuille de tournée</button>
           <input type="file" id="opt-scan-file" accept="image/*" capture="environment" style="display:none"></div>
         <div id="opt-scan-out"></div>
-        <p class="help">Recherche limitée au <strong>Calvados (14)</strong> et à l'<strong>Orne (61)</strong>.</p>
+        <p class="help">Recherche limitée au <strong>Calvados (14)</strong> et à l'<strong>Orne (61)</strong>.${st.carrier ? ` Étiquettes : <strong>${esc(optCarrier(st.carrier).name)}</strong>.` : ''}</p>
       </div>
       <div class="card">
         <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap"><h3 style="margin:0">Arrêts (${total})</h3>
@@ -111,34 +150,41 @@ function optRenderBody() {
     const run = document.getElementById('opt-run'); if (run) run.onclick = optRun;
     const scanBtn = document.getElementById('opt-scan'), scanFile = document.getElementById('opt-scan-file');
     if (scanBtn && scanFile) { scanBtn.onclick = () => scanFile.click(); scanFile.onchange = () => { const f = scanFile.files && scanFile.files[0]; if (f) optScan(f); scanFile.value = ''; }; }
+    body.querySelectorAll('[data-carrier]').forEach((b) => b.onclick = () => { st.carrier = (st.carrier === b.dataset.carrier) ? null : b.dataset.carrier; optSave(st); optRenderBody(); });
   } else {
     // ---- Écran TOURNÉE / ARRÊT EN COURS ----
     const order = optOrdered(st);
     const active = order.find((s) => s.id === st.activeId) || order[0] || null;
+    const absent = st.stops.filter((s) => s.absent).length;
+    const closed = delivered + absent;
     body.innerHTML = `
-      <div class="card opt-progress"><strong>${delivered}/${total} livrés</strong>
-        <div class="opt-bar"><span style="width:${total ? Math.round(delivered / total * 100) : 0}%"></span></div>
+      <div class="card opt-progress"><strong>${closed}/${total} clôturés</strong> <span class="help">${delivered} livré(s)${absent ? ` · ${absent} absent(s)` : ''}</span>
+        <div class="opt-bar"><span style="width:${total ? Math.round(closed / total * 100) : 0}%"></span></div>
         <div style="margin-left:auto;display:flex;gap:.4rem"><button class="btn ghost sm" id="opt-recalc">🔄 Recalculer</button><button class="btn ghost sm" id="opt-edit">✏️ Modifier</button></div>
       </div>
       ${active ? `<div class="card opt-active">
         <div class="opt-active-badge">Arrêt en cours ${active.skipped ? '<span class="pill warn">passé — à revenir</span>' : ''}</div>
         <div class="opt-active-addr">${esc(active.label)}</div>
-        ${active.clientName ? `<div class="help">🏢 ${esc(active.clientName)}${active.window ? ' · ⏰ ' + esc(active.window) : ''}</div>` : ''}
+        ${active.clientName ? `<div class="help">🏢 <strong>${esc(active.clientName)}</strong>${optHoursBadge(active)}</div>` : ''}
         <div class="opt-active-actions">
           <button class="btn ok" data-deliver="${active.id}">✅ Livrer</button>
+          <button class="btn danger" data-absent="${active.id}">🚫 Absent</button>
           <button class="btn ghost" data-skip="${active.id}">⏭️ Passer</button>
+        </div>
+        <div class="opt-active-actions" style="margin-top:.4rem">
           <a class="btn accent" href="${optMapsUrl(active)}" target="_blank" rel="noopener">🧭 Guider (Maps)</a>
           <a class="btn ghost" href="${optWazeUrl(active)}" target="_blank" rel="noopener">Waze</a>
         </div>
-      </div>` : `<div class="card"><div class="alert ok">🎉 Tournée terminée — tous les arrêts sont livrés.</div></div>`}
+      </div>` : `<div class="card"><div class="alert ok">🎉 Tournée terminée — tous les arrêts sont clôturés.</div></div>`}
       <div class="card" style="padding:0;overflow:hidden"><div id="opt-map" style="height:340px"></div></div>
       <div class="card"><h3 style="margin:0 0 .5rem">Arrêts restants (${order.length})</h3>
         <div class="opt-list">${order.length ? order.map((s, i) => optRunRow(s, i, st.activeId)).join('') : '<p class="help">Aucun arrêt restant.</p>'}
-        ${st.stops.some((s) => s.delivered) ? `<details style="margin-top:.6rem"><summary class="help">Livrés (${delivered})</summary>${st.stops.filter((s) => s.delivered).map((s) => `<div class="opt-row done">✅ ${esc(s.label)}</div>`).join('')}</details>` : ''}
+        ${closed ? `<details style="margin-top:.6rem"><summary class="help">Clôturés (${closed})</summary>${st.stops.filter(optClosed).map((s) => `<div class="opt-row done">${s.absent ? '🚫' : '✅'} ${esc(s.label)}${s.absent ? ' <span class="pill danger">absent</span>' : ''}</div>`).join('')}</details>` : ''}
         </div></div>`;
     document.getElementById('opt-recalc').onclick = optRun;
     document.getElementById('opt-edit').onclick = () => { st.optimized = false; optSave(st); optRenderBody(); };
     body.querySelectorAll('[data-deliver]').forEach((b) => b.onclick = () => optMark(b.dataset.deliver, 'delivered'));
+    body.querySelectorAll('[data-absent]').forEach((b) => b.onclick = () => optMark(b.dataset.absent, 'absent'));
     body.querySelectorAll('[data-skip]').forEach((b) => b.onclick = () => optMark(b.dataset.skip, 'skip'));
     body.querySelectorAll('[data-activate]').forEach((b) => b.onclick = () => { st.activeId = b.dataset.activate; optSave(st); optRenderBody(); });
     optDrawMap();
@@ -147,7 +193,8 @@ function optRenderBody() {
 
 function optStopRow(s, i) {
   const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
-  const hrs = s.horaires ? ` <span class="help">⏰ ${esc(s.horaires)}</span>` : '';
+  const today = optTodayHours(s.hours);
+  const hrs = today ? ` <span class="help">⏰ ${esc(today)}</span>` : '';
   const proBtn = s.clientName ? '' : `<button class="btn ghost sm" data-pro="${s.id}" title="Enregistrer comme client pro">🏢</button>`;
   return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
 }
@@ -161,7 +208,7 @@ function optAddStop(label, lat, lon) {
   const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, delivered: false, skipped: false };
   _opt.stops.push(stop); optSave(_opt);
   api('GET', `/clients/match?lat=${lat}&lon=${lon}&name=${encodeURIComponent(label)}`).then((r) => {
-    if (r && r.client) { stop.clientId = r.client.id; stop.clientName = r.client.name; stop.horaires = r.client.horaires || ''; stop.window = r.client.horaires || ''; optSave(_opt); if (_opt.optimized) optRenderBody(); else optRefreshList(); }
+    if (r && r.client) { stop.clientId = r.client.id; stop.clientName = r.client.name; stop.hours = r.client.horaires || ''; optSave(_opt); if (_opt.optimized) optRenderBody(); else optRefreshList(); }
   }).catch(() => {});
   return stop;
 }
@@ -172,6 +219,15 @@ function optRefreshList() {
   optBindList();
   const run = document.getElementById('opt-run'); if (run) { run.disabled = _opt.stops.length < 1; run.textContent = `🚀 Optimiser la tournée (${_opt.stops.length})`; }
 }
+// Éditeur d'horaires par jour → objet { lundi:"9h-12h30, 14h-18h", ... }.
+function optHoursEditorHTML(hoursObj) {
+  const o = optHoursObj(hoursObj);
+  return `<div class="opt-hours-edit">${OPT_DAYS.map(([k, s]) => `<div class="opt-hrow"><span>${s}</span><input data-day="${k}" placeholder="fermé" value="${esc(o[k] || '')}"></div>`).join('')}</div>`;
+}
+function optCollectHours(scope) {
+  const o = {}; scope.querySelectorAll('[data-day]').forEach((i) => { const v = i.value.trim(); if (v) o[i.dataset.day] = v.slice(0, 60); });
+  return o;
+}
 // Enregistre l'arrêt courant comme client pro (avec suggestion de nom via OSM).
 function optRegisterPro(id) {
   const s = _opt.stops.find((x) => x.id === id); if (!s || typeof modal !== 'function') return;
@@ -180,7 +236,8 @@ function optRegisterPro(id) {
     bodyHTML: `<p class="help">${esc(s.label)}</p>
       <label>Nom de l'établissement *</label><input id="pro-name" placeholder="ex. Établissement Passard" value="${esc(s.clientName || '')}">
       <div class="help" id="pro-sugg" style="margin:.25rem 0"></div>
-      <label style="margin-top:.5rem">Horaires d'ouverture (facultatif)</label><input id="pro-hours" placeholder="ex. 9h-12h30, 14h-18h" value="${esc(s.horaires || '')}">
+      <label style="margin-top:.5rem">Horaires d'ouverture (par jour, facultatif)</label>
+      ${optHoursEditorHTML(s.hours)}
       <p class="help">Enregistré une fois, ce client sera reconnu automatiquement aux prochaines tournées.</p>`,
     footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="pro-save">Enregistrer</button>`,
     onMount: (ov) => {
@@ -189,8 +246,8 @@ function optRegisterPro(id) {
       }).catch(() => {});
       ov.querySelector('#pro-save').onclick = async () => {
         const name = ov.querySelector('#pro-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; }
-        const horaires = ov.querySelector('#pro-hours').value.trim();
-        try { const r = await api('POST', '/clients', { name, address: s.label, lat: s.lat, lon: s.lon, horaires }); s.clientId = r.client.id; s.clientName = r.client.name; s.horaires = r.client.horaires || ''; s.window = r.client.horaires || ''; optSave(_opt); closeModal(); if (_opt.optimized) optRenderBody(); else optRefreshList(); toast('Client pro enregistré ✓', 'ok'); }
+        const horaires = optCollectHours(ov);
+        try { const r = await api('POST', '/clients', { name, address: s.label, lat: s.lat, lon: s.lon, horaires }); s.clientId = r.client.id; s.clientName = r.client.name; s.hours = r.client.horaires || ''; optSave(_opt); closeModal(); if (_opt.optimized) optRenderBody(); else optRefreshList(); toast('Client pro enregistré ✓', 'ok'); }
         catch (e) { toast(e.message, 'err'); }
       };
     },
@@ -275,9 +332,15 @@ function optPrepImage(file) {
   });
 }
 // Extrait des adresses candidates du texte OCR (lignes avec un CP 14xxx/61xxx).
-function optParseAddresses(text) {
+// Template transporteur : si un « anchor » (mot-clé destinataire) est trouvé, on
+// privilégie les adresses situées APRÈS (bloc destinataire, pas expéditeur).
+function optParseAddresses(text, carrierId) {
+  const tpl = optCarrier(carrierId);
   const lines = String(text || '').split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter((l) => l.length > 3);
-  const out = [];
+  const low = lines.map((l) => l.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''));
+  let anchor = -1;
+  if (tpl) { for (let i = 0; i < low.length; i++) { if (tpl.anchors.some((a) => low[i].includes(a))) { anchor = i; break; } } }
+  const found = [];
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/\b(14|61)\s?\d{3}\b/);
     if (!m) continue;
@@ -287,9 +350,11 @@ function optParseAddresses(text) {
     let street = lines[i].slice(0, idx).trim();
     if (!street && i > 0) street = lines[i - 1];
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
-    if (cand.length > 6) out.push(cand);
+    if (cand.length > 6) found.push({ cand, pri: (anchor >= 0 && i > anchor) ? 0 : 1 });
   }
-  return [...new Set(out)];
+  const seen = new Set(), res = [];
+  found.sort((a, b) => a.pri - b.pri).forEach((x) => { if (!seen.has(x.cand)) { seen.add(x.cand); res.push(x.cand); } });
+  return res;
 }
 async function optScan(file) {
   const outEl = document.getElementById('opt-scan-out'); if (!outEl) return;
@@ -299,7 +364,7 @@ async function optScan(file) {
     const T = await ensureTesseract();
     const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
     const text = (data && data.text) || '';
-    const cands = optParseAddresses(text);
+    const cands = optParseAddresses(text, _opt.carrier);
     outEl.innerHTML = `
       <div class="card" style="margin-top:.6rem;background:#f8fafc">
         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)</strong><button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
@@ -333,14 +398,22 @@ function optRun() {
 }
 function optMark(id, kind) {
   const st = _opt; const s = st.stops.find((x) => x.id === id); if (!s) return;
-  if (kind === 'delivered') { s.delivered = true; s.skipped = false; }
+  if (kind === 'delivered') { s.delivered = true; s.absent = false; s.skipped = false; }
+  else if (kind === 'absent') { s.absent = true; s.delivered = false; s.skipped = false; }
   else if (kind === 'skip') { s.skipped = true; }
-  // Prochain arrêt actif : 1er non livré et non passé, sinon 1er restant.
+  // Prochain arrêt actif : 1er non passé, sinon 1er restant.
   const order = optOrdered(st);
   const next = order.find((x) => !x.skipped) || order[0] || null;
   st.activeId = next ? next.id : null;
   optSave(st); optRenderBody();
-  if (kind === 'delivered' && window.celebrate && !order.length) celebrate('success', { text: 'Tournée terminée !' });
+  if ((kind === 'delivered' || kind === 'absent') && window.celebrate && !order.length) celebrate('success', { text: 'Tournée terminée !' });
+}
+// Pastille horaire du jour (ouvert/fermé) pour un arrêt client pro.
+function optHoursBadge(s) {
+  const today = optTodayHours(s.hours); if (!today) return '';
+  const state = optOpenState(today);
+  const cls = state.open === true ? 'ok' : state.open === false ? 'danger' : '';
+  return ` · ⏰ ${esc(today)} ${cls ? `<span class="pill ${cls}">${esc(state.txt)}</span>` : ''}`;
 }
 
 async function optDrawMap() {
@@ -364,4 +437,50 @@ async function optDrawMap() {
   _optLine = L.polyline(pts.map((p) => [p.lat, p.lon]), { color: '#2563eb', weight: 3, opacity: .7, dashArray: '6 6' }).addTo(_optMap);
   if (bounds.length > 1) _optMap.fitBounds(bounds, { padding: [30, 30] }); else _optMap.setView(bounds[0] || [49.14, -0.42], 12);
   setTimeout(() => { if (_optMap) _optMap.invalidateSize(); }, 200);
+}
+
+/* =========================================================================
+   ADMIN — Clients professionnels (base + horaires)
+   ========================================================================= */
+async function renderClientsProAdmin(main) {
+  if (typeof isStaff === 'function' && !isStaff()) { main.innerHTML = `<div class="alert warn">Accès réservé à l'encadrement.</div>`; return; }
+  main.innerHTML = `<div class="page-head"><div><h1>🏢 Clients professionnels</h1>
+    <p>Base des destinataires récurrents et de leurs horaires — utilisée par l'optimisateur de tournée.</p></div></div>
+    <div id="cp-body" class="empty">Chargement…</div>`;
+  const body = document.getElementById('cp-body');
+  let list = [];
+  try { list = (await api('GET', '/clients')).clients; } catch (e) { body.innerHTML = `<div class="alert warn">${esc(e.message)}</div>`; return; }
+  cpRender(body, list);
+}
+function cpRender(body, list) {
+  body.className = '';
+  if (!list.length) { body.innerHTML = `<div class="alert info">Aucun client pro enregistré. Ils s'ajoutent depuis l'optimisateur de tournée (bouton 🏢 sur un arrêt).</div>`; return; }
+  body.innerHTML = `<div class="card"><input id="cp-search" placeholder="Rechercher un client…" style="width:100%"><span class="help">${list.length} client(s)</span></div><div id="cp-list">${list.map(cpRow).join('')}</div>`;
+  const doList = (q) => { const f = q ? list.filter((c) => normNm(c.name + ' ' + (c.address || '')).includes(normNm(q))) : list; document.getElementById('cp-list').innerHTML = f.length ? f.map(cpRow).join('') : '<p class="help">Aucun résultat.</p>'; cpBind(body, list); };
+  const se = document.getElementById('cp-search'); if (se) se.oninput = (e) => doList(e.target.value.trim());
+  cpBind(body, list);
+}
+function cpRow(c) {
+  const hrs = optHoursText(c.horaires) || (typeof c.horaires === 'string' && c.horaires ? esc(c.horaires) : '<span class="help">horaires non renseignés</span>');
+  return `<div class="card cp-card"><div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+    <strong>🏢 ${esc(c.name)}</strong>
+    <span style="margin-left:auto;display:flex;gap:.4rem"><button class="btn ghost sm" data-cpedit="${c.id}">✏️ Modifier</button><button class="btn danger sm" data-cpdel="${c.id}">🗑</button></span></div>
+    <div class="help">${esc(c.address || '')}</div>
+    <div style="margin-top:.2rem">⏰ ${hrs}${c.horairesSource ? ` <span class="help">(${esc(c.horairesSource)}${c.horairesMajLe ? ', ' + esc(c.horairesMajLe) : ''})</span>` : ''}</div>
+  </div>`;
+}
+function cpBind(body, list) {
+  const reload = async () => { try { const l = (await api('GET', '/clients')).clients; cpRender(document.getElementById('cp-body'), l); } catch (e) {} };
+  body.querySelectorAll('[data-cpdel]').forEach((b) => b.onclick = async () => { if (!confirm('Supprimer ce client pro ?')) return; try { await api('DELETE', '/clients/' + b.dataset.cpdel); reload(); } catch (e) { toast(e.message, 'err'); } });
+  body.querySelectorAll('[data-cpedit]').forEach((b) => b.onclick = () => { const c = list.find((x) => x.id === b.dataset.cpedit); if (c) cpEdit(c, reload); });
+}
+function cpEdit(c, reload) {
+  modal({
+    title: '✏️ Client professionnel',
+    bodyHTML: `<label>Nom *</label><input id="cp-name" value="${esc(c.name)}">
+      <label style="margin-top:.5rem">Adresse</label><input id="cp-addr" value="${esc(c.address || '')}">
+      <label style="margin-top:.5rem">Horaires d'ouverture (par jour)</label>${optHoursEditorHTML(c.horaires)}`,
+    footHTML: `<button class="btn ghost" data-close>Annuler</button><button class="btn accent" id="cp-save">Enregistrer</button>`,
+    onMount: (ov) => { ov.querySelector('#cp-save').onclick = async () => { const name = ov.querySelector('#cp-name').value.trim(); if (!name) { toast('Nom requis.', 'err'); return; } try { await api('PUT', '/clients/' + c.id, { name, address: ov.querySelector('#cp-addr').value.trim(), horaires: optCollectHours(ov) }); closeModal(); reload(); toast('Enregistré.', 'ok'); } catch (e) { toast(e.message, 'err'); } }; },
+  });
 }
