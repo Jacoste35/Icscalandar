@@ -1,0 +1,26 @@
+# FACULTATIF — uniquement si OSRM tourne sur un AUTRE serveur que l'app.
+# Si l'app et OSRM sont sur le même VPS, ce fichier est inutile : mettez
+# simplement OSRM_URL=http://127.0.0.1:5000 dans le .env de l'app.
+#
+# Exemple de reverse-proxy HTTPS exposant OSRM en public de façon restreinte.
+# Adaptez le nom de domaine et les chemins de certificats (Let's Encrypt).
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name osrm.inter-colis-services.com;
+
+  ssl_certificate     /etc/letsencrypt/live/osrm.inter-colis-services.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/osrm.inter-colis-services.com/privkey.pem;
+
+  # Sécurité : n'autorisez QUE l'IP publique de votre serveur applicatif.
+  # allow 203.0.113.10;
+  # deny all;
+
+  location / {
+    proxy_pass http://127.0.0.1:5000;
+    proxy_set_header Host $host;
+    proxy_read_timeout 30s;
+  }
+}
+# Puis dans le .env de l'app :
+#   OSRM_URL=https://osrm.inter-colis-services.com

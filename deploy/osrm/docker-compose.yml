@@ -1,0 +1,22 @@
+# OSRM — moteur d'itinéraire (temps/distances routiers réels) pour
+# l'optimisateur de tournée. À lancer sur le VPS OVH, une fois les données
+# préparées avec ./prepare.sh.
+#
+#   1) ./prepare.sh              (télécharge + prétraite la Basse-Normandie)
+#   2) docker compose up -d      (démarre le serveur, redémarre au reboot)
+#   3) dans le .env de l'app :   OSRM_URL=http://127.0.0.1:5000
+#
+# Le port n'est exposé que sur 127.0.0.1 : seul le serveur applicatif (même
+# VPS) peut interroger OSRM, jamais l'extérieur. Pas de nginx/HTTPS nécessaire
+# tant que l'app et OSRM tournent sur la même machine.
+services:
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: ics-osrm
+    restart: always
+    # REGION doit correspondre au fichier préparé (défaut : basse-normandie).
+    command: osrm-routed --algorithm mld --max-table-size 10000 /data/${REGION:-basse-normandie}-latest.osrm
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:5000:5000"
