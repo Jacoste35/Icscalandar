@@ -720,12 +720,13 @@ function optDedupCands(found) {
       const sMatch = xS.length && G.sTokens.length && optShareTok(xS, G.sTokens);
       return cMatch || sMatch || G.addr === addr;               // au moins un signal positif
     });
+    const inc = Math.max(1, x.count || 1);
     if (g) {
-      g.count++; if (x.pri < g.pri) g.pri = x.pri;
+      g.count += inc; if (x.pri < g.pri) g.pri = x.pri;
       if (x.name && optNormLbl(x.name).length >= 3 && (!g.name || x.name.length < g.name.length)) g.name = x.name;
       xC.forEach((t) => { if (!g.cTokens.includes(t)) g.cTokens.push(t); });
       xS.forEach((t) => { if (!g.sTokens.includes(t)) g.sTokens.push(t); });
-    } else groups.push({ cand: x.cand, name: x.name || '', count: 1, pri: x.pri, cp, cTokens: xC.slice(), sTokens: xS.slice(), addr });
+    } else groups.push({ cand: x.cand, name: x.name || '', count: inc, pri: x.pri, cp, cTokens: xC.slice(), sTokens: xS.slice(), addr });
   });
   return groups.map((g) => ({ cand: g.cand, name: g.name, count: g.count, pri: g.pri })).sort((a, b) => a.pri - b.pri);
 }
@@ -738,25 +739,58 @@ function optParseRaw(text, carrierId) {
 function optParseAddresses(text, carrierId) {
   return optDedupCands(optParseRaw(text, carrierId));
 }
+// Convertit une photo en JPEG base64 réduit (pour l'OCR IA côté serveur).
+function optImageToBase64(file, maxPx, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(); const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = maxPx || 1600, sc = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url); resolve(c.toDataURL('image/jpeg', quality || 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible.')); };
+    img.src = url;
+  });
+}
 async function optScan(fileOrFiles) {
   const files = (fileOrFiles && fileOrFiles.length != null && !(fileOrFiles instanceof File)) ? Array.from(fileOrFiles) : [fileOrFiles];
   const outEl = document.getElementById('opt-scan-out'); if (!outEl || !files.length) return;
   const multi = files.length > 1;
-  let allRaw = []; let fullText = '';
+  let allRaw = []; let fullText = ''; let aiMode = null, usedAI = false; let T = null;
   try {
-    const T = await ensureTesseract();
     for (let n = 0; n < files.length; n++) {
-      outEl.innerHTML = `<div class="opt-scanning"><div class="spin"></div> Analyse ${multi ? `de la page ${n + 1}/${files.length}` : 'de l’image'}… <span id="opt-scan-pct">0%</span></div>`;
+      const pg = multi ? `de la page ${n + 1}/${files.length}` : 'de l’image';
+      // 1) Tentative OCR par IA vision (serveur) si disponible.
+      if (aiMode !== false) {
+        outEl.innerHTML = `<div class="opt-scanning"><div class="spin"></div> Lecture IA ${pg}…</div>`;
+        try {
+          const b64 = await optImageToBase64(files[n]);
+          const r = await api('POST', '/geo/ocr', { image: b64, carrier: _opt.carrier });
+          if (r && r.enabled === false) { aiMode = false; } // non configuré → bascule Tesseract
+          else if (r && r.ok && Array.isArray(r.points)) {
+            aiMode = true; usedAI = true;
+            r.points.forEach((p) => { const cand = [p.street, p.postalCode, p.city].filter(Boolean).join(' ').trim(); if (cand) allRaw.push({ cand, name: p.name || '', count: p.colis || 1, pri: 0 }); });
+            fullText += (fullText ? '\n\n— — —\n\n' : '') + `[IA] ${r.points.map((p) => `${p.name || '?'} — ${[p.street, p.postalCode, p.city].filter(Boolean).join(' ')}${p.colis > 1 ? ' ×' + p.colis : ''}`).join('\n')}`;
+            continue;
+          } else { aiMode = true; } // IA active mais échec sur cette page → on tente Tesseract en secours
+        } catch (e) { /* réseau → Tesseract */ }
+      }
+      // 2) Repli OCR embarqué (Tesseract).
+      outEl.innerHTML = `<div class="opt-scanning"><div class="spin"></div> Analyse ${pg}… <span id="opt-scan-pct">0%</span></div>`;
+      if (!T) T = await ensureTesseract();
       const canvas = await optPrepImage(files[n]);
       const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
       const text = (data && data.text) || '';
       fullText += (fullText ? '\n\n— — —\n\n' : '') + text;
-      allRaw = allRaw.concat(optParseRaw(text, _opt.carrier)); // regroupement final commun à toutes les pages
+      allRaw = allRaw.concat(optParseRaw(text, _opt.carrier));
     }
     const cands = optDedupCands(allRaw);
     outEl.innerHTML = `
       <div class="card" style="margin-top:.6rem;background:#f8fafc">
         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)${multi ? ` · ${files.length} pages` : ''}</strong>
+          ${usedAI ? '<span class="pill ok">✨ Lecture IA</span>' : ''}
           ${cands.length ? '<button class="btn accent sm" id="opt-scan-all">Tout ajouter</button>' : ''}
           <button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
         ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${c.name ? `<strong>🏢 ${esc(c.name)}</strong><br>` : ''}${esc(c.cand)}${c.count > 1 ? ` <span class="pill warn">📦 plusieurs colis possible (${c.count})</span>` : ''}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
