@@ -542,72 +542,88 @@ function ensureTesseract() {
   });
   return _tessPromise;
 }
-// Réduit la photo (max 1600 px) et la passe en niveaux de gris → OCR plus rapide/net.
+// Prépare la photo pour l'OCR : agrandit (max 2200 px), passe en niveaux de
+// gris puis étire le contraste (feuilles carbone peu contrastées) → texte net.
 function optPrepImage(file) {
   return new Promise((resolve, reject) => {
     const img = new Image(); const url = URL.createObjectURL(file);
     img.onload = () => {
-      const max = 1600, sc = Math.min(1, max / Math.max(img.width, img.height));
+      const max = 2200, sc = Math.min(1, max / Math.max(img.width, img.height));
       const w = Math.round(img.width * sc), h = Math.round(img.height * sc);
       const c = document.createElement('canvas'); c.width = w; c.height = h;
       const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
-      try { const d = ctx.getImageData(0, 0, w, h); const px = d.data; for (let i = 0; i < px.length; i += 4) { const g = (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11); px[i] = px[i + 1] = px[i + 2] = g; } ctx.putImageData(d, 0, 0); } catch (e) {}
+      try {
+        const d = ctx.getImageData(0, 0, w, h); const px = d.data;
+        // 1) niveaux de gris + histogramme
+        let mn = 255, mx = 0; const g = new Float32Array(px.length / 4);
+        for (let i = 0, j = 0; i < px.length; i += 4, j++) { const v = px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11; g[j] = v; if (v < mn) mn = v; if (v > mx) mx = v; }
+        // 2) étirement de contraste (min→0, max→255) + légère courbe gamma
+        const range = Math.max(1, mx - mn);
+        for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+          let v = (g[j] - mn) / range; v = Math.pow(v, 0.8) * 255;
+          const o = v < 0 ? 0 : v > 255 ? 255 : v; px[i] = px[i + 1] = px[i + 2] = o;
+        }
+        ctx.putImageData(d, 0, 0);
+      } catch (e) {}
       URL.revokeObjectURL(url); resolve(c);
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image illisible.')); };
     img.src = url;
   });
 }
-// Adresse du transporteur / en-têtes à ne JAMAIS livrer (dépôt ICS, etc.).
-function optIsTransporter(s) { return /tilly sur seulles|inter colis services|18 rue de bayeux|cormelles le royal|fedex|avenue leclerc/.test(s); }
-// Isole la colonne DESTINATAIRE (gauche) d'une ligne de lettre de voiture.
-//  - séparateur de colonnes « ! » ou « | » → on garde la 1re vraie colonne ;
-//  - filet si l'OCR a fusionné les colonnes : on coupe au 1er marqueur
-//    expéditeur (Réf, Pays, ou un code postal étranger ≠ 14/61).
-function optLeftDest(line) {
-  const parts = String(line || '').split(/[!|¡]/).map((p) => p.trim());
-  let s;
-  if (parts.length >= 3) s = parts[1] || parts[0];        // "!dest!exp" → dest
-  else if (parts.length === 2) s = parts[0];              // "dest!exp"  → dest
-  else s = parts[0];
-  const mRef = s.search(/\br[ée]?f\b|pays\s*:/i);
-  const foreign = Array.from(s.matchAll(/\b(\d{2})\d{3}\b/g)).find((m) => m[1] !== '14' && m[1] !== '61');
-  let cut = s.length;
-  if (mRef >= 0) cut = Math.min(cut, mRef);
-  if (foreign) cut = Math.min(cut, foreign.index);
-  return s.slice(0, cut).replace(/\s+/g, ' ').trim();
+// Adresse du transporteur / expéditeurs récurrents à ne JAMAIS livrer.
+function optIsTransporter(s) { return /tilly sur seulles|inter colis|rue de bayeux|cormelles|fedex|avenue leclerc|erstein|saint priest|st priest/.test(s); }
+// Rue reconnue par mot-clé (tolère un préfixe collé par l'OCR : « AROUTE »).
+const OPT_STREET_RE = /(RUE|ROUTE|RTE|AVENUE|CHEMIN|IMPASSE|ALLEE|BOULEVARD|PLACE|QUAI|CLOS|COURS|MAIL|SQUARE|LOTISSEMENT|RESIDENCE)[\sA-Za-zÀ-ÿ'.\-]{2,}/i;
+// Coupe la partie expéditeur d'un fragment : marqueur (Réf/Pays/Instr/Cedex/BP),
+// CP étranger (≠ 14/61) ou long numéro (téléphone/réf). Nettoie la ponctuation.
+function optStripSender(s) {
+  let out = String(s || '').split(/[!|¡]/)[0];
+  let cut = out.length;
+  const mk = out.search(/r[ée]f|pays|instr|cedex|\bbp\b|div\s*:/i); if (mk >= 0) cut = Math.min(cut, mk);
+  let m; const re = /\d{5,}/g;
+  while ((m = re.exec(out))) { const f = m[0].slice(0, 2); if (f !== '14' && f !== '61') { cut = Math.min(cut, m.index); break; } }
+  return out.slice(0, cut).replace(/[^\wÀ-ÿ'\- ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
-// Lecture structurée d'une lettre de voiture FedEx (colonnes + blocs colis).
-// Chaque colis débute à « Soumis aux conditions générales de transport ».
-function optParseFedexSheet(text) {
-  const rawLines = String(text || '').split(/\n+/).filter((l) => l.trim().length);
-  if (!rawLines.some((l) => optNormLbl(l).includes('soumis aux conditions'))) return null;
-  // Coupe l'en-tête (jusqu'à la ligne d'entête de colonnes Destinataire/Expéditeur).
-  let start = 0;
-  for (let i = 0; i < rawLines.length; i++) { const low = optNormLbl(rawLines[i]); if (low.includes('destinataire') && low.includes('expediteur')) { start = i + 1; break; } }
-  const lines = rawLines.slice(start);
-  const left = lines.map(optLeftDest);
-  // Découpe en blocs colis.
-  const blocks = []; let cur = null;
-  for (let i = 0; i < lines.length; i++) {
-    if (optNormLbl(lines[i]).includes('soumis aux conditions')) { cur = []; blocks.push(cur); continue; }
-    if (cur) cur.push(left[i]);
+// Code postal 14xxx/61xxx tolérant : suivi d'une ville, jamais noyé dans un
+// long nombre (téléphone) — on rejette si 2 chiffres le précèdent directement.
+function optFindCP(s) {
+  const re = /(14|61)\d{3}/g; let m;
+  while ((m = re.exec(s))) {
+    const before = s.slice(Math.max(0, m.index - 2), m.index);
+    const next = s.charAt(m.index + 5);
+    const after = s.slice(m.index + 5, m.index + 5 + 30); // fenêtre large (padding fixe)
+    if (/\d{2}$/.test(before) || /\d/.test(next)) continue; // noyé dans un long nombre (tél/tracking)
+    if (!/[A-Za-zÀ-ÿ]{2}/.test(after)) continue;            // doit être suivi d'une ville
+    return { cp: m[0], idx: m.index };
   }
+  return null;
+}
+function optStreetFrom(line) { const m = String(line || '').match(OPT_STREET_RE); return m ? optStripSender(m[0]) : ''; }
+// Lecture d'une lettre de voiture FedEx (tolérante au bruit OCR). On ne retient
+// que le destinataire : rue (mot-clé) + CP 14/61 ville, en écartant l'en-tête,
+// le transporteur et les expéditeurs. Renvoie null si ce n'est pas une LV FedEx.
+function optParseFedexSheet(text) {
+  const raw = String(text || '').split(/\n+/).map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim().length);
+  const full = optNormLbl(raw.join(' '));
+  const isLV = (full.includes('destinataire') && full.includes('expediteur')) || full.includes('lettre de voiture') || full.includes('soumis aux conditions');
+  if (!isLV) return null;
+  // Coupe l'en-tête jusqu'à la ligne d'entête de colonnes, si trouvée.
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) { const l = optNormLbl(raw[i]); if (l.includes('destinataire') && l.includes('expediteur')) { start = i + 1; break; } }
+  const body = raw.slice(start);
   const found = [];
-  blocks.forEach((cells) => {
-    const ne = cells.map((c) => c.trim()).filter((c) => c.length && !optNormLbl(c).includes('soumis aux conditions'));
-    let ci = -1, cp = '';
-    for (let j = 0; j < ne.length; j++) { const m = ne[j].match(/\b(14|61)\d{3}\b/); if (m) { ci = j; cp = m[0]; } } // dernier CP 14/61 du bloc
-    if (ci < 0) return;
-    const cpLine = ne[ci], idx = cpLine.indexOf(cp);
-    const cityPart = (cp + ' ' + cpLine.slice(idx + cp.length)).replace(/\s+/g, ' ').trim();
-    let street = '';
-    for (let k = ci - 1; k >= 0; k--) { if (/[a-zA-Z]/.test(ne[k]) && !/^entrepot/i.test(ne[k])) { street = ne[k]; break; } }
-    const name = ne[0] && /[a-zA-Z]/.test(ne[0]) ? ne[0] : '';
+  for (let i = 0; i < body.length; i++) {
+    const cpm = optFindCP(body[i]); if (!cpm) continue;
+    const cityPart = optStripSender(body[i].slice(cpm.idx));
+    let street = optStreetFrom(body[i].slice(0, cpm.idx));
+    for (let k = i - 1; k >= Math.max(0, i - 3) && !street; k--) street = optStreetFrom(body[k]);
+    let name = '';
+    for (let k = i - 1; k >= Math.max(0, i - 4); k--) { const mm = body[k].match(/\b(SAS|SARL|SA|ETS|ETABLISSEMENT|FRIAL)[\sA-Za-zÀ-ÿ'.\-]{2,}/i); if (mm) { name = optStripSender(mm[0]); break; } }
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
-    if (cand.length < 6 || optIsTransporter(optNormLbl(cand))) return;
+    if (cand.length < 8 || optIsTransporter(optNormLbl(cand))) continue;
     found.push({ cand, pri: 0, name });
-  });
+  }
   return found;
 }
 // Lecture générique (autres transporteurs / étiquette simple) : lignes avec CP.
