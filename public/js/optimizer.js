@@ -334,14 +334,14 @@ function optNormLbl(s) { return String(s || '').toLowerCase().normalize('NFD').r
 // cumule les colis (« plusieurs colis possible »).
 function optAddStop(label, lat, lon, count, scanName) {
   const add = Math.max(1, count || 1);
-  const ck = optCompanyKey(scanName);
+  const hasName = !!optCompanyTokens(scanName).length;
   // Même point ET même entreprise → on cumule les colis. Entreprise différente
   // à la même adresse → NOUVEAU point de livraison (demande client).
   const dup = _opt.stops.find((s) => {
     const place = (Number.isFinite(s.lat) && optHaversine(s, { lat, lon }) < 30) || optNormLbl(s.label) === optNormLbl(label);
     if (!place) return false;
-    const sck = optCompanyKey(s.scanName || s.clientName || '');
-    if (ck && sck) return ck === sck || ck.includes(sck) || sck.includes(ck); // même société
+    const sName = s.scanName || s.clientName || '';
+    if (hasName && optCompanyTokens(sName).length) return optSameCompany(scanName, sName); // sociétés comparées
     return true; // au moins un sans nom → même point
   });
   if (dup) {
@@ -642,6 +642,7 @@ function optParseFedexSheet(text) {
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
     if (cand.length < 8 || optIsTransporter(optNormLbl(cand))) continue;
     found.push({ cand, pri: 0, name: blockName });
+    blockName = ''; // évite d'hériter ce nom si le bloc suivant a un « Soumis » illisible
   }
   return found;
 }
@@ -679,34 +680,52 @@ function optCompanyKey(name) {
     .filter((t) => t.length > 1 && !OPT_LEGAL.has(t));
   return toks.slice(0, 2).join(' ');
 }
-// Dédoublonnage : regroupe par ENTREPRISE + code postal (colis multiples d'un
-// même client), sinon par adresse. Deux entreprises différentes → 2 entrées.
-function optCandKey(x) {
-  const ck = optCompanyKey(x.name);
-  const cp = (String(x.cand).match(/\b(14|61)\d{3}\b/) || [])[0] || '';
-  return ck ? ('n:' + ck + '|' + cp) : ('a:' + optNormLbl(x.cand).replace(/\s+/g, ''));
+// Mots significatifs (≥5 lettres) du nom d'entreprise : servent à reconnaître
+// un même client malgré le bruit OCR (« JAGRI-BESSIN » et « laGRI-BESSIN »
+// partagent « bessin »). Les formes juridiques et mots trop courts sont exclus.
+function optCompanyTokens(name) {
+  return optNormLbl(name).split(' ').map((t) => t.replace(/[^a-zà-ÿ]/g, '')).filter((t) => t.length >= 5 && !OPT_LEGAL.has(t));
 }
+function optSameCompany(a, b) {
+  const ta = optCompanyTokens(a), tb = optCompanyTokens(b);
+  if (!ta.length || !tb.length) return false;
+  return ta.some((x) => tb.some((y) => x === y || x.includes(y) || y.includes(x)));
+}
+function optCandCP(cand) { return (String(cand).match(/(14|61)\d{3}/) || [])[0] || ''; }
+// Dédoublonnage : même ENTREPRISE (mot significatif commun) + même code postal
+// → un point, colis cumulés (tolère le bruit OCR sur le nom). Sans nom, on
+// regroupe par adresse identique. Entreprises différentes → points distincts.
 function optDedupCands(found) {
-  const map = new Map();
+  const groups = [];
   found.forEach((x) => {
-    const key = optCandKey(x);
-    const e = map.get(key);
-    if (e) { e.count++; if (x.pri < e.pri) e.pri = x.pri; if (!e.name && x.name) e.name = x.name; if (x.name && x.name.length > (e.name || '').length) e.name = x.name; }
-    else map.set(key, { cand: x.cand, count: 1, pri: x.pri, name: x.name || '' });
+    const cp = optCandCP(x.cand), toks = optCompanyTokens(x.name);
+    const addr = optNormLbl(x.cand).replace(/\s+/g, '');
+    let g = groups.find((G) => G.cp === cp && (
+      (toks.length && G.tokens.length && toks.some((t) => G.tokens.includes(t)))
+      || (!toks.length && !G.tokens.length && G.addr === addr)));
+    if (g) {
+      g.count++; if (x.pri < g.pri) g.pri = x.pri;
+      // Garde le nom le plus court mais lisible (moins de bruit expéditeur collé).
+      if (x.name && optNormLbl(x.name).length >= 3 && (!g.name || x.name.length < g.name.length)) g.name = x.name;
+      toks.forEach((t) => { if (!g.tokens.includes(t)) g.tokens.push(t); });
+    } else groups.push({ cand: x.cand, name: x.name || '', count: 1, pri: x.pri, cp, tokens: toks.slice(), addr });
   });
-  return Array.from(map.values()).sort((a, b) => a.pri - b.pri);
+  return groups.map((g) => ({ cand: g.cand, name: g.name, count: g.count, pri: g.pri })).sort((a, b) => a.pri - b.pri);
 }
-// Extrait les adresses candidates du texte OCR : lettre de voiture FedEx si
-// reconnue (colonnes destinataire/expéditeur), sinon lecture générique.
-function optParseAddresses(text, carrierId) {
+// Candidats bruts (avant regroupement) : LV FedEx si reconnue, sinon générique.
+function optParseRaw(text, carrierId) {
   const fedex = optParseFedexSheet(text);
-  return optDedupCands((fedex && fedex.length) ? fedex : optParseGeneric(text, carrierId));
+  return (fedex && fedex.length) ? fedex : optParseGeneric(text, carrierId);
+}
+// Extrait les adresses candidates du texte OCR (regroupées par entreprise).
+function optParseAddresses(text, carrierId) {
+  return optDedupCands(optParseRaw(text, carrierId));
 }
 async function optScan(fileOrFiles) {
   const files = (fileOrFiles && fileOrFiles.length != null && !(fileOrFiles instanceof File)) ? Array.from(fileOrFiles) : [fileOrFiles];
   const outEl = document.getElementById('opt-scan-out'); if (!outEl || !files.length) return;
   const multi = files.length > 1;
-  const merged = new Map(); let fullText = '';
+  let allRaw = []; let fullText = '';
   try {
     const T = await ensureTesseract();
     for (let n = 0; n < files.length; n++) {
@@ -715,12 +734,9 @@ async function optScan(fileOrFiles) {
       const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
       const text = (data && data.text) || '';
       fullText += (fullText ? '\n\n— — —\n\n' : '') + text;
-      optParseAddresses(text, _opt.carrier).forEach((c) => {
-        const key = optCandKey(c); const e = merged.get(key);
-        if (e) { e.count += c.count; if (c.name && c.name.length > (e.name || '').length) e.name = c.name; } else merged.set(key, Object.assign({}, c));
-      });
+      allRaw = allRaw.concat(optParseRaw(text, _opt.carrier)); // regroupement final commun à toutes les pages
     }
-    const cands = Array.from(merged.values()).sort((a, b) => a.pri - b.pri);
+    const cands = optDedupCands(allRaw);
     outEl.innerHTML = `
       <div class="card" style="margin-top:.6rem;background:#f8fafc">
         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)${multi ? ` · ${files.length} pages` : ''}</strong>
