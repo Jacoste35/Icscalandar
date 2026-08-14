@@ -4652,6 +4652,66 @@ app.get('/api/geo/reverse', authRequired, async (req, res) => {
   } catch (e) { res.json({ label: null }); }
 });
 
+// --- OCR par IA vision (lecture fiable des feuilles de tournée) ------------
+// Proxy serveur → API d'un modèle de vision (Anthropic Claude par défaut, qui
+// lit très bien ces lettres de voiture). Renvoie les DESTINATAIRES (14/61)
+// déjà structurés (nom, rue, CP, ville, colis). Activé uniquement si
+// OCR_API_KEY est défini ; sinon l'app utilise l'OCR embarqué (Tesseract).
+const OCR_API_KEY = process.env.OCR_API_KEY || '';
+const OCR_API_URL = process.env.OCR_API_URL || 'https://api.anthropic.com/v1/messages';
+const OCR_MODEL = process.env.OCR_MODEL || 'claude-sonnet-5';
+const OCR_PROMPT = `Tu lis une LETTRE DE VOITURE FedEx (bon de tournée de livraison), photographiée.
+Extrais UNIQUEMENT les adresses DESTINATAIRE (colonne « Destinataire », à gauche),
+et SEULEMENT celles situées dans le Calvados (code postal commençant par 14) ou l'Orne (61).
+IGNORE le transporteur (INTER COLIS SERVICES, 18 rue de Bayeux, 14250 Tilly-sur-Seulles),
+IGNORE FedEx et le centre de Cormelles-le-Royal, et IGNORE les EXPÉDITEURS (colonne de droite).
+Chaque colis commence par « Soumis aux conditions générales de transport ».
+Pour chaque point de livraison, donne : le nom du destinataire (entreprise ou personne),
+la rue (avec numéro si présent), le code postal, la ville, et le nombre de colis
+(champ « COLIS REMIS » s'il est lisible, sinon 1).
+Si la même société est livrée à deux rues différentes, fais-en deux points distincts.
+Réponds STRICTEMENT en JSON, sans aucun texte autour :
+{"points":[{"name":"","street":"","postalCode":"","city":"","colis":1}]}`;
+
+app.post('/api/geo/ocr', authRequired, async (req, res) => {
+  if (!OCR_API_KEY) return res.json({ enabled: false });
+  const b = req.body || {};
+  const img = String(b.image || '');
+  const m = img.match(/^data:(image\/[\w.+-]+);base64,(.+)$/);
+  const mediaType = m ? m[1] : 'image/jpeg';
+  const data = m ? m[2] : img;
+  if (!data || data.length < 100) return res.status(400).json({ error: 'Image manquante' });
+  try {
+    if (typeof fetch !== 'function') return res.json({ enabled: false });
+    const r = await fetch(OCR_API_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': OCR_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: OCR_MODEL,
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data } },
+          { type: 'text', text: OCR_PROMPT },
+        ] }],
+      }),
+    });
+    if (!r.ok) { const t = await r.text().catch(() => ''); return res.json({ enabled: true, ok: false, error: 'API ' + r.status, detail: t.slice(0, 300) }); }
+    const j = await r.json();
+    const txt = (j.content || []).filter((c) => c && c.type === 'text').map((c) => c.text).join('\n');
+    let parsed = null;
+    try { const jm = txt.match(/\{[\s\S]*\}/); parsed = JSON.parse(jm ? jm[0] : txt); } catch (e) {}
+    const pts = (parsed && Array.isArray(parsed.points)) ? parsed.points : [];
+    const points = pts.map((p) => ({
+      name: String(p.name || '').trim().slice(0, 120),
+      street: String(p.street || '').trim().slice(0, 160),
+      postalCode: String(p.postalCode || '').replace(/\D/g, '').slice(0, 5),
+      city: String(p.city || '').trim().slice(0, 80),
+      colis: Math.max(1, Math.min(99, parseInt(p.colis, 10) || 1)),
+    })).filter((p) => (p.postalCode.slice(0, 2) === '14' || p.postalCode.slice(0, 2) === '61') && (p.street || p.city));
+    res.json({ enabled: true, ok: true, points });
+  } catch (e) { res.json({ enabled: true, ok: false, error: String(e && e.message || e).slice(0, 200) }); }
+});
+
 // --- OSRM (temps/distances routiers réels) --------------------------------
 // Proxy serveur → instance OSRM (self-hébergée sur le VPS, recommandé, via
 // la variable d'env OSRM_URL, ex. https://osrm.mon-domaine.fr). Tant que
