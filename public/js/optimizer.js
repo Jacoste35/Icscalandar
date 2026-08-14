@@ -587,7 +587,7 @@ function optPrepImage(file) {
 // Adresse du transporteur / expéditeurs récurrents à ne JAMAIS livrer.
 function optIsTransporter(s) { return /tilly sur seulles|inter colis|rue de bayeux|cormelles|fedex|avenue leclerc|erstein|saint priest|st priest/.test(s); }
 // Rue reconnue par mot-clé (tolère un préfixe collé par l'OCR : « AROUTE »).
-const OPT_STREET_RE = /(RUE|ROUTE|RTE|AVENUE|CHEMIN|IMPASSE|ALLEE|BOULEVARD|PLACE|QUAI|CLOS|COURS|MAIL|SQUARE|LOTISSEMENT|RESIDENCE|ZONE|ZAC|PARC|LIEU|FAUBOURG|SENTIER|PASSAGE|ROND[\s\-]?POINT)[\sA-Za-zÀ-ÿ'.\-]{2,}/i;
+const OPT_STREET_RE = /(RUE|ROUTE|RTE|AVENUE|CHEMIN|IMPASSE|ALLEE|BOULEVARD|PLACE|QUAI|CLOS|COURS|MAIL|SQUARE|LOTISSEMENT|RESIDENCE|ZONE|ZAC|ZA|ZI|PARC|LIEU|FAUBOURG|SENTIER|PASSAGE|ROND[\s\-]?POINT)[\sA-Za-zÀ-ÿ'.\-]{2,}/i;
 // Coupe la partie expéditeur d'un fragment : marqueur (Réf/Pays/Instr/Cedex/BP),
 // CP étranger (≠ 14/61) ou long numéro (téléphone/réf). Nettoie la ponctuation.
 function optStripSender(s) {
@@ -686,29 +686,46 @@ function optCompanyKey(name) {
 function optCompanyTokens(name) {
   return optNormLbl(name).split(' ').map((t) => t.replace(/[^a-zà-ÿ]/g, '')).filter((t) => t.length >= 5 && !OPT_LEGAL.has(t));
 }
+function optShareTok(a, b) { return a.some((x) => b.some((y) => x === y || (x.length >= 5 && y.length >= 5 && (x.includes(y) || y.includes(x))))); }
 function optSameCompany(a, b) {
   const ta = optCompanyTokens(a), tb = optCompanyTokens(b);
   if (!ta.length || !tb.length) return false;
-  return ta.some((x) => tb.some((y) => x === y || x.includes(y) || y.includes(x)));
+  return optShareTok(ta, tb);
 }
 function optCandCP(cand) { return (String(cand).match(/(14|61)\d{3}/) || [])[0] || ''; }
-// Dédoublonnage : même ENTREPRISE (mot significatif commun) + même code postal
-// → un point, colis cumulés (tolère le bruit OCR sur le nom). Sans nom, on
-// regroupe par adresse identique. Entreprises différentes → points distincts.
+// Mots significatifs de la RUE (avant le CP) — hors mots génériques de voie —
+// pour distinguer deux adresses d'une même société (ex. AGRI BESSIN Rue Jean
+// Mermoz vs ZA Bayeux Intercom).
+const OPT_STREET_GENERIC = new Set(['rue', 'route', 'rte', 'avenue', 'av', 'chemin', 'che', 'impasse', 'imp', 'allee', 'all', 'boulevard', 'bd', 'place', 'pl', 'quai', 'clos', 'cours', 'mail', 'square', 'lotissement', 'lot', 'residence', 'res', 'zone', 'zac', 'parc', 'lieu', 'za', 'zi', 'faubourg', 'sentier', 'passage', 'rond', 'point', 'de', 'du', 'des', 'la', 'le', 'les', 'saint', 'st', 'ste']);
+function optStreetTokens(cand) {
+  const cp = optCandCP(cand); const s = String(cand); const before = cp ? s.slice(0, s.indexOf(cp)) : s;
+  return optNormLbl(before).split(' ').map((t) => t.replace(/[^a-zà-ÿ0-9]/g, '')).filter((t) => t.length >= 3 && !OPT_STREET_GENERIC.has(t) && !/^\d+$/.test(t));
+}
+// Regroupement des colis en points de livraison. Deux candidats forment le même
+// point s'ils ont le même CP, ne divergent NI par la société NI par la rue, et
+// partagent au moins un signal (même société, même rue, ou même adresse).
+// → même société + même rue = 1 point (colis cumulés) ; même société + rue
+//   différente = 2 points ; société différente = 2 points.
 function optDedupCands(found) {
   const groups = [];
   found.forEach((x) => {
-    const cp = optCandCP(x.cand), toks = optCompanyTokens(x.name);
+    const cp = optCandCP(x.cand), xC = optCompanyTokens(x.name), xS = optStreetTokens(x.cand);
     const addr = optNormLbl(x.cand).replace(/\s+/g, '');
-    let g = groups.find((G) => G.cp === cp && (
-      (toks.length && G.tokens.length && toks.some((t) => G.tokens.includes(t)))
-      || (!toks.length && !G.tokens.length && G.addr === addr)));
+    const g = groups.find((G) => {
+      if (G.cp !== cp) return false;
+      const cKnownDiff = xC.length && G.cTokens.length && !optShareTok(xC, G.cTokens);
+      const sKnownDiff = xS.length && G.sTokens.length && !optShareTok(xS, G.sTokens);
+      if (cKnownDiff || sKnownDiff) return false;               // société OU rue clairement différentes
+      const cMatch = xC.length && G.cTokens.length && optShareTok(xC, G.cTokens);
+      const sMatch = xS.length && G.sTokens.length && optShareTok(xS, G.sTokens);
+      return cMatch || sMatch || G.addr === addr;               // au moins un signal positif
+    });
     if (g) {
       g.count++; if (x.pri < g.pri) g.pri = x.pri;
-      // Garde le nom le plus court mais lisible (moins de bruit expéditeur collé).
       if (x.name && optNormLbl(x.name).length >= 3 && (!g.name || x.name.length < g.name.length)) g.name = x.name;
-      toks.forEach((t) => { if (!g.tokens.includes(t)) g.tokens.push(t); });
-    } else groups.push({ cand: x.cand, name: x.name || '', count: 1, pri: x.pri, cp, tokens: toks.slice(), addr });
+      xC.forEach((t) => { if (!g.cTokens.includes(t)) g.cTokens.push(t); });
+      xS.forEach((t) => { if (!g.sTokens.includes(t)) g.sTokens.push(t); });
+    } else groups.push({ cand: x.cand, name: x.name || '', count: 1, pri: x.pri, cp, cTokens: xC.slice(), sTokens: xS.slice(), addr });
   });
   return groups.map((g) => ({ cand: g.cand, name: g.name, count: g.count, pri: g.pri })).sort((a, b) => a.pri - b.pri);
 }
