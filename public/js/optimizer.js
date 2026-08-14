@@ -283,7 +283,7 @@ function optRenderBody() {
       ${active ? `<div class="card opt-active">
         <div class="opt-active-badge">Arrêt en cours ${active.skipped ? '<span class="pill warn">passé — à revenir</span>' : ''}</div>
         <div class="opt-active-addr">${esc(active.label)}</div>
-        ${active.clientName ? `<div class="help">🏢 <strong>${esc(active.clientName)}</strong>${optHoursBadge(active)}</div>` : ''}
+        ${active.clientName ? `<div class="help">🏢 <strong>${esc(active.clientName)}</strong>${optHoursBadge(active)}</div>` : (active.scanName ? `<div class="help">🏢 <strong>${esc(active.scanName)}</strong></div>` : '')}
         ${optActiveEtaHTML(active)}
         <div class="opt-active-actions">
           <button class="btn ok" data-deliver="${active.id}">✅ Livrer</button>
@@ -310,18 +310,22 @@ function optRenderBody() {
   }
 }
 
+// Nom affiché : client pro reconnu, sinon nom lu sur l'étiquette (destinataire).
+function optNameBadge(s) {
+  if (s.clientName) return ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>`;
+  if (s.scanName) return ` <span class="pill muted">🏢 ${esc(s.scanName)}</span>`;
+  return '';
+}
 function optStopRow(s, i) {
-  const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
   const di = optDayInfo(s);
   const today = optTodayHours(s.hours);
   const hrs = di.closedToday ? ` <span class="pill danger">🔒 fermé auj.</span>` : (today ? ` <span class="help">⏰ ${esc(today)}</span>` : '');
   const proBtn = s.clientName ? '' : `<button class="btn ghost sm" data-pro="${s.id}" title="Enregistrer comme client pro">🏢</button>`;
-  return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${optPkgBadge(s)}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
+  return `<div class="opt-row"><span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${optNameBadge(s)}${optPkgBadge(s)}${hrs}</span>${proBtn}<button class="opt-del" data-del="${s.id}" title="Retirer">✕</button></div>`;
 }
 function optRunRow(s, i, activeId) {
-  const pro = s.clientName ? ` <span class="pill ok">🏢 ${esc(s.clientName)}</span>` : '';
   return `<div class="opt-row ${s.id === activeId ? 'active' : ''} ${s.skipped ? 'skipped' : ''}" data-activate="${s.id}">
-    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${pro}${optPkgBadge(s)}${optEtaPill(s)}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
+    <span class="opt-num">${i + 1}</span><span class="opt-lbl">${esc(s.label)}${optNameBadge(s)}${optPkgBadge(s)}${optEtaPill(s)}${s.skipped ? ' <span class="pill warn">passé</span>' : ''}</span></div>`;
 }
 // Normalise un libellé d'adresse (minuscules, sans accents ni ponctuation).
 function optNormLbl(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim(); }
@@ -330,16 +334,25 @@ function optNormLbl(s) { return String(s || '').toLowerCase().normalize('NFD').r
 // cumule les colis (« plusieurs colis possible »).
 function optAddStop(label, lat, lon, count, scanName) {
   const add = Math.max(1, count || 1);
-  const dup = _opt.stops.find((s) => (Number.isFinite(s.lat) && optHaversine(s, { lat, lon }) < 30) || optNormLbl(s.label) === optNormLbl(label));
+  const ck = optCompanyKey(scanName);
+  // Même point ET même entreprise → on cumule les colis. Entreprise différente
+  // à la même adresse → NOUVEAU point de livraison (demande client).
+  const dup = _opt.stops.find((s) => {
+    const place = (Number.isFinite(s.lat) && optHaversine(s, { lat, lon }) < 30) || optNormLbl(s.label) === optNormLbl(label);
+    if (!place) return false;
+    const sck = optCompanyKey(s.scanName || s.clientName || '');
+    if (ck && sck) return ck === sck || ck.includes(sck) || sck.includes(ck); // même société
+    return true; // au moins un sans nom → même point
+  });
   if (dup) {
     dup.packages = (dup.packages || 1) + add; if (scanName && !dup.scanName) dup.scanName = scanName; optSave(_opt);
     if (_opt.optimized) optRenderBody(); else optRefreshList();
-    if (typeof toast === 'function') toast(`Adresse déjà planifiée → ${dup.packages} colis possibles.`, 'ok');
+    if (typeof toast === 'function') toast(`${dup.clientName || dup.scanName || 'Adresse'} : ${dup.packages} colis possibles.`, 'ok');
     return dup;
   }
   const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, packages: add, scanName: scanName || '', delivered: false, skipped: false };
   _opt.stops.push(stop); optSave(_opt);
-  api('GET', `/clients/match?lat=${lat}&lon=${lon}&name=${encodeURIComponent(label)}`).then((r) => {
+  api('GET', `/clients/match?lat=${lat}&lon=${lon}&name=${encodeURIComponent(scanName || label)}`).then((r) => {
     if (r && r.client) { stop.clientId = r.client.id; stop.clientName = r.client.name; stop.hours = r.client.horaires || ''; optSave(_opt); if (_opt.optimized) optRenderBody(); else optRefreshList(); }
   }).catch(() => {});
   return stop;
@@ -574,11 +587,12 @@ function optPrepImage(file) {
 // Adresse du transporteur / expéditeurs récurrents à ne JAMAIS livrer.
 function optIsTransporter(s) { return /tilly sur seulles|inter colis|rue de bayeux|cormelles|fedex|avenue leclerc|erstein|saint priest|st priest/.test(s); }
 // Rue reconnue par mot-clé (tolère un préfixe collé par l'OCR : « AROUTE »).
-const OPT_STREET_RE = /(RUE|ROUTE|RTE|AVENUE|CHEMIN|IMPASSE|ALLEE|BOULEVARD|PLACE|QUAI|CLOS|COURS|MAIL|SQUARE|LOTISSEMENT|RESIDENCE)[\sA-Za-zÀ-ÿ'.\-]{2,}/i;
+const OPT_STREET_RE = /(RUE|ROUTE|RTE|AVENUE|CHEMIN|IMPASSE|ALLEE|BOULEVARD|PLACE|QUAI|CLOS|COURS|MAIL|SQUARE|LOTISSEMENT|RESIDENCE|ZONE|ZAC|PARC|LIEU|FAUBOURG|SENTIER|PASSAGE|ROND[\s\-]?POINT)[\sA-Za-zÀ-ÿ'.\-]{2,}/i;
 // Coupe la partie expéditeur d'un fragment : marqueur (Réf/Pays/Instr/Cedex/BP),
 // CP étranger (≠ 14/61) ou long numéro (téléphone/réf). Nettoie la ponctuation.
 function optStripSender(s) {
-  let out = String(s || '').split(/[!|¡]/)[0];
+  const segs = String(s || '').split(/[!|¡]/).map((x) => x.trim());
+  let out = segs.find((x) => /[A-Za-zÀ-ÿ]{2}/.test(x)) || segs.find((x) => x.length) || '';
   let cut = out.length;
   const mk = out.search(/r[ée]f|pays|instr|cedex|\bbp\b|div\s*:/i); if (mk >= 0) cut = Math.min(cut, mk);
   let m; const re = /\d{5,}/g;
@@ -613,16 +627,21 @@ function optParseFedexSheet(text) {
   for (let i = 0; i < raw.length; i++) { const l = optNormLbl(raw[i]); if (l.includes('destinataire') && l.includes('expediteur')) { start = i + 1; break; } }
   const body = raw.slice(start);
   const found = [];
+  // Le nom du destinataire est la 1re ligne juste après « Soumis aux conditions ».
+  let blockName = '';
   for (let i = 0; i < body.length; i++) {
+    if (optNormLbl(body[i]).includes('soumis aux conditions')) {
+      let nm = optStripSender(body[i + 1] || '').replace(/^[^A-Za-zÀ-ÿ]+/, '').trim(); const nnm = optNormLbl(nm);
+      if (!nm || OPT_STREET_RE.test(nm) || /\b(14|61)\d{3}\b/.test(nm) || optIsTransporter(nnm) || nnm.length < 3) nm = '';
+      blockName = nm; continue;
+    }
     const cpm = optFindCP(body[i]); if (!cpm) continue;
     const cityPart = optStripSender(body[i].slice(cpm.idx));
     let street = optStreetFrom(body[i].slice(0, cpm.idx));
     for (let k = i - 1; k >= Math.max(0, i - 3) && !street; k--) street = optStreetFrom(body[k]);
-    let name = '';
-    for (let k = i - 1; k >= Math.max(0, i - 4); k--) { const mm = body[k].match(/\b(SAS|SARL|SA|ETS|ETABLISSEMENT|FRIAL)[\sA-Za-zÀ-ÿ'.\-]{2,}/i); if (mm) { name = optStripSender(mm[0]); break; } }
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
     if (cand.length < 8 || optIsTransporter(optNormLbl(cand))) continue;
-    found.push({ cand, pri: 0, name });
+    found.push({ cand, pri: 0, name: blockName });
   }
   return found;
 }
@@ -642,18 +661,37 @@ function optParseGeneric(text, carrierId) {
     const cityPart = (cp + ' ' + lines[i].slice(idx + m[0].length)).replace(/\s+/g, ' ').trim();
     let street = lines[i].slice(0, idx).trim();
     if (!street && i > 0) street = lines[i - 1];
+    // Nom du destinataire : ligne au-dessus de la rue qui n'est ni une rue ni un CP.
+    let name = '';
+    for (let k = i - 1; k >= Math.max(0, i - 3); k--) { const t = lines[k]; if (t && /[a-zA-ZÀ-ÿ]{3}/.test(t) && !OPT_STREET_RE.test(t) && !/\b(14|61)\d{3}\b/.test(t) && !optIsTransporter(optNormLbl(t))) { name = t; break; } }
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
-    if (cand.length > 6 && !optIsTransporter(optNormLbl(cand))) found.push({ cand, pri: (anchor >= 0 && i > anchor) ? 0 : 1 });
+    if (cand.length > 6 && !optIsTransporter(optNormLbl(cand))) found.push({ cand, pri: (anchor >= 0 && i > anchor) ? 0 : 1, name });
   }
   return found;
 }
-// Dédoublonnage insensible aux espaces + comptage (colis multiples).
+// Clé « entreprise » : 1-2 mots significatifs du nom, hors formes juridiques.
+// Sert à distinguer deux sociétés d'une même rue et à regrouper les colis
+// d'un même client (tolère la variance OCR sur les mots secondaires).
+const OPT_LEGAL = new Set(['sas', 'sasu', 'sarl', 'sa', 'eurl', 'sci', 'snc', 'scop', 'ets', 'etablissement', 'etablissements', 'ste', 'societe', 'sté', 'ent', 'entreprise', 'sav', 'service', 'services', 'maintenance', 'div', 'france']);
+function optCompanyKey(name) {
+  const toks = optNormLbl(name).split(' ')
+    .map((t) => t.replace(/[^a-zà-ÿ]/g, '')) // enlève chiffres/bruit collés (ex. « 1sas » → « sas »)
+    .filter((t) => t.length > 1 && !OPT_LEGAL.has(t));
+  return toks.slice(0, 2).join(' ');
+}
+// Dédoublonnage : regroupe par ENTREPRISE + code postal (colis multiples d'un
+// même client), sinon par adresse. Deux entreprises différentes → 2 entrées.
+function optCandKey(x) {
+  const ck = optCompanyKey(x.name);
+  const cp = (String(x.cand).match(/\b(14|61)\d{3}\b/) || [])[0] || '';
+  return ck ? ('n:' + ck + '|' + cp) : ('a:' + optNormLbl(x.cand).replace(/\s+/g, ''));
+}
 function optDedupCands(found) {
   const map = new Map();
   found.forEach((x) => {
-    const key = optNormLbl(x.cand).replace(/\s+/g, '');
+    const key = optCandKey(x);
     const e = map.get(key);
-    if (e) { e.count++; if (x.pri < e.pri) e.pri = x.pri; if (!e.name && x.name) e.name = x.name; }
+    if (e) { e.count++; if (x.pri < e.pri) e.pri = x.pri; if (!e.name && x.name) e.name = x.name; if (x.name && x.name.length > (e.name || '').length) e.name = x.name; }
     else map.set(key, { cand: x.cand, count: 1, pri: x.pri, name: x.name || '' });
   });
   return Array.from(map.values()).sort((a, b) => a.pri - b.pri);
@@ -678,8 +716,8 @@ async function optScan(fileOrFiles) {
       const text = (data && data.text) || '';
       fullText += (fullText ? '\n\n— — —\n\n' : '') + text;
       optParseAddresses(text, _opt.carrier).forEach((c) => {
-        const key = optNormLbl(c.cand).replace(/\s+/g, ''); const e = merged.get(key);
-        if (e) { e.count += c.count; if (!e.name && c.name) e.name = c.name; } else merged.set(key, Object.assign({}, c));
+        const key = optCandKey(c); const e = merged.get(key);
+        if (e) { e.count += c.count; if (c.name && c.name.length > (e.name || '').length) e.name = c.name; } else merged.set(key, Object.assign({}, c));
       });
     }
     const cands = Array.from(merged.values()).sort((a, b) => a.pri - b.pri);
@@ -688,7 +726,7 @@ async function optScan(fileOrFiles) {
         <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)${multi ? ` · ${files.length} pages` : ''}</strong>
           ${cands.length ? '<button class="btn accent sm" id="opt-scan-all">Tout ajouter</button>' : ''}
           <button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
-        ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${esc(c.cand)}${c.count > 1 ? ` <span class="pill warn">📦 plusieurs colis possible (${c.count})</span>` : ''}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
+        ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${c.name ? `<strong>🏢 ${esc(c.name)}</strong><br>` : ''}${esc(c.cand)}${c.count > 1 ? ` <span class="pill warn">📦 plusieurs colis possible (${c.count})</span>` : ''}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
           : '<p class="help">Aucune adresse (CP 14/61) reconnue. Utilisez la saisie manuelle ci-dessus ou reprenez la photo bien cadrée.</p>'}
         <details style="margin-top:.4rem"><summary class="help">Texte lu par l’OCR</summary><pre class="opt-ocrtext">${esc(fullText || '(vide)')}</pre></details>
       </div>`;
