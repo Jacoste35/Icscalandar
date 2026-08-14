@@ -555,6 +555,29 @@ function ensureTesseract() {
   });
   return _tessPromise;
 }
+// Reconnaissance Tesseract avec les modèles HAUTE PRÉCISION (LSTM « best »,
+// gratuits) et préservation des espaces de colonnes. Repli automatique sur le
+// mode simple si le worker « best » échoue (modèle indisponible, etc.).
+let _tessWorker = null, _tessPct = null, _optOcrAi = null;
+async function optTesseractText(canvas, onPct) {
+  const T = await ensureTesseract();
+  try {
+    if (!_tessWorker) {
+      _tessWorker = await T.createWorker('fra', 1, {
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0_best', // modèles haute précision
+        logger: (m) => { if (m.status === 'recognizing text' && _tessPct) _tessPct(m.progress); },
+      });
+      try { await _tessWorker.setParameters({ preserve_interword_spaces: '1' }); } catch (e) {}
+    }
+    _tessPct = onPct;
+    const { data } = await _tessWorker.recognize(canvas);
+    return (data && data.text) || '';
+  } catch (e) {
+    _tessWorker = null; // repli sur l'API simple (modèles standard)
+    const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') onPct(m.progress); } });
+    return (data && data.text) || '';
+  }
+}
 // Prépare la photo pour l'OCR : agrandit (max 2200 px), passe en niveaux de
 // gris puis étire le contraste (feuilles carbone peu contrastées) → texte net.
 function optPrepImage(file) {
@@ -758,7 +781,7 @@ async function optScan(fileOrFiles) {
   const files = (fileOrFiles && fileOrFiles.length != null && !(fileOrFiles instanceof File)) ? Array.from(fileOrFiles) : [fileOrFiles];
   const outEl = document.getElementById('opt-scan-out'); if (!outEl || !files.length) return;
   const multi = files.length > 1;
-  let allRaw = []; let fullText = ''; let aiMode = null, usedAI = false; let T = null;
+  let allRaw = []; let fullText = ''; let aiMode = _optOcrAi; let usedAI = false; // _optOcrAi : null=inconnu, false=OCR IA absent (gratuit only), true=présent
   try {
     for (let n = 0; n < files.length; n++) {
       const pg = multi ? `de la page ${n + 1}/${files.length}` : 'de l’image';
@@ -768,21 +791,19 @@ async function optScan(fileOrFiles) {
         try {
           const b64 = await optImageToBase64(files[n]);
           const r = await api('POST', '/geo/ocr', { image: b64, carrier: _opt.carrier });
-          if (r && r.enabled === false) { aiMode = false; } // non configuré → bascule Tesseract
+          if (r && r.enabled === false) { aiMode = false; _optOcrAi = false; } // non configuré → OCR gratuit
           else if (r && r.ok && Array.isArray(r.points)) {
-            aiMode = true; usedAI = true;
+            aiMode = true; _optOcrAi = true; usedAI = true;
             r.points.forEach((p) => { const cand = [p.street, p.postalCode, p.city].filter(Boolean).join(' ').trim(); if (cand) allRaw.push({ cand, name: p.name || '', count: p.colis || 1, pri: 0 }); });
             fullText += (fullText ? '\n\n— — —\n\n' : '') + `[IA] ${r.points.map((p) => `${p.name || '?'} — ${[p.street, p.postalCode, p.city].filter(Boolean).join(' ')}${p.colis > 1 ? ' ×' + p.colis : ''}`).join('\n')}`;
             continue;
           } else { aiMode = true; } // IA active mais échec sur cette page → on tente Tesseract en secours
         } catch (e) { /* réseau → Tesseract */ }
       }
-      // 2) Repli OCR embarqué (Tesseract).
+      // 2) OCR embarqué gratuit (Tesseract, modèles haute précision).
       outEl.innerHTML = `<div class="opt-scanning"><div class="spin"></div> Analyse ${pg}… <span id="opt-scan-pct">0%</span></div>`;
-      if (!T) T = await ensureTesseract();
       const canvas = await optPrepImage(files[n]);
-      const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
-      const text = (data && data.text) || '';
+      const text = await optTesseractText(canvas, (p) => { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(p * 100) + '%'; });
       fullText += (fullText ? '\n\n— — —\n\n' : '') + text;
       allRaw = allRaw.concat(optParseRaw(text, _opt.carrier));
     }
