@@ -240,8 +240,14 @@ function optRenderBody() {
         <div id="opt-startinfo" class="opt-startinfo">${optStartInfoHTML(st.start)}</div>
         <label style="margin-top:.6rem">Ajouter un arrêt (adresse)</label>
         <div class="opt-search"><input id="opt-addr" placeholder="ex. 12 rue de Bayeux, Caen" autocomplete="off"><div id="opt-sug" class="opt-sug"></div></div>
-        <div style="margin-top:.6rem"><button class="btn accent sm" id="opt-scan">📷 Scanner une étiquette / feuille de tournée</button>
-          <input type="file" id="opt-scan-file" accept="image/*" capture="environment" style="display:none"></div>
+        <label style="margin-top:.6rem">Scanner une étiquette / feuille de tournée</label>
+        <div class="opt-scanbtns">
+          <button class="btn accent sm" id="opt-scan-cam">📷 Prendre en photo</button>
+          <button class="btn ghost sm" id="opt-scan-gal">🖼️ Depuis ma pellicule</button>
+          <input type="file" id="opt-scan-cam-file" accept="image/*" capture="environment" style="display:none">
+          <input type="file" id="opt-scan-gal-file" accept="image/*" multiple style="display:none">
+        </div>
+        <p class="help" style="margin:.3rem 0 0">Feuille FedEx sur plusieurs pages ? Sélectionnez toutes les photos d'un coup depuis la pellicule.</p>
         <div id="opt-scan-out"></div>
         <p class="help">Recherche limitée au <strong>Calvados (14)</strong> et à l'<strong>Orne (61)</strong>.${st.carrier ? ` Étiquettes : <strong>${esc(optCarrier(st.carrier).name)}</strong>.` : ''}</p>
       </div>
@@ -256,8 +262,10 @@ function optRenderBody() {
     const gps = document.getElementById('opt-gps'); if (gps) gps.onclick = optUseGps;
     const clr = document.getElementById('opt-clear'); if (clr) clr.onclick = () => { if (confirm('Effacer tous les arrêts ?')) { st.stops = []; optSave(st); optRenderBody(); } };
     const run = document.getElementById('opt-run'); if (run) run.onclick = () => optRun();
-    const scanBtn = document.getElementById('opt-scan'), scanFile = document.getElementById('opt-scan-file');
-    if (scanBtn && scanFile) { scanBtn.onclick = () => scanFile.click(); scanFile.onchange = () => { const f = scanFile.files && scanFile.files[0]; if (f) optScan(f); scanFile.value = ''; }; }
+    const camBtn = document.getElementById('opt-scan-cam'), camFile = document.getElementById('opt-scan-cam-file');
+    if (camBtn && camFile) { camBtn.onclick = () => camFile.click(); camFile.onchange = () => { const f = camFile.files && camFile.files[0]; if (f) optScan(f); camFile.value = ''; }; }
+    const galBtn = document.getElementById('opt-scan-gal'), galFile = document.getElementById('opt-scan-gal-file');
+    if (galBtn && galFile) { galBtn.onclick = () => galFile.click(); galFile.onchange = () => { const fs = galFile.files; if (fs && fs.length) optScan(fs); galFile.value = ''; }; }
     body.querySelectorAll('[data-carrier]').forEach((b) => b.onclick = () => { st.carrier = (st.carrier === b.dataset.carrier) ? null : b.dataset.carrier; optSave(st); optRenderBody(); });
     const dep = document.getElementById('opt-depart'); if (dep) dep.onchange = () => { const p = dep.value.split(':').map(Number); if (Number.isFinite(p[0])) { st.departMin = p[0] * 60 + (p[1] || 0); optSave(st); } };
     const sv = document.getElementById('opt-service'); if (sv) sv.onchange = () => { const v = parseFloat(sv.value); st.serviceMin = Math.min(30, Math.max(0, Number.isFinite(v) ? v : 2.5)); optSave(st); };
@@ -320,16 +328,16 @@ function optNormLbl(s) { return String(s || '').toLowerCase().normalize('NFD').r
 // Ajoute un arrêt puis tente de reconnaître un client pro (proximité + nom).
 // Dédoublonnage : même point (≤30 m) ou même adresse → un seul arrêt, on
 // cumule les colis (« plusieurs colis possible »).
-function optAddStop(label, lat, lon, count) {
+function optAddStop(label, lat, lon, count, scanName) {
   const add = Math.max(1, count || 1);
   const dup = _opt.stops.find((s) => (Number.isFinite(s.lat) && optHaversine(s, { lat, lon }) < 30) || optNormLbl(s.label) === optNormLbl(label));
   if (dup) {
-    dup.packages = (dup.packages || 1) + add; optSave(_opt);
+    dup.packages = (dup.packages || 1) + add; if (scanName && !dup.scanName) dup.scanName = scanName; optSave(_opt);
     if (_opt.optimized) optRenderBody(); else optRefreshList();
     if (typeof toast === 'function') toast(`Adresse déjà planifiée → ${dup.packages} colis possibles.`, 'ok');
     return dup;
   }
-  const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, packages: add, delivered: false, skipped: false };
+  const stop = { id: 'st_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), label, lat, lon, packages: add, scanName: scanName || '', delivered: false, skipped: false };
   _opt.stops.push(stop); optSave(_opt);
   api('GET', `/clients/match?lat=${lat}&lon=${lon}&name=${encodeURIComponent(label)}`).then((r) => {
     if (r && r.client) { stop.clientId = r.client.id; stop.clientName = r.client.name; stop.hours = r.client.horaires || ''; optSave(_opt); if (_opt.optimized) optRenderBody(); else optRefreshList(); }
@@ -452,7 +460,7 @@ function optRegisterPro(id) {
   modal({
     title: '🏢 Enregistrer un client pro',
     bodyHTML: `<p class="help">${esc(s.label)}</p>
-      <label>Nom de l'établissement *</label><input id="pro-name" placeholder="ex. Établissement Passard" value="${esc(s.clientName || '')}">
+      <label>Nom de l'établissement *</label><input id="pro-name" placeholder="ex. Établissement Passard" value="${esc(s.clientName || s.scanName || '')}">
       <div class="help" id="pro-sugg" style="margin:.25rem 0"></div>
       <label style="margin-top:.5rem">Horaires d'ouverture <span class="help">— un raccourci puis ajustez</span></label>
       ${optHoursEditorHTML(s.hours)}
@@ -550,13 +558,63 @@ function optPrepImage(file) {
     img.src = url;
   });
 }
-// Extrait des adresses candidates du texte OCR (lignes avec un CP 14xxx/61xxx).
-// Template transporteur : si un « anchor » (mot-clé destinataire) est trouvé, on
-// privilégie les adresses situées APRÈS (bloc destinataire, pas expéditeur).
-function optParseAddresses(text, carrierId) {
+// Adresse du transporteur / en-têtes à ne JAMAIS livrer (dépôt ICS, etc.).
+function optIsTransporter(s) { return /tilly sur seulles|inter colis services|18 rue de bayeux|cormelles le royal|fedex|avenue leclerc/.test(s); }
+// Isole la colonne DESTINATAIRE (gauche) d'une ligne de lettre de voiture.
+//  - séparateur de colonnes « ! » ou « | » → on garde la 1re vraie colonne ;
+//  - filet si l'OCR a fusionné les colonnes : on coupe au 1er marqueur
+//    expéditeur (Réf, Pays, ou un code postal étranger ≠ 14/61).
+function optLeftDest(line) {
+  const parts = String(line || '').split(/[!|¡]/).map((p) => p.trim());
+  let s;
+  if (parts.length >= 3) s = parts[1] || parts[0];        // "!dest!exp" → dest
+  else if (parts.length === 2) s = parts[0];              // "dest!exp"  → dest
+  else s = parts[0];
+  const mRef = s.search(/\br[ée]?f\b|pays\s*:/i);
+  const foreign = Array.from(s.matchAll(/\b(\d{2})\d{3}\b/g)).find((m) => m[1] !== '14' && m[1] !== '61');
+  let cut = s.length;
+  if (mRef >= 0) cut = Math.min(cut, mRef);
+  if (foreign) cut = Math.min(cut, foreign.index);
+  return s.slice(0, cut).replace(/\s+/g, ' ').trim();
+}
+// Lecture structurée d'une lettre de voiture FedEx (colonnes + blocs colis).
+// Chaque colis débute à « Soumis aux conditions générales de transport ».
+function optParseFedexSheet(text) {
+  const rawLines = String(text || '').split(/\n+/).filter((l) => l.trim().length);
+  if (!rawLines.some((l) => optNormLbl(l).includes('soumis aux conditions'))) return null;
+  // Coupe l'en-tête (jusqu'à la ligne d'entête de colonnes Destinataire/Expéditeur).
+  let start = 0;
+  for (let i = 0; i < rawLines.length; i++) { const low = optNormLbl(rawLines[i]); if (low.includes('destinataire') && low.includes('expediteur')) { start = i + 1; break; } }
+  const lines = rawLines.slice(start);
+  const left = lines.map(optLeftDest);
+  // Découpe en blocs colis.
+  const blocks = []; let cur = null;
+  for (let i = 0; i < lines.length; i++) {
+    if (optNormLbl(lines[i]).includes('soumis aux conditions')) { cur = []; blocks.push(cur); continue; }
+    if (cur) cur.push(left[i]);
+  }
+  const found = [];
+  blocks.forEach((cells) => {
+    const ne = cells.map((c) => c.trim()).filter((c) => c.length && !optNormLbl(c).includes('soumis aux conditions'));
+    let ci = -1, cp = '';
+    for (let j = 0; j < ne.length; j++) { const m = ne[j].match(/\b(14|61)\d{3}\b/); if (m) { ci = j; cp = m[0]; } } // dernier CP 14/61 du bloc
+    if (ci < 0) return;
+    const cpLine = ne[ci], idx = cpLine.indexOf(cp);
+    const cityPart = (cp + ' ' + cpLine.slice(idx + cp.length)).replace(/\s+/g, ' ').trim();
+    let street = '';
+    for (let k = ci - 1; k >= 0; k--) { if (/[a-zA-Z]/.test(ne[k]) && !/^entrepot/i.test(ne[k])) { street = ne[k]; break; } }
+    const name = ne[0] && /[a-zA-Z]/.test(ne[0]) ? ne[0] : '';
+    const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
+    if (cand.length < 6 || optIsTransporter(optNormLbl(cand))) return;
+    found.push({ cand, pri: 0, name });
+  });
+  return found;
+}
+// Lecture générique (autres transporteurs / étiquette simple) : lignes avec CP.
+function optParseGeneric(text, carrierId) {
   const tpl = optCarrier(carrierId);
   const lines = String(text || '').split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter((l) => l.length > 3);
-  const low = lines.map((l) => l.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''));
+  const low = lines.map((l) => optNormLbl(l));
   let anchor = -1;
   if (tpl) { for (let i = 0; i < low.length; i++) { if (tpl.anchors.some((a) => low[i].includes(a))) { anchor = i; break; } } }
   const found = [];
@@ -569,45 +627,68 @@ function optParseAddresses(text, carrierId) {
     let street = lines[i].slice(0, idx).trim();
     if (!street && i > 0) street = lines[i - 1];
     const cand = ((street ? street + ' ' : '') + cityPart).replace(/\s+/g, ' ').trim();
-    if (cand.length > 6) found.push({ cand, pri: (anchor >= 0 && i > anchor) ? 0 : 1 });
+    if (cand.length > 6 && !optIsTransporter(optNormLbl(cand))) found.push({ cand, pri: (anchor >= 0 && i > anchor) ? 0 : 1 });
   }
-  // Dédoublonnage : même adresse détectée plusieurs fois sur la feuille →
-  // une seule entrée, avec le nombre d'occurrences (colis potentiels).
+  return found;
+}
+// Dédoublonnage insensible aux espaces + comptage (colis multiples).
+function optDedupCands(found) {
   const map = new Map();
   found.forEach((x) => {
-    const key = optNormLbl(x.cand).replace(/\s+/g, ''); // insensible aux espaces (variance OCR)
+    const key = optNormLbl(x.cand).replace(/\s+/g, '');
     const e = map.get(key);
-    if (e) { e.count++; if (x.pri < e.pri) e.pri = x.pri; }
-    else map.set(key, { cand: x.cand, count: 1, pri: x.pri });
+    if (e) { e.count++; if (x.pri < e.pri) e.pri = x.pri; if (!e.name && x.name) e.name = x.name; }
+    else map.set(key, { cand: x.cand, count: 1, pri: x.pri, name: x.name || '' });
   });
   return Array.from(map.values()).sort((a, b) => a.pri - b.pri);
 }
-async function optScan(file) {
-  const outEl = document.getElementById('opt-scan-out'); if (!outEl) return;
-  outEl.innerHTML = '<div class="opt-scanning"><div class="spin"></div> Analyse de l’image… <span id="opt-scan-pct">0%</span></div>';
+// Extrait les adresses candidates du texte OCR : lettre de voiture FedEx si
+// reconnue (colonnes destinataire/expéditeur), sinon lecture générique.
+function optParseAddresses(text, carrierId) {
+  const fedex = optParseFedexSheet(text);
+  return optDedupCands((fedex && fedex.length) ? fedex : optParseGeneric(text, carrierId));
+}
+async function optScan(fileOrFiles) {
+  const files = (fileOrFiles && fileOrFiles.length != null && !(fileOrFiles instanceof File)) ? Array.from(fileOrFiles) : [fileOrFiles];
+  const outEl = document.getElementById('opt-scan-out'); if (!outEl || !files.length) return;
+  const multi = files.length > 1;
+  const merged = new Map(); let fullText = '';
   try {
-    const canvas = await optPrepImage(file);
     const T = await ensureTesseract();
-    const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
-    const text = (data && data.text) || '';
-    const cands = optParseAddresses(text, _opt.carrier);
+    for (let n = 0; n < files.length; n++) {
+      outEl.innerHTML = `<div class="opt-scanning"><div class="spin"></div> Analyse ${multi ? `de la page ${n + 1}/${files.length}` : 'de l’image'}… <span id="opt-scan-pct">0%</span></div>`;
+      const canvas = await optPrepImage(files[n]);
+      const { data } = await T.recognize(canvas, 'fra', { logger: (m) => { if (m.status === 'recognizing text') { const e = document.getElementById('opt-scan-pct'); if (e) e.textContent = Math.round(m.progress * 100) + '%'; } } });
+      const text = (data && data.text) || '';
+      fullText += (fullText ? '\n\n— — —\n\n' : '') + text;
+      optParseAddresses(text, _opt.carrier).forEach((c) => {
+        const key = optNormLbl(c.cand).replace(/\s+/g, ''); const e = merged.get(key);
+        if (e) { e.count += c.count; if (!e.name && c.name) e.name = c.name; } else merged.set(key, Object.assign({}, c));
+      });
+    }
+    const cands = Array.from(merged.values()).sort((a, b) => a.pri - b.pri);
     outEl.innerHTML = `
       <div class="card" style="margin-top:.6rem;background:#f8fafc">
-        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)</strong><button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap"><strong>📷 ${cands.length} adresse(s) détectée(s)${multi ? ` · ${files.length} pages` : ''}</strong>
+          ${cands.length ? '<button class="btn accent sm" id="opt-scan-all">Tout ajouter</button>' : ''}
+          <button class="btn ghost sm" id="opt-scan-close" style="margin-left:auto">✕</button></div>
         ${cands.length ? cands.map((c, i) => `<div class="opt-cand"><span class="opt-lbl">${esc(c.cand)}${c.count > 1 ? ` <span class="pill warn">📦 plusieurs colis possible (${c.count})</span>` : ''}</span><button class="btn accent sm" data-cand="${i}">Ajouter</button></div>`).join('')
           : '<p class="help">Aucune adresse (CP 14/61) reconnue. Utilisez la saisie manuelle ci-dessus ou reprenez la photo bien cadrée.</p>'}
-        <details style="margin-top:.4rem"><summary class="help">Texte lu par l’OCR</summary><pre class="opt-ocrtext">${esc(text || '(vide)')}</pre></details>
+        <details style="margin-top:.4rem"><summary class="help">Texte lu par l’OCR</summary><pre class="opt-ocrtext">${esc(fullText || '(vide)')}</pre></details>
       </div>`;
     outEl.querySelector('#opt-scan-close').onclick = () => { outEl.innerHTML = ''; };
-    outEl.querySelectorAll('[data-cand]').forEach((b) => b.onclick = async () => {
-      const c = cands[+b.dataset.cand]; b.disabled = true; b.textContent = '…';
+    const addOne = async (b) => {
+      const c = cands[+b.dataset.cand]; if (!c || b.dataset.done) return; b.disabled = true; b.textContent = '…';
       try {
         const r = await optBanSearch(c.cand); const hit = r[0];
-        if (!hit) { toast('Adresse introuvable en zone 14/61.', 'err'); b.disabled = false; b.textContent = 'Ajouter'; return; }
-        optAddStop(hit.label, hit.lat, hit.lon, c.count);
-        b.textContent = '✓ Ajouté'; optRefreshList();
-      } catch (e) { toast(e.message, 'err'); b.disabled = false; b.textContent = 'Ajouter'; }
-    });
+        if (!hit) { toast(`Introuvable : ${c.cand}`, 'err'); b.disabled = false; b.textContent = 'Ajouter'; return false; }
+        optAddStop(hit.label, hit.lat, hit.lon, c.count, c.name);
+        b.textContent = '✓ Ajouté'; b.dataset.done = '1'; optRefreshList(); return true;
+      } catch (e) { toast(e.message, 'err'); b.disabled = false; b.textContent = 'Ajouter'; return false; }
+    };
+    outEl.querySelectorAll('[data-cand]').forEach((b) => b.onclick = () => addOne(b));
+    const allBtn = outEl.querySelector('#opt-scan-all');
+    if (allBtn) allBtn.onclick = async () => { allBtn.disabled = true; allBtn.textContent = '…'; for (const b of outEl.querySelectorAll('[data-cand]')) { await addOne(b); } allBtn.textContent = '✓ Terminé'; };
   } catch (e) { outEl.innerHTML = `<div class="alert warn" style="margin-top:.6rem">${esc(e.message)}</div>`; }
 }
 // Récupère la matrice de durées OSRM (min) si le serveur est configuré.
